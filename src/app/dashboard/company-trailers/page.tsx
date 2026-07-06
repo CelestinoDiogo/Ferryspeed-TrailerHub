@@ -6,207 +6,273 @@ import { supabase } from "@/lib/supabase";
 type CompanyTrailer = {
   id: string;
   trailer_number: string;
-  trailer_type?: string | null;
-  notes?: string | null;
-  active?: boolean | null;
-  created_at?: string | null;
+  prefix: string | null;
+  numeric_part: number | null;
+  trailer_type: string | null;
+  notes: string | null;
+  original_value: string | null;
+  active: boolean | null;
 };
 
+type ActiveTrailer = {
+  id: string;
+  trailer_number: string | null;
+  load_status: string | null;
+  customer: string | null;
+  consignee: string | null;
+  container_number: string | null;
+  compound_position: string | null;
+  arrival_date: string | null;
+  departure_date: string | null;
+};
+
+type FleetRow = CompanyTrailer & {
+  currentMovement?: ActiveTrailer;
+};
+
+const normalize = (value?: string | null) => value?.trim().toLowerCase() ?? "";
+
 export default function CompanyTrailersPage() {
-  const [trailers, setTrailers] = useState<CompanyTrailer[]>([]);
+  const [companyTrailers, setCompanyTrailers] = useState<CompanyTrailer[]>([]);
+  const [activeTrailers, setActiveTrailers] = useState<ActiveTrailer[]>([]);
   const [search, setSearch] = useState("");
-  const [form, setForm] = useState({ trailerNumber: "", trailerType: "", notes: "" });
-  const [isLoading, setIsLoading] = useState(true);
-  const [isSaving, setIsSaving] = useState(false);
+  const [prefixFilter, setPrefixFilter] = useState("ALL");
+  const [statusFilter, setStatusFilter] = useState("ALL");
+  const [loadFilter, setLoadFilter] = useState("ALL");
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
-
-  const loadTrailers = async () => {
-    setIsLoading(true);
-    setError(null);
-
-    try {
-      const { data, error: supabaseError } = await supabase
-        .from("company_trailers")
-        .select("id, trailer_number, trailer_type, notes, active, created_at")
-        .order("created_at", { ascending: false });
-
-      if (supabaseError) {
-        throw supabaseError;
-      }
-
-      setTrailers((data ?? []) as CompanyTrailer[]);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Unable to load company trailers.";
-      setError(message);
-    } finally {
-      setIsLoading(false);
-    }
-  };
 
   useEffect(() => {
-    void loadTrailers();
+    async function loadFleet() {
+      setLoading(true);
+      setError(null);
+
+      try {
+        const [{ data: fleetData, error: fleetError }, { data: activeData, error: activeError }] =
+          await Promise.all([
+            supabase
+              .from("company_trailers")
+              .select("id, trailer_number, prefix, numeric_part, trailer_type, notes, original_value, active")
+              .order("prefix", { ascending: true })
+              .order("numeric_part", { ascending: true }),
+
+            supabase
+              .from("trailers")
+              .select(
+                "id, trailer_number, load_status, customer, consignee, container_number, compound_position, arrival_date, departure_date"
+              )
+              .is("departure_date", null),
+          ]);
+
+        if (fleetError) throw fleetError;
+        if (activeError) throw activeError;
+
+        setCompanyTrailers((fleetData ?? []) as CompanyTrailer[]);
+        setActiveTrailers((activeData ?? []) as ActiveTrailer[]);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Unable to load fleet.");
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    void loadFleet();
   }, []);
 
-  const filteredTrailers = useMemo(() => {
-    const term = search.trim().toLowerCase();
-    if (!term) {
-      return trailers;
-    }
+  const activeByTrailerNumber = useMemo(() => {
+    const map = new Map<string, ActiveTrailer>();
 
-    return trailers.filter((trailer) => {
-      const haystack = [trailer.trailer_number, trailer.trailer_type, trailer.notes]
-        .filter(Boolean)
-        .join(" ")
-        .toLowerCase();
-
-      return haystack.includes(term);
-    });
-  }, [search, trailers]);
-
-  const handleSubmit = async (event: React.FormEvent) => {
-    event.preventDefault();
-    setIsSaving(true);
-    setError(null);
-    setSuccess(null);
-
-    try {
-      const payload = {
-        trailer_number: form.trailerNumber.trim(),
-        trailer_type: form.trailerType.trim() || null,
-        notes: form.notes.trim() || null,
-        active: true,
-      };
-
-      const { error: insertError } = await supabase.from("company_trailers").insert([payload]);
-
-      if (insertError) {
-        throw insertError;
+    activeTrailers.forEach((item) => {
+      if (item.trailer_number) {
+        map.set(normalize(item.trailer_number), item);
       }
+    });
 
-      setForm({ trailerNumber: "", trailerType: "", notes: "" });
-      setSuccess("Trailer added successfully.");
-      await loadTrailers();
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Unable to add trailer.";
-      setError(message);
-    } finally {
-      setIsSaving(false);
-    }
-  };
+    return map;
+  }, [activeTrailers]);
+
+  const rows: FleetRow[] = useMemo(() => {
+    return companyTrailers.map((trailer) => ({
+      ...trailer,
+      currentMovement: activeByTrailerNumber.get(normalize(trailer.trailer_number)),
+    }));
+  }, [companyTrailers, activeByTrailerNumber]);
+
+  const prefixes = useMemo(() => {
+    return Array.from(new Set(companyTrailers.map((item) => item.prefix).filter(Boolean) as string[])).sort();
+  }, [companyTrailers]);
+
+  const filteredRows = useMemo(() => {
+    const term = normalize(search);
+
+    return rows.filter((row) => {
+      const movement = row.currentMovement;
+      const isInCompound = Boolean(movement);
+
+      const matchesSearch =
+        !term ||
+        normalize(row.trailer_number).includes(term) ||
+        normalize(row.prefix).includes(term) ||
+        normalize(row.trailer_type).includes(term) ||
+        normalize(movement?.customer).includes(term) ||
+        normalize(movement?.consignee).includes(term) ||
+        normalize(movement?.container_number).includes(term) ||
+        normalize(movement?.compound_position).includes(term);
+
+      const matchesPrefix = prefixFilter === "ALL" || row.prefix === prefixFilter;
+
+      const matchesStatus =
+        statusFilter === "ALL" ||
+        (statusFilter === "IN" && isInCompound) ||
+        (statusFilter === "OUT" && !isInCompound);
+
+      const loadStatus = normalize(movement?.load_status);
+      const matchesLoad =
+        loadFilter === "ALL" ||
+        (loadFilter === "EMPTY" && loadStatus === "empty") ||
+        (loadFilter === "LOADED" && loadStatus === "loaded");
+
+      return matchesSearch && matchesPrefix && matchesStatus && matchesLoad;
+    });
+  }, [rows, search, prefixFilter, statusFilter, loadFilter]);
+
+  const inCompound = rows.filter((row) => row.currentMovement).length;
+  const loaded = rows.filter((row) => normalize(row.currentMovement?.load_status) === "loaded").length;
+  const empty = rows.filter((row) => normalize(row.currentMovement?.load_status) === "empty").length;
 
   return (
-    <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(34,211,238,0.16),_transparent_32%),linear-gradient(135deg,_#020617_0%,_#0f172a_55%,_#111827_100%)] px-4 py-6 text-slate-100 sm:px-6 lg:px-8">
-      <div className="mx-auto flex max-w-6xl flex-col gap-6">
-        <header className="rounded-3xl border border-white/10 bg-slate-900/70 p-5 shadow-2xl shadow-black/20 backdrop-blur sm:p-6">
-          <p className="text-sm font-semibold uppercase tracking-[0.3em] text-cyan-400">Ferryspeed TrailerHub</p>
-          <h1 className="mt-2 text-2xl font-semibold sm:text-3xl">Company Trailers</h1>
-          <p className="mt-2 text-sm text-slate-300 sm:text-base">
-            Maintain the master list of company trailers and keep the fleet inventory organised.
+    <main className="min-h-screen bg-slate-950 px-4 py-6 text-slate-100 sm:px-6 lg:px-8">
+      <div className="mx-auto max-w-7xl space-y-6">
+        <header className="rounded-3xl border border-white/10 bg-slate-900 p-6">
+          <p className="text-sm font-semibold uppercase tracking-[0.3em] text-cyan-400">
+            Ferryspeed TrailerHub
+          </p>
+          <h1 className="mt-2 text-3xl font-bold">Company Trailers</h1>
+          <p className="mt-2 text-slate-300">
+            Master fleet list with live compound status.
           </p>
         </header>
 
         {error ? (
-          <div className="rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+          <div className="rounded-2xl border border-rose-500/30 bg-rose-500/10 p-4 text-rose-200">
             {error}
           </div>
         ) : null}
 
-        {success ? (
-          <div className="rounded-2xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">
-            {success}
+        <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+          <SummaryCard label="Total Fleet" value={companyTrailers.length} />
+          <SummaryCard label="In Compound" value={inCompound} />
+          <SummaryCard label="Out of Compound" value={companyTrailers.length - inCompound} />
+          <SummaryCard label="Loaded" value={loaded} />
+          <SummaryCard label="Empty" value={empty} />
+        </section>
+
+        <section className="rounded-3xl border border-white/10 bg-slate-900 p-4">
+          <div className="grid gap-3 lg:grid-cols-4">
+            <input
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Search trailer, prefix, customer, container..."
+              className="rounded-2xl border border-white/10 bg-slate-950 px-4 py-3 outline-none"
+            />
+
+            <select
+              value={prefixFilter}
+              onChange={(event) => setPrefixFilter(event.target.value)}
+              className="rounded-2xl border border-white/10 bg-slate-950 px-4 py-3 outline-none"
+            >
+              <option value="ALL">All prefixes</option>
+              {prefixes.map((prefix) => (
+                <option key={prefix} value={prefix}>
+                  {prefix}
+                </option>
+              ))}
+            </select>
+
+            <select
+              value={statusFilter}
+              onChange={(event) => setStatusFilter(event.target.value)}
+              className="rounded-2xl border border-white/10 bg-slate-950 px-4 py-3 outline-none"
+            >
+              <option value="ALL">All status</option>
+              <option value="IN">In Compound</option>
+              <option value="OUT">Out of Compound</option>
+            </select>
+
+            <select
+              value={loadFilter}
+              onChange={(event) => setLoadFilter(event.target.value)}
+              className="rounded-2xl border border-white/10 bg-slate-950 px-4 py-3 outline-none"
+            >
+              <option value="ALL">All loads</option>
+              <option value="EMPTY">Empty</option>
+              <option value="LOADED">Loaded</option>
+            </select>
           </div>
-        ) : null}
 
-        <section className="grid gap-6 lg:grid-cols-[0.9fr_1.1fr]">
-          <form onSubmit={handleSubmit} className="rounded-3xl border border-white/10 bg-slate-900/70 p-4 shadow-lg shadow-black/20 backdrop-blur sm:p-5">
-            <h2 className="text-lg font-semibold text-white">Add trailer</h2>
-            <div className="mt-4 space-y-4">
-              <div>
-                <label className="mb-2 block text-sm font-medium text-slate-200">Trailer Number</label>
-                <input
-                  value={form.trailerNumber}
-                  onChange={(event) => setForm((current) => ({ ...current, trailerNumber: event.target.value }))}
-                  className="w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm outline-none"
-                  placeholder="e.g. TR-1001"
-                  required
-                />
-              </div>
+          <p className="mt-4 text-sm text-slate-400">
+            Showing {filteredRows.length} trailer{filteredRows.length === 1 ? "" : "s"}.
+          </p>
+        </section>
 
-              <div>
-                <label className="mb-2 block text-sm font-medium text-slate-200">Trailer Type</label>
-                <input
-                  value={form.trailerType}
-                  onChange={(event) => setForm((current) => ({ ...current, trailerType: event.target.value }))}
-                  className="w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm outline-none"
-                  placeholder="Dry Van"
-                />
-              </div>
+        <section className="overflow-hidden rounded-3xl border border-white/10 bg-slate-900">
+          {loading ? (
+            <div className="p-6 text-slate-300">Loading fleet...</div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-left text-sm">
+                <thead className="bg-slate-950 text-xs uppercase tracking-wider text-slate-400">
+                  <tr>
+                    <th className="px-4 py-3">Trailer</th>
+                    <th className="px-4 py-3">Prefix</th>
+                    <th className="px-4 py-3">Status</th>
+                    <th className="px-4 py-3">Position</th>
+                    <th className="px-4 py-3">Load</th>
+                    <th className="px-4 py-3">Customer</th>
+                    <th className="px-4 py-3">Container</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-white/10">
+                  {filteredRows.map((row) => {
+                    const movement = row.currentMovement;
 
-              <div>
-                <label className="mb-2 block text-sm font-medium text-slate-200">Notes</label>
-                <textarea
-                  value={form.notes}
-                  onChange={(event) => setForm((current) => ({ ...current, notes: event.target.value }))}
-                  rows={4}
-                  className="w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm outline-none"
-                  placeholder="Optional notes"
-                />
-              </div>
-
-              <button
-                type="submit"
-                disabled={isSaving}
-                className="w-full rounded-2xl bg-cyan-500 px-4 py-3 text-sm font-semibold text-slate-950 transition hover:bg-cyan-400 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {isSaving ? "Saving..." : "Add Trailer"}
-              </button>
+                    return (
+                      <tr key={row.id} className="hover:bg-white/5">
+                        <td className="px-4 py-3 font-semibold text-white">{row.trailer_number}</td>
+                        <td className="px-4 py-3 text-slate-300">{row.prefix ?? "—"}</td>
+                        <td className="px-4 py-3">
+                          {movement ? (
+                            <span className="rounded-full bg-emerald-500/15 px-3 py-1 text-xs text-emerald-300">
+                              In Compound
+                            </span>
+                          ) : (
+                            <span className="rounded-full bg-slate-700 px-3 py-1 text-xs text-slate-300">
+                              Out
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-4 py-3">{movement?.compound_position ?? "—"}</td>
+                        <td className="px-4 py-3">{movement?.load_status ?? "—"}</td>
+                        <td className="px-4 py-3">{movement?.customer ?? "—"}</td>
+                        <td className="px-4 py-3">{movement?.container_number ?? "—"}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
             </div>
-          </form>
-
-          <section className="rounded-3xl border border-white/10 bg-slate-900/70 p-4 shadow-lg shadow-black/20 backdrop-blur sm:p-5">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <h2 className="text-lg font-semibold text-white">Company trailer list</h2>
-                <p className="mt-1 text-sm text-slate-400">Search by trailer number or trailer type.</p>
-              </div>
-              <input
-                value={search}
-                onChange={(event) => setSearch(event.target.value)}
-                placeholder="Search trailers"
-                className="w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm outline-none sm:w-64"
-              />
-            </div>
-
-            <div className="mt-4 space-y-3">
-              {isLoading ? (
-                <div className="rounded-2xl border border-white/10 bg-slate-950/80 p-4 text-sm text-slate-400">
-                  Loading company trailers...
-                </div>
-              ) : filteredTrailers.length === 0 ? (
-                <div className="rounded-2xl border border-white/10 bg-slate-950/80 p-4 text-sm text-slate-400">
-                  No trailers found.
-                </div>
-              ) : (
-                filteredTrailers.map((trailer) => (
-                  <article key={trailer.id} className="rounded-2xl border border-white/10 bg-slate-950/80 p-4">
-                    <div className="flex items-center justify-between gap-3">
-                      <div>
-                        <p className="text-sm font-semibold text-white">{trailer.trailer_number}</p>
-                        <p className="mt-1 text-sm text-slate-400">{trailer.trailer_type ?? "No type"}</p>
-                      </div>
-                      <span className={`rounded-full px-3 py-1 text-xs font-medium ${trailer.active ? "bg-emerald-500/10 text-emerald-200" : "bg-slate-700/70 text-slate-300"}`}>
-                        {trailer.active ? "Active" : "Inactive"}
-                      </span>
-                    </div>
-                    {trailer.notes ? <p className="mt-3 text-sm text-slate-400">{trailer.notes}</p> : null}
-                  </article>
-                ))
-              )}
-            </div>
-          </section>
+          )}
         </section>
       </div>
     </main>
+  );
+}
+
+function SummaryCard({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="rounded-3xl border border-white/10 bg-slate-900 p-5">
+      <p className="text-sm text-slate-400">{label}</p>
+      <p className="mt-2 text-3xl font-bold text-white">{value}</p>
+    </div>
   );
 }
