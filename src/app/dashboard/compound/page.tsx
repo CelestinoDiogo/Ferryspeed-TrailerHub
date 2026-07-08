@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabase";
 
@@ -179,7 +180,18 @@ export default function CompoundPage() {
                     <div className="mt-4 space-y-2 text-sm">
                       <div>
                         <p className="text-xs uppercase tracking-[0.25em] text-slate-400">Trailer</p>
-                        <p className="mt-1 font-semibold">{trailer.trailer_number ?? "Unnamed trailer"}</p>
+                        <p className="mt-1 font-semibold">
+                          {trailer.trailer_number ? (
+                            <Link
+                              href={`/dashboard/trailers/${trailer.trailer_number}`}
+                              className="transition hover:text-cyan-300"
+                            >
+                              {trailer.trailer_number}
+                            </Link>
+                          ) : (
+                            "Unnamed trailer"
+                          )}
+                        </p>
                       </div>
                       <div>
                         <p className="text-xs uppercase tracking-[0.25em] text-slate-400">Load</p>
@@ -215,7 +227,18 @@ export default function CompoundPage() {
                 <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
                   {unassignedTrailers.map((trailer) => (
                     <article key={trailer.id} className="rounded-2xl border border-white/10 bg-slate-950/80 p-4">
-                      <p className="text-sm font-semibold text-white">{trailer.trailer_number ?? "Unnamed trailer"}</p>
+                      <p className="text-sm font-semibold text-white">
+                        {trailer.trailer_number ? (
+                          <Link
+                            href={`/dashboard/trailers/${trailer.trailer_number}`}
+                            className="transition hover:text-cyan-300"
+                          >
+                            {trailer.trailer_number}
+                          </Link>
+                        ) : (
+                          "Unnamed trailer"
+                        )}
+                      </p>
                       <p className="mt-2 text-sm text-slate-400">Position: {trailer.compound_position ?? "—"}</p>
                       <p className="mt-1 text-sm text-slate-400">Load: {trailer.load_status ?? "Unknown"}</p>
                       <p className="mt-1 text-sm text-slate-400">Customer: {trailer.customer ?? "—"}</p>

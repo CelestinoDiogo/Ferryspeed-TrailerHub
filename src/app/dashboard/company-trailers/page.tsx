@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabase";
 
@@ -238,7 +239,18 @@ export default function CompanyTrailersPage() {
 
                     return (
                       <tr key={row.id} className="hover:bg-white/5">
-                        <td className="px-4 py-3 font-semibold text-white">{row.trailer_number}</td>
+                        <td className="px-4 py-3 font-semibold text-white">
+                          {row.trailer_number ? (
+                            <Link
+                              href={`/dashboard/trailers/${row.trailer_number}`}
+                              className="transition hover:text-cyan-300"
+                            >
+                              {row.trailer_number}
+                            </Link>
+                          ) : (
+                            "—"
+                          )}
+                        </td>
                         <td className="px-4 py-3 text-slate-300">{row.prefix ?? "—"}</td>
                         <td className="px-4 py-3">
                           {movement ? (

@@ -319,7 +319,18 @@ export default function DashboardSearchPage() {
                         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                           <div>
                             <p className="text-xs font-semibold uppercase tracking-[0.25em] text-slate-500">Trailer number</p>
-                            <p className="mt-1 text-lg font-semibold text-white">{item.trailer_number ?? "—"}</p>
+                            <p className="mt-1 text-lg font-semibold text-white">
+                              {item.trailer_number ? (
+                                <Link
+                                  href={`/dashboard/trailers/${item.trailer_number}`}
+                                  className="transition hover:text-cyan-300"
+                                >
+                                  {item.trailer_number}
+                                </Link>
+                              ) : (
+                                "—"
+                              )}
+                            </p>
                           </div>
                           <span className="rounded-full border border-cyan-400/20 bg-cyan-500/10 px-3 py-1 text-sm text-cyan-200">
                             {item.status}
