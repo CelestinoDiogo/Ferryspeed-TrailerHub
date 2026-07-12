@@ -49,13 +49,15 @@ export function Sidebar({ onNavigate, mobile = false }: SidebarProps) {
   const pathname = usePathname();
 
   return (
-    <aside className={mobile ? "h-full w-full" : "sticky top-0 h-screen w-[240px] shrink-0 border-r border-[var(--fs-border)] bg-[var(--fs-sidebar)]/95"}>
-      <div className="flex h-full flex-col p-4">
-        <Link href="/dashboard" className="rounded-xl p-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fs-green-light)]" onClick={onNavigate}>
-          <Image src="/branding/ferryspeed logo.png" alt="Ferryspeed logo" width={170} height={40} priority className="h-10 w-auto" />
+    <aside className={mobile ? "h-full w-full" : "sticky top-0 h-screen w-[248px] shrink-0 border-r border-[var(--fs-border)] bg-[linear-gradient(180deg,#020908_0%,#03110e_100%)]"}>
+      <div className="flex h-full flex-col px-4 py-5">
+        <Link href="/dashboard" className="mb-5 rounded-xl px-2 py-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fs-green-light)]" onClick={onNavigate}>
+          <div className="w-[180px]">
+            <Image src="/branding/ferryspeed logo.png" alt="Ferryspeed logo" width={168} height={56} priority className="h-14 w-auto" />
+          </div>
         </Link>
 
-        <nav className="mt-4 flex-1 space-y-1 overflow-y-auto pr-1">
+        <nav className="flex-1 space-y-1 overflow-y-auto pr-1">
           {navItems.map((item) => {
             const active = isNavItemActive(pathname, item.href);
             return (
@@ -65,11 +67,11 @@ export function Sidebar({ onNavigate, mobile = false }: SidebarProps) {
                 onClick={onNavigate}
                 className={`flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fs-green-light)] ${
                   active
-                    ? "bg-[color:var(--fs-green)]/25 text-[var(--fs-text)]"
-                    : "text-[var(--fs-text-muted)] hover:bg-white/5 hover:text-[var(--fs-text)]"
+                    ? "bg-[color:var(--fs-green)]/28 text-white shadow-[0_0_18px_rgba(33,200,138,0.22)]"
+                    : "text-[color:#9caea8] hover:bg-white/8 hover:text-[var(--fs-text)]"
                 }`}
               >
-                <span className={active ? "text-[var(--fs-green-light)]" : "text-[var(--fs-text-muted)]"} aria-hidden="true">
+                <span className={active ? "text-[var(--fs-green-light)]" : "text-[color:#7f958f]"} aria-hidden="true">
                   <NavIcon icon={item.icon} />
                 </span>
                 <span>{item.label}</span>
@@ -78,7 +80,7 @@ export function Sidebar({ onNavigate, mobile = false }: SidebarProps) {
           })}
         </nav>
 
-        <div className="rounded-xl border border-[var(--fs-border)] bg-white/5 px-3 py-3">
+        <div className="mt-4 rounded-xl border border-[var(--fs-border)] bg-black/25 px-3 py-3">
           <p className="text-sm font-semibold text-[var(--fs-text)]">Ferryspeed</p>
           <p className="text-xs text-[var(--fs-text-muted)]">Moving with confidence</p>
         </div>

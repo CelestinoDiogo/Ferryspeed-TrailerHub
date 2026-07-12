@@ -16,12 +16,13 @@ export function AppShell({ children }: AppShellProps) {
   return (
     <div className="relative min-h-screen bg-fs-main text-[var(--fs-text)]">
       <div className="pointer-events-none absolute inset-0 z-0 overflow-hidden">
+        <div className="absolute inset-0 bg-gradient-to-r from-[rgba(2,11,10,0.92)] via-[rgba(2,11,10,0.78)] to-[rgba(2,11,10,0.35)]" />
         <Image
           src="/branding/ferryspeed map.png"
           alt=""
           width={1300}
           height={900}
-          className="absolute -right-28 top-10 hidden h-auto w-[58vw] max-w-[940px] opacity-[0.12] lg:block"
+          className="absolute -right-36 top-14 hidden h-auto w-[56vw] max-w-[920px] opacity-[0.13] [filter:saturate(0.8)_brightness(0.7)] lg:block"
           priority
         />
       </div>
@@ -45,7 +46,7 @@ export function AppShell({ children }: AppShellProps) {
 
       {mobileOpen ? (
         <div className="fixed inset-0 z-50 bg-black/50 md:hidden" role="dialog" aria-modal="true">
-          <div className="h-full w-[84vw] max-w-[340px] border-r border-[var(--fs-border)] bg-[var(--fs-sidebar)] p-2">
+          <div className="h-full w-[84vw] max-w-[340px] border-r border-[var(--fs-border)] bg-[linear-gradient(180deg,#020908_0%,#03110e_100%)] p-2">
             <div className="mb-2 flex justify-end">
               <button
                 type="button"

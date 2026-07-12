@@ -1,22 +1,28 @@
 @import "tailwindcss";
 
 :root {
-  --background: #031c18;
+  --background: #020b0a;
   --foreground: #f4f7f6;
-  --fs-background: #031c18;
-  --fs-background-secondary: #062922;
-  --fs-sidebar: #021712;
-  --fs-panel: rgba(7, 48, 39, 0.82);
-  --fs-panel-strong: #07352c;
-  --fs-border: rgba(105, 190, 157, 0.25);
+  --fs-background: #020b0a;
+  --fs-background-secondary: #041512;
+  --fs-sidebar: #020908;
+  --fs-header: rgba(2, 13, 11, 0.96);
+  --fs-panel: rgba(6, 24, 20, 0.88);
+  --fs-panel-hover: rgba(8, 34, 28, 0.94);
+  --fs-panel-strong: #081c18;
+  --fs-border: rgba(44, 120, 95, 0.28);
   --fs-green: #00835f;
-  --fs-green-light: #16b67d;
+  --fs-green-light: #21c88a;
   --fs-red: #dc2638;
-  --fs-orange: #e98308;
-  --fs-blue: #0788be;
-  --fs-purple: #7843a8;
+  --fs-orange: #f39a2e;
+  --fs-blue: #2ea8e4;
+  --fs-purple: #9162c8;
+  --fs-amber: #d9aa35;
+  --fs-indigo: #5f6ee8;
+  --fs-cyan: #22b8d8;
+  --fs-emerald: #14a173;
   --fs-text: #f4f7f6;
-  --fs-text-muted: #a9bdb7;
+  --fs-text-muted: #9fb0ab;
 }
 
 @theme inline {
@@ -28,7 +34,7 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --background: #031c18;
+    --background: #020b0a;
     --foreground: #f4f7f6;
   }
 }
@@ -41,15 +47,20 @@ body {
 
 .bg-fs-main {
   background:
-    radial-gradient(circle at top right, rgba(0, 131, 95, 0.18), transparent 35%),
-    linear-gradient(135deg, #021713 0%, #06352c 55%, #021b17 100%);
+    radial-gradient(circle at 85% -10%, rgba(40, 130, 99, 0.12), transparent 36%),
+    linear-gradient(135deg, #020908 0%, #041512 48%, #020b0a 100%);
 }
 
 .fs-panel-card {
   border: 1px solid var(--fs-border);
   background: var(--fs-panel);
-  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.24);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.3);
   backdrop-filter: blur(12px);
+  transition: background-color 180ms ease, border-color 180ms ease;
+}
+
+.fs-panel-card:hover {
+  background: var(--fs-panel-hover);
 }
 
 .fs-status {
@@ -107,6 +118,18 @@ body {
   border-color: rgba(12, 122, 86, 0.45);
   background: rgba(12, 122, 86, 0.14);
   color: #c2eddc;
+}
+
+.fs-status-monitor {
+  border-color: rgba(243, 154, 46, 0.55);
+  background: rgba(243, 154, 46, 0.14);
+  color: #ffdfb6;
+}
+
+.fs-status-attention {
+  border-color: rgba(220, 38, 56, 0.55);
+  background: rgba(220, 38, 56, 0.16);
+  color: #ffc6cc;
 }
 
 .fs-fade-up {

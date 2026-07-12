@@ -327,43 +327,50 @@ export function TrailerDashboard() {
       title: "Trailers in Compound",
       value: stats.totalTrailers.toString(),
       detail: "Currently active",
-      accent: "from-cyan-500 to-blue-600",
+      accent: "bg-[var(--fs-green)]",
+      labelClass: "text-[var(--fs-green-light)]",
     },
     {
       title: "Empty Trailers",
       value: stats.emptyTrailers.toString(),
       detail: "Ready for loading",
-      accent: "from-emerald-500 to-teal-600",
+      accent: "bg-[var(--fs-emerald)]",
+      labelClass: "text-[var(--fs-emerald)]",
     },
     {
       title: "Loaded Trailers",
       value: stats.loadedTrailers.toString(),
       detail: "Ready for departure",
-      accent: "from-amber-500 to-orange-600",
+      accent: "bg-[var(--fs-orange)]",
+      labelClass: "text-[var(--fs-orange)]",
     },
     {
       title: "Today's Arrivals",
       value: stats.arrivalsToday.toString(),
       detail: "Arrived today",
-      accent: "from-violet-500 to-fuchsia-600",
+      accent: "bg-[var(--fs-blue)]",
+      labelClass: "text-[var(--fs-blue)]",
     },
     {
       title: "Today's Departures",
       value: stats.departuresToday.toString(),
       detail: "Departed today",
-      accent: "from-rose-500 to-red-600",
+      accent: "bg-[var(--fs-red)]",
+      labelClass: "text-[var(--fs-red)]",
     },
     {
       title: "Compound Occupancy",
       value: `${stats.occupancy}%`,
       detail: "Space utilization",
-      accent: "from-slate-600 to-slate-800",
+      accent: "bg-[var(--fs-green-light)]",
+      labelClass: "text-[var(--fs-green-light)]",
     },
     {
       title: "Maintenance",
       value: stats.maintenanceTrailers.toString(),
       detail: "Needs review",
       accent: "bg-[var(--fs-red)]",
+      labelClass: "text-[var(--fs-red)]",
       icon: (
         <svg viewBox="0 0 24 24" fill="none" className="h-4 w-4">
           <path d="m7 17 10-10M8 8l2 2m6 6 2 2" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
@@ -375,6 +382,7 @@ export function TrailerDashboard() {
       value: waitingCollectionSummary.count.toString(),
       detail: "Ready for pickup",
       accent: "bg-[var(--fs-purple)]",
+      labelClass: "text-[var(--fs-purple)]",
       icon: (
         <svg viewBox="0 0 24 24" fill="none" className="h-4 w-4">
           <circle cx="12" cy="12" r="8" stroke="currentColor" strokeWidth="1.6" />
@@ -385,16 +393,16 @@ export function TrailerDashboard() {
   ];
 
   const actionCards = [
-    { href: "/dashboard/new-arrival", title: "New Arrival", description: "Register incoming trailer", accentClass: "bg-[var(--fs-green)]" },
-    { href: "/dashboard/departure", title: "Departure", description: "Dispatch and release trailer", accentClass: "bg-[var(--fs-red)]" },
-    { href: "/dashboard/compound", title: "Compound", description: "View yard positions", accentClass: "bg-[var(--fs-blue)]" },
-    { href: "/dashboard/load-trailer", title: "Load Trailer", description: "Update cargo and status", accentClass: "bg-[var(--fs-orange)]" },
-    { href: "/dashboard/deliveries", title: "Deliveries", description: "Track live bookings", accentClass: "bg-[var(--fs-purple)]" },
-    { href: "/dashboard/operations-centre", title: "Operations Centre", description: "Open daily command view", accentClass: "bg-[var(--fs-blue)]" },
-    { href: "/dashboard/search", title: "Search", description: "Find trailer records quickly", accentClass: "bg-[var(--fs-panel-strong)]" },
-    { href: "/dashboard/edit-trailer", title: "Edit Trailer", description: "Correct trailer data", accentClass: "bg-[var(--fs-panel-strong)]" },
-    { href: "/dashboard/calendar", title: "Calendar", description: "Plan operations schedule", accentClass: "bg-[var(--fs-blue)]" },
-    { href: "/dashboard/company-trailers", title: "Fleet", description: "Company trailer overview", accentClass: "bg-[var(--fs-green)]" },
+    { href: "/dashboard/new-arrival", title: "New Arrival", description: "Register incoming trailer", accentClass: "bg-[var(--fs-green)]", toneClass: "border-[var(--fs-green)]/45 hover:border-[var(--fs-green-light)]/65" },
+    { href: "/dashboard/departure", title: "Departure", description: "Dispatch and release trailer", accentClass: "bg-[var(--fs-red)]", toneClass: "border-[var(--fs-red)]/45 hover:border-[var(--fs-red)]/65" },
+    { href: "/dashboard/compound", title: "Compound", description: "View yard positions", accentClass: "bg-[var(--fs-blue)]", toneClass: "border-[var(--fs-blue)]/45 hover:border-[var(--fs-blue)]/65" },
+    { href: "/dashboard/load-trailer", title: "Load Trailer", description: "Update cargo and status", accentClass: "bg-[var(--fs-orange)]", toneClass: "border-[var(--fs-orange)]/45 hover:border-[var(--fs-orange)]/65" },
+    { href: "/dashboard/deliveries", title: "Deliveries", description: "Track live bookings", accentClass: "bg-[var(--fs-purple)]", toneClass: "border-[var(--fs-purple)]/45 hover:border-[var(--fs-purple)]/65" },
+    { href: "/dashboard/operations-centre", title: "Operations Centre", description: "Open daily command view", accentClass: "bg-[var(--fs-cyan)]", toneClass: "border-[var(--fs-cyan)]/45 hover:border-[var(--fs-cyan)]/65" },
+    { href: "/dashboard/search", title: "Search", description: "Find trailer records quickly", accentClass: "bg-[var(--fs-emerald)]", toneClass: "border-[var(--fs-emerald)]/45 hover:border-[var(--fs-emerald)]/65" },
+    { href: "/dashboard/edit-trailer", title: "Edit Trailer", description: "Correct trailer data", accentClass: "bg-[var(--fs-amber)]", toneClass: "border-[var(--fs-amber)]/45 hover:border-[var(--fs-amber)]/65" },
+    { href: "/dashboard/calendar", title: "Calendar", description: "Plan operations schedule", accentClass: "bg-[var(--fs-indigo)]", toneClass: "border-[var(--fs-indigo)]/45 hover:border-[var(--fs-indigo)]/65" },
+    { href: "/dashboard/company-trailers", title: "Fleet", description: "Company trailer overview", accentClass: "bg-[var(--fs-green-light)]", toneClass: "border-[var(--fs-green-light)]/45 hover:border-[var(--fs-green-light)]/65" },
   ];
 
   const recentArrivals = trailers
@@ -415,12 +423,12 @@ export function TrailerDashboard() {
   };
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex flex-col gap-5">
       <DashboardSection
         title="Dashboard"
         subtitle="Professional overview of compound, departures, arrivals and live operational load."
       >
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5 xl:grid-cols-5">
           {actionCards.map((action) => (
             <ActionCard
               key={action.href}
@@ -428,6 +436,7 @@ export function TrailerDashboard() {
               title={action.title}
               description={action.description}
               accentClass={action.accentClass}
+              toneClass={action.toneClass}
               icon={
                 <svg viewBox="0 0 24 24" fill="none" className="h-5 w-5" aria-hidden="true">
                   <path d="M6 12h12M12 6l6 6-6 6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
@@ -450,7 +459,7 @@ export function TrailerDashboard() {
           </div>
         ) : null}
 
-      <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+      <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-8">
           {statsCards.map((card) => (
             <KpiCard
               key={card.title}
@@ -458,12 +467,13 @@ export function TrailerDashboard() {
               value={isLoading ? "..." : card.value}
               supportingText={card.detail}
               accentClass={card.accent}
-              icon={card.icon as React.ReactNode}
+              labelClass={card.labelClass}
+              icon={card.icon}
             />
           ))}
       </section>
 
-      <div className="grid gap-6 xl:grid-cols-[1.2fr_1fr]">
+      <div className="grid gap-5 xl:grid-cols-[1.25fr_1fr]">
         <DashboardSection title="Compound Occupancy" subtitle="Live operational capacity with fallback-readable values.">
           <div className="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
             <div className="relative h-28 w-28">
@@ -483,7 +493,7 @@ export function TrailerDashboard() {
               </svg>
               <div className="absolute inset-0 flex items-center justify-center text-xl font-bold text-[var(--fs-text)]">{stats.occupancy}%</div>
             </div>
-            <div className="grid flex-1 grid-cols-2 gap-3 text-sm">
+            <div className="grid flex-1 grid-cols-2 gap-2.5 text-sm">
               <div className="rounded-xl border border-[var(--fs-border)] bg-[var(--fs-panel-strong)] p-3">
                 <p className="text-[var(--fs-text-muted)]">Occupied</p>
                 <p className="mt-1 text-xl font-bold">{stats.totalTrailers}</p>
@@ -494,7 +504,7 @@ export function TrailerDashboard() {
               </div>
               <div className="rounded-xl border border-[var(--fs-border)] bg-[var(--fs-panel-strong)] p-3 col-span-2">
                 <p className="text-[var(--fs-text-muted)]">Available Positions</p>
-                <p className="mt-1 text-xl font-bold">{Math.max(0, COMPOUND_POSITIONS - stats.totalTrailers)}</p>
+                <p className="mt-1 text-xl font-bold text-[var(--fs-green-light)]">{Math.max(0, COMPOUND_POSITIONS - stats.totalTrailers)}</p>
               </div>
             </div>
           </div>
@@ -521,15 +531,15 @@ export function TrailerDashboard() {
         </DashboardSection>
       </div>
 
-      <div className="grid gap-6 xl:grid-cols-2">
+      <div className="grid gap-5 xl:grid-cols-2">
         <DashboardSection
           title="Recent Arrivals"
           subtitle="Latest trailer check-ins"
           action={<Link href="/dashboard/new-arrival" className="text-sm text-[var(--fs-green-light)] hover:underline">View all</Link>}
         >
-          <div className="space-y-2">
+          <div className="space-y-1.5">
             {recentArrivals.length === 0 ? <p className="text-sm text-[var(--fs-text-muted)]">No recent arrivals.</p> : recentArrivals.map((row) => (
-              <div key={row.id} className="rounded-xl border border-[var(--fs-border)] bg-[var(--fs-panel-strong)] p-3">
+              <div key={row.id} className="rounded-xl border border-[var(--fs-border)] bg-[var(--fs-panel-strong)] p-2.5 transition-colors hover:bg-[var(--fs-panel-hover)]">
                 <div className="flex items-center justify-between gap-3">
                   <p className="font-semibold">{row.trailer_number ?? "--"}</p>
                   <span className={statusClass(row.load_status)}>{row.load_status ?? "unknown"}</span>
@@ -545,9 +555,9 @@ export function TrailerDashboard() {
           subtitle="Latest trailer releases"
           action={<Link href="/dashboard/departure" className="text-sm text-[var(--fs-green-light)] hover:underline">View all</Link>}
         >
-          <div className="space-y-2">
+          <div className="space-y-1.5">
             {recentDepartures.length === 0 ? <p className="text-sm text-[var(--fs-text-muted)]">No recent departures.</p> : recentDepartures.map((row) => (
-              <div key={row.id} className="rounded-xl border border-[var(--fs-border)] bg-[var(--fs-panel-strong)] p-3">
+              <div key={row.id} className="rounded-xl border border-[var(--fs-border)] bg-[var(--fs-panel-strong)] p-2.5 transition-colors hover:bg-[var(--fs-panel-hover)]">
                 <div className="flex items-center justify-between gap-3">
                   <p className="font-semibold">{row.trailer_number ?? "--"}</p>
                   <p className="text-xs text-[var(--fs-text-muted)]">{row.departure_date ? new Date(row.departure_date).toLocaleDateString("en-GB") : "No date"}</p>
@@ -559,14 +569,14 @@ export function TrailerDashboard() {
         </DashboardSection>
       </div>
 
-      <div className="grid gap-6 xl:grid-cols-2">
+      <div className="grid gap-5 xl:grid-cols-2">
         <DashboardSection title="Waiting Collection" subtitle="Collection aging and pending pickups" action={<Link href="/dashboard/deliveries?filter=waiting_collection" className="text-sm text-[var(--fs-green-light)] hover:underline">View all</Link>}>
           <div className="grid gap-3 sm:grid-cols-3">
             <div className="rounded-xl border border-[var(--fs-border)] bg-[var(--fs-panel-strong)] p-3"><p className="text-xs text-[var(--fs-text-muted)]">Total Waiting</p><p className="mt-1 text-2xl font-bold">{waitingCollectionSummary.count}</p></div>
             <div className="rounded-xl border border-[var(--fs-border)] bg-[var(--fs-panel-strong)] p-3"><p className="text-xs text-[var(--fs-text-muted)]">Oldest Waiting</p><p className="mt-1 text-2xl font-bold">{waitingCollectionSummary.oldestDays}d</p></div>
             <div className="rounded-xl border border-[var(--fs-border)] bg-[var(--fs-panel-strong)] p-3"><p className="text-xs text-[var(--fs-text-muted)]">Attention Required</p><p className="mt-1 text-2xl font-bold text-[color:var(--fs-red)]">{waitingCollectionSummary.attentionRequiredCount}</p></div>
           </div>
-          <div className="mt-3 space-y-2">
+          <div className="mt-3 space-y-1.5">
             {waitingCollections.slice(0, 5).map((item) => {
               const aging = calculateCollectionAging({
                 delivery_date: item.delivery_date,
@@ -574,11 +584,12 @@ export function TrailerDashboard() {
                 waiting_collection_since: item.waiting_collection_since,
                 collection_due_date: item.collection_due_date,
               });
+              const waitingClass = aging.agingLevel === "red" ? "fs-status-attention" : aging.agingLevel === "amber" ? "fs-status-monitor" : "fs-status-ready";
               return (
-                <div key={item.id} className="rounded-xl border border-[var(--fs-border)] bg-[var(--fs-panel-strong)] p-3">
+                <div key={item.id} className="rounded-xl border border-[var(--fs-border)] bg-[var(--fs-panel-strong)] p-2.5 transition-colors hover:bg-[var(--fs-panel-hover)]">
                   <div className="flex items-center justify-between gap-2">
                     <p className="font-semibold">{item.trailer_number ?? "--"}</p>
-                    <span className={`fs-status ${aging.agingLevel === "red" ? "fs-status-maintenance" : aging.agingLevel === "amber" ? "fs-status-loaded" : "fs-status-ready"}`}>{aging.agingLabel}</span>
+                    <span className={`fs-status ${waitingClass}`}>{aging.agingLabel}</span>
                   </div>
                 </div>
               );
@@ -587,12 +598,12 @@ export function TrailerDashboard() {
         </DashboardSection>
 
         <DashboardSection title="Latest Activity" subtitle="Real events from trailer operations">
-          <div className="space-y-2.5">
+          <div className="space-y-1.5">
             {events.length === 0 ? (
               <p className="text-sm text-[var(--fs-text-muted)]">No recent activity available.</p>
             ) : (
               events.map((event) => (
-                <div key={event.id} className="rounded-xl border border-[var(--fs-border)] bg-[var(--fs-panel-strong)] p-3">
+                <div key={event.id} className="rounded-xl border border-[var(--fs-border)] bg-[var(--fs-panel-strong)] p-2.5 transition-colors hover:bg-[var(--fs-panel-hover)]">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <p className="font-semibold">{event.trailer_number}</p>
                     <p className="text-xs text-[var(--fs-text-muted)]">{event.created_at ? new Date(event.created_at).toLocaleString("en-GB") : "Unknown"}</p>
@@ -611,12 +622,12 @@ export function TrailerDashboard() {
         subtitle="Today bookings and live status"
         action={<Link href="/dashboard/deliveries" className="text-sm text-[var(--fs-green-light)] hover:underline">View all</Link>}
       >
-        <div className="space-y-2">
+        <div className="space-y-1.5">
           {todayDeliveries.length === 0 ? (
             <p className="text-sm text-[var(--fs-text-muted)]">No deliveries scheduled for today.</p>
           ) : (
             todayDeliveries.map((booking) => (
-              <Link key={booking.id} href={`/dashboard/deliveries/${booking.id}`} className="block rounded-xl border border-[var(--fs-border)] bg-[var(--fs-panel-strong)] p-3 hover:bg-[color:var(--fs-green)]/14 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fs-green-light)]">
+              <Link key={booking.id} href={`/dashboard/deliveries/${booking.id}`} className="block rounded-xl border border-[var(--fs-border)] bg-[var(--fs-panel-strong)] p-2.5 hover:bg-[var(--fs-panel-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fs-green-light)]">
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                   <div>
                     <p className="font-semibold">{booking.delivery_time ? booking.delivery_time.substring(0, 5) : "--:--"} - {booking.trailer_number ?? "--"}</p>

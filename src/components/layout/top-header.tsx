@@ -27,6 +27,7 @@ const jerseyTimeFormatter = new Intl.DateTimeFormat("en-GB", {
 export function TopHeader({ title, subtitle, onMenuClick }: TopHeaderProps) {
   const [dateText, setDateText] = useState("--");
   const [timeText, setTimeText] = useState("--:--:--");
+  const [titleLeft, titleRight = ""] = title.split(" ");
 
   useEffect(() => {
     const update = () => {
@@ -42,7 +43,7 @@ export function TopHeader({ title, subtitle, onMenuClick }: TopHeaderProps) {
   }, []);
 
   return (
-    <header className="sticky top-0 z-30 border-b border-[var(--fs-border)] bg-[var(--fs-background)]/85 px-4 py-3 backdrop-blur md:px-6">
+    <header className="sticky top-0 z-30 border-b border-[color:var(--fs-green)]/40 bg-[var(--fs-header)] px-4 py-3 backdrop-blur md:px-6">
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-3">
           <button
@@ -56,17 +57,20 @@ export function TopHeader({ title, subtitle, onMenuClick }: TopHeaderProps) {
             </svg>
           </button>
           <div>
-            <p className="text-xs font-semibold tracking-[0.2em] text-[var(--fs-green-light)]">{title}</p>
+            <p className="text-xs font-semibold tracking-[0.2em]">
+              <span className="text-white">{titleLeft} </span>
+              <span className="text-[var(--fs-green-light)]">{titleRight}</span>
+            </p>
             <p className="text-sm text-[var(--fs-text-muted)]">{subtitle}</p>
           </div>
         </div>
 
         <div className="hidden items-center gap-4 md:flex">
-          <div className="rounded-lg border border-[var(--fs-border)] bg-[var(--fs-panel)] px-3 py-2 text-right">
+          <div className="rounded-lg border border-[color:var(--fs-green)]/38 bg-black/45 px-3 py-2 text-right">
             <p className="text-xs text-[var(--fs-text-muted)]">{dateText}</p>
             <p className="text-sm font-semibold text-[var(--fs-text)]">{timeText}</p>
           </div>
-          <div className="rounded-lg border border-[var(--fs-border)] bg-[var(--fs-panel)] px-3 py-2">
+          <div className="rounded-lg border border-[color:var(--fs-green)]/38 bg-black/45 px-3 py-2">
             <p className="text-xs text-[var(--fs-text-muted)]">Operator</p>
             <p className="text-sm font-semibold text-[var(--fs-text)]">Diogo Ferreira</p>
           </div>
