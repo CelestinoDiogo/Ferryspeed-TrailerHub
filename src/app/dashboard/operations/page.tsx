@@ -763,8 +763,7 @@ export default function OperationsPage() {
   );
 
   return (
-    <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(34,211,238,0.16),_transparent_32%),linear-gradient(135deg,_#020617_0%,_#0f172a_55%,_#111827_100%)] px-4 py-6 text-slate-100 sm:px-6 lg:px-8">
-      <div className="mx-auto flex max-w-7xl flex-col gap-6">
+    <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 text-slate-100">
         {/* Header */}
         <header className="rounded-3xl border border-white/10 bg-slate-900/70 p-5 shadow-2xl shadow-black/20 backdrop-blur sm:p-6">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
@@ -1177,7 +1176,6 @@ export default function OperationsPage() {
             </section>
           </>
         )}
-      </div>
-    </main>
+    </div>
   );
 }

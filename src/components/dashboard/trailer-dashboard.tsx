@@ -3,6 +3,9 @@
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
+import { ActionCard } from "@/components/dashboard/action-card";
+import { DashboardSection } from "@/components/dashboard/dashboard-section";
+import { KpiCard } from "@/components/dashboard/kpi-card";
 import { supabase } from "@/lib/supabase";
 import {
   calculateCollectionAging,
@@ -50,6 +53,15 @@ type DeliveryBooking = {
   trailer_number?: string | null;
 };
 
+type WaitingCollectionItem = {
+  id: string;
+  delivery_date: string;
+  delivered_at?: string | null;
+  waiting_collection_since?: string | null;
+  collection_due_date?: string | null;
+  trailer_number?: string | null;
+};
+
 type WaitingCollectionSummary = {
   count: number;
   attentionRequiredCount: number;
@@ -92,9 +104,11 @@ const getDateKey = (value?: string | null) => {
 export function TrailerDashboard() {
   const searchParams = useSearchParams();
   const [stats, setStats] = useState<DashboardStats>(defaultStats);
+  const [trailers, setTrailers] = useState<TrailerRecord[]>([]);
   const [events, setEvents] = useState<TrailerEvent[]>([]);
   const [alerts, setAlerts] = useState<OperationalAlert[]>([]);
   const [todayDeliveries, setTodayDeliveries] = useState<DeliveryBooking[]>([]);
+  const [waitingCollections, setWaitingCollections] = useState<WaitingCollectionItem[]>([]);
   const [waitingCollectionSummary, setWaitingCollectionSummary] = useState<WaitingCollectionSummary>({ count: 0, attentionRequiredCount: 0, oldestTrailer: null, oldestDays: 0 });
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -139,6 +153,7 @@ export function TrailerDashboard() {
         if (deliveriesError) throw deliveriesError;
 
         const trailers = (data ?? []) as TrailerRecord[];
+        setTrailers(trailers);
 
         const activeTrailers = trailers.filter((item) => {
           const departureDate = item.departure_date;
@@ -195,6 +210,15 @@ export function TrailerDashboard() {
 
         // Waiting collection summary
         const waitingList = (waitingData ?? []) as Array<Record<string, unknown>>;
+        const waitingRows: WaitingCollectionItem[] = waitingList.map((b) => ({
+          id: b["id"] as string,
+          delivery_date: b["delivery_date"] as string,
+          delivered_at: (b["delivered_at"] as string | null) ?? null,
+          waiting_collection_since: (b["waiting_collection_since"] as string | null) ?? null,
+          collection_due_date: (b["collection_due_date"] as string | null) ?? null,
+          trailer_number: ((b["trailers"] as Record<string, unknown> | null)?.["trailer_number"] as string | null) ?? null,
+        }));
+        setWaitingCollections(waitingRows);
         let attentionRequiredCount = 0;
         let oldestDays = 0;
         let oldestTrailer: string | null = null;
@@ -286,7 +310,9 @@ export function TrailerDashboard() {
         setStats(defaultStats);
         setEvents([]);
         setAlerts([]);
+        setTrailers([]);
         setTodayDeliveries([]);
+        setWaitingCollections([]);
         setWaitingCollectionSummary({ count: 0, attentionRequiredCount: 0, oldestTrailer: null, oldestDays: 0 });
       } finally {
         setIsLoading(false);
@@ -333,410 +359,276 @@ export function TrailerDashboard() {
       detail: "Space utilization",
       accent: "from-slate-600 to-slate-800",
     },
+    {
+      title: "Maintenance",
+      value: stats.maintenanceTrailers.toString(),
+      detail: "Needs review",
+      accent: "bg-[var(--fs-red)]",
+      icon: (
+        <svg viewBox="0 0 24 24" fill="none" className="h-4 w-4">
+          <path d="m7 17 10-10M8 8l2 2m6 6 2 2" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+        </svg>
+      ),
+    },
+    {
+      title: "Waiting Collection",
+      value: waitingCollectionSummary.count.toString(),
+      detail: "Ready for pickup",
+      accent: "bg-[var(--fs-purple)]",
+      icon: (
+        <svg viewBox="0 0 24 24" fill="none" className="h-4 w-4">
+          <circle cx="12" cy="12" r="8" stroke="currentColor" strokeWidth="1.6" />
+          <path d="M12 8v4l3 2" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+        </svg>
+      ),
+    },
   ];
 
+  const actionCards = [
+    { href: "/dashboard/new-arrival", title: "New Arrival", description: "Register incoming trailer", accentClass: "bg-[var(--fs-green)]" },
+    { href: "/dashboard/departure", title: "Departure", description: "Dispatch and release trailer", accentClass: "bg-[var(--fs-red)]" },
+    { href: "/dashboard/compound", title: "Compound", description: "View yard positions", accentClass: "bg-[var(--fs-blue)]" },
+    { href: "/dashboard/load-trailer", title: "Load Trailer", description: "Update cargo and status", accentClass: "bg-[var(--fs-orange)]" },
+    { href: "/dashboard/deliveries", title: "Deliveries", description: "Track live bookings", accentClass: "bg-[var(--fs-purple)]" },
+    { href: "/dashboard/operations-centre", title: "Operations Centre", description: "Open daily command view", accentClass: "bg-[var(--fs-blue)]" },
+    { href: "/dashboard/search", title: "Search", description: "Find trailer records quickly", accentClass: "bg-[var(--fs-panel-strong)]" },
+    { href: "/dashboard/edit-trailer", title: "Edit Trailer", description: "Correct trailer data", accentClass: "bg-[var(--fs-panel-strong)]" },
+    { href: "/dashboard/calendar", title: "Calendar", description: "Plan operations schedule", accentClass: "bg-[var(--fs-blue)]" },
+    { href: "/dashboard/company-trailers", title: "Fleet", description: "Company trailer overview", accentClass: "bg-[var(--fs-green)]" },
+  ];
+
+  const recentArrivals = trailers
+    .filter((item) => getDateKey(item.arrival_date) !== null)
+    .sort((a, b) => new Date(b.arrival_date ?? 0).getTime() - new Date(a.arrival_date ?? 0).getTime())
+    .slice(0, 8);
+
+  const recentDepartures = trailers
+    .filter((item) => getDateKey(item.departure_date) !== null)
+    .sort((a, b) => new Date(b.departure_date ?? 0).getTime() - new Date(a.departure_date ?? 0).getTime())
+    .slice(0, 8);
+
+  const occupancyDashOffset = 282.7 - ((Math.max(0, Math.min(100, stats.occupancy)) / 100) * 282.7);
+
+  const statusClass = (status?: string | null) => {
+    if (!status) return "fs-status fs-status-scheduled";
+    return `fs-status fs-status-${status.toLowerCase()}`;
+  };
+
   return (
-    <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(34,211,238,0.16),_transparent_32%),linear-gradient(135deg,_#020617_0%,_#0f172a_55%,_#111827_100%)] px-4 py-6 text-slate-100 sm:px-6 lg:px-8">
-      <div className="mx-auto flex max-w-7xl flex-col gap-6">
-        <header className="rounded-3xl border border-white/10 bg-slate-900/70 p-4 shadow-2xl shadow-black/20 backdrop-blur sm:p-6">
-          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-            <div>
-              <p className="text-sm font-semibold uppercase tracking-[0.3em] text-cyan-400">
-                Ferryspeed TrailerHub
-              </p>
-              <h1 className="mt-2 text-2xl font-semibold sm:text-3xl">
-                Operational control center
-              </h1>
-              <p className="mt-2 max-w-2xl text-sm text-slate-300 sm:text-base">
-                Monitor arrivals, departures, loading operations and trailer
-                availability in real time.
-              </p>
-            </div>
-
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-9">
-              <Link
-                href="/dashboard/new-arrival"
-                className="rounded-2xl bg-cyan-500 px-4 py-3 text-center font-semibold text-slate-950 hover:bg-cyan-400"
-              >
-                New Arrival
-              </Link>
-
-              <Link
-                href="/dashboard/load-trailer"
-                className="rounded-2xl bg-orange-500 px-4 py-3 text-center font-semibold text-slate-950 hover:bg-orange-400"
-              >
-                Load Trailer
-              </Link>
-
-              <Link
-                href="/dashboard/departure"
-                className="rounded-2xl bg-rose-500 px-4 py-3 text-center font-semibold text-white hover:bg-rose-400"
-              >
-                Departure
-              </Link>
-
-              <Link
-                href="/dashboard/search"
-                className="rounded-2xl bg-slate-800 px-4 py-3 text-center font-semibold text-white hover:bg-slate-700"
-              >
-                Search
-              </Link>
-
-              <Link
-                href="/dashboard/edit-trailer"
-                className="rounded-2xl bg-violet-500 px-4 py-3 text-center font-semibold text-white hover:bg-violet-400"
-              >
-                Edit Trailer
-              </Link>
-
-              <Link
-                href="/dashboard/compound"
-                className="rounded-2xl bg-slate-800 px-4 py-3 text-center font-semibold text-white hover:bg-slate-700"
-              >
-                Compound
-              </Link>
-
-              <Link
-                href="/dashboard/deliveries"
-                className="rounded-2xl bg-emerald-600 px-4 py-3 text-center font-semibold text-white hover:bg-emerald-500"
-              >
-                Deliveries
-              </Link>
-
-              <Link
-                href="/dashboard/operations"
-                className="rounded-2xl bg-teal-600 px-4 py-3 text-center font-semibold text-white hover:bg-teal-500"
-              >
-                Operations
-              </Link>
-
-              <Link
-                href="/dashboard/operations-centre"
-                className="rounded-2xl bg-cyan-600 px-4 py-3 text-center font-semibold text-white hover:bg-cyan-500"
-              >
-                Ops Centre
-              </Link>
-
-              <Link
-                href="/dashboard/calendar"
-                className="rounded-2xl bg-indigo-600 px-4 py-3 text-center font-semibold text-white hover:bg-indigo-500"
-              >
-                Ops Calendar
-              </Link>
-
-              <Link
-                href="/dashboard/company-trailers"
-                className="rounded-2xl bg-slate-800 px-4 py-3 text-center font-semibold text-white hover:bg-slate-700"
-              >
-                Fleet
-              </Link>
-            </div>
-          </div>
-        </header>
+    <div className="flex flex-col gap-6">
+      <DashboardSection
+        title="Dashboard"
+        subtitle="Professional overview of compound, departures, arrivals and live operational load."
+      >
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+          {actionCards.map((action) => (
+            <ActionCard
+              key={action.href}
+              href={action.href}
+              title={action.title}
+              description={action.description}
+              accentClass={action.accentClass}
+              icon={
+                <svg viewBox="0 0 24 24" fill="none" className="h-5 w-5" aria-hidden="true">
+                  <path d="M6 12h12M12 6l6 6-6 6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              }
+            />
+          ))}
+        </div>
+      </DashboardSection>
 
         {notice ? (
-          <div className="rounded-2xl border border-emerald-400/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">
+          <div className="rounded-2xl border border-[var(--fs-border)] bg-[var(--fs-panel)] px-4 py-3 text-sm text-[var(--fs-text)]">
             {notice}
           </div>
         ) : null}
 
         {error ? (
-          <div className="rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+          <div className="rounded-2xl border border-[color:var(--fs-red)]/45 bg-[color:var(--fs-red)]/12 px-4 py-3 text-sm text-rose-100">
             {error}
           </div>
         ) : null}
 
-        <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+      <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
           {statsCards.map((card) => (
-            <article
+            <KpiCard
               key={card.title}
-              className="rounded-3xl border border-white/10 bg-slate-900/70 p-5 shadow-lg shadow-black/20 backdrop-blur"
-            >
-              <div
-                className={`mb-5 h-1.5 w-24 rounded-full bg-gradient-to-r ${card.accent}`}
-              />
-              <p className="text-sm font-medium text-slate-300">{card.title}</p>
-              <p className="mt-3 text-3xl font-bold text-white">
-                {isLoading ? "..." : card.value}
-              </p>
-              <p className="mt-2 text-sm text-slate-400">{card.detail}</p>
-            </article>
+              label={card.title}
+              value={isLoading ? "..." : card.value}
+              supportingText={card.detail}
+              accentClass={card.accent}
+              icon={card.icon as React.ReactNode}
+            />
           ))}
-        </section>
+      </section>
 
-        {alerts.length > 0 ? (
-          <section className="rounded-3xl border border-white/10 bg-slate-900/70 p-5 shadow-lg shadow-black/20 backdrop-blur">
-            <div className="flex items-center justify-between gap-4">
-              <div>
-                <p className="text-sm font-semibold uppercase tracking-[0.25em] text-amber-300">
-                  Operational Alerts
-                </p>
-                <h2 className="mt-2 text-xl font-semibold text-white">
-                  Action required
-                </h2>
-              </div>
-              <span className="rounded-full border border-amber-400/30 bg-amber-500/10 px-3 py-1 text-xs font-medium text-amber-200">
-                {alerts.length} alert{alerts.length === 1 ? "" : "s"}
-              </span>
+      <div className="grid gap-6 xl:grid-cols-[1.2fr_1fr]">
+        <DashboardSection title="Compound Occupancy" subtitle="Live operational capacity with fallback-readable values.">
+          <div className="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
+            <div className="relative h-28 w-28">
+              <svg viewBox="0 0 100 100" className="h-full w-full -rotate-90" aria-hidden="true">
+                <circle cx="50" cy="50" r="45" stroke="rgba(105,190,157,0.2)" strokeWidth="8" fill="none" />
+                <circle
+                  cx="50"
+                  cy="50"
+                  r="45"
+                  stroke="var(--fs-green-light)"
+                  strokeWidth="8"
+                  fill="none"
+                  strokeDasharray="282.7"
+                  strokeDashoffset={occupancyDashOffset}
+                  strokeLinecap="round"
+                />
+              </svg>
+              <div className="absolute inset-0 flex items-center justify-center text-xl font-bold text-[var(--fs-text)]">{stats.occupancy}%</div>
             </div>
+            <div className="grid flex-1 grid-cols-2 gap-3 text-sm">
+              <div className="rounded-xl border border-[var(--fs-border)] bg-[var(--fs-panel-strong)] p-3">
+                <p className="text-[var(--fs-text-muted)]">Occupied</p>
+                <p className="mt-1 text-xl font-bold">{stats.totalTrailers}</p>
+              </div>
+              <div className="rounded-xl border border-[var(--fs-border)] bg-[var(--fs-panel-strong)] p-3">
+                <p className="text-[var(--fs-text-muted)]">Total Positions</p>
+                <p className="mt-1 text-xl font-bold">{COMPOUND_POSITIONS}</p>
+              </div>
+              <div className="rounded-xl border border-[var(--fs-border)] bg-[var(--fs-panel-strong)] p-3 col-span-2">
+                <p className="text-[var(--fs-text-muted)]">Available Positions</p>
+                <p className="mt-1 text-xl font-bold">{Math.max(0, COMPOUND_POSITIONS - stats.totalTrailers)}</p>
+              </div>
+            </div>
+          </div>
+        </DashboardSection>
 
-            <div className="mt-5 grid gap-3 md:grid-cols-2">
-              {alerts.map((alert) => (
-                <div
-                  key={alert.id}
-                  className={`rounded-2xl border p-4 ${
-                    alert.severity === "alert"
-                      ? "border-rose-500/30 bg-rose-500/10"
-                      : "border-amber-500/30 bg-amber-500/10"
-                  }`}
-                >
-                  <div className="flex items-start gap-3">
-                    <div
-                      className={`mt-0.5 h-2 w-2 rounded-full ${
-                        alert.severity === "alert" ? "bg-rose-400" : "bg-amber-400"
-                      }`}
-                    />
-                    <div className="flex-1">
-                      <p
-                        className={`text-sm font-semibold ${
-                          alert.severity === "alert"
-                            ? "text-rose-200"
-                            : "text-amber-200"
-                        }`}
-                      >
-                        {alert.title}
-                      </p>
-                      <p className="mt-1 text-sm text-slate-300">
-                        {alert.description}
-                      </p>
-                      {alert.trailerNumber ? (
-                        <p className="mt-2 text-xs text-slate-400">
-                          Trailer: <span className="font-mono font-semibold">{alert.trailerNumber}</span>
-                        </p>
-                      ) : null}
-                    </div>
+        <DashboardSection
+          title="Operational Alerts"
+          subtitle="Highlighted issues requiring immediate action."
+          action={<span className="rounded-full border border-[var(--fs-border)] px-2.5 py-1 text-xs text-[var(--fs-text-muted)]">{alerts.length} active</span>}
+        >
+          <div className="space-y-2.5">
+            {alerts.length === 0 ? (
+              <p className="rounded-xl border border-[var(--fs-border)] bg-[var(--fs-panel-strong)] p-3 text-sm text-[var(--fs-text-muted)]">No operational alerts.</p>
+            ) : (
+              alerts.map((alert) => (
+                <div key={alert.id} className={`rounded-xl border p-3 ${alert.severity === "alert" ? "border-[color:var(--fs-red)]/45 bg-[color:var(--fs-red)]/12" : "border-[color:var(--fs-orange)]/45 bg-[color:var(--fs-orange)]/12"}`}>
+                  <p className="font-semibold text-sm">{alert.title}</p>
+                  <p className="mt-1 text-sm text-[var(--fs-text-muted)]">{alert.description}</p>
+                  {alert.trailerNumber ? <p className="mt-1 text-xs text-[var(--fs-text-muted)]">Trailer: {alert.trailerNumber}</p> : null}
+                </div>
+              ))
+            )}
+          </div>
+        </DashboardSection>
+      </div>
+
+      <div className="grid gap-6 xl:grid-cols-2">
+        <DashboardSection
+          title="Recent Arrivals"
+          subtitle="Latest trailer check-ins"
+          action={<Link href="/dashboard/new-arrival" className="text-sm text-[var(--fs-green-light)] hover:underline">View all</Link>}
+        >
+          <div className="space-y-2">
+            {recentArrivals.length === 0 ? <p className="text-sm text-[var(--fs-text-muted)]">No recent arrivals.</p> : recentArrivals.map((row) => (
+              <div key={row.id} className="rounded-xl border border-[var(--fs-border)] bg-[var(--fs-panel-strong)] p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="font-semibold">{row.trailer_number ?? "--"}</p>
+                  <span className={statusClass(row.load_status)}>{row.load_status ?? "unknown"}</span>
+                </div>
+                <p className="mt-1 text-sm text-[var(--fs-text-muted)]">{row.arrival_date ? new Date(row.arrival_date).toLocaleDateString("en-GB") : "No date"}</p>
+              </div>
+            ))}
+          </div>
+        </DashboardSection>
+
+        <DashboardSection
+          title="Recent Departures"
+          subtitle="Latest trailer releases"
+          action={<Link href="/dashboard/departure" className="text-sm text-[var(--fs-green-light)] hover:underline">View all</Link>}
+        >
+          <div className="space-y-2">
+            {recentDepartures.length === 0 ? <p className="text-sm text-[var(--fs-text-muted)]">No recent departures.</p> : recentDepartures.map((row) => (
+              <div key={row.id} className="rounded-xl border border-[var(--fs-border)] bg-[var(--fs-panel-strong)] p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="font-semibold">{row.trailer_number ?? "--"}</p>
+                  <p className="text-xs text-[var(--fs-text-muted)]">{row.departure_date ? new Date(row.departure_date).toLocaleDateString("en-GB") : "No date"}</p>
+                </div>
+                <p className="mt-1 text-sm text-[var(--fs-text-muted)]">{row.customer ?? "No customer"}</p>
+              </div>
+            ))}
+          </div>
+        </DashboardSection>
+      </div>
+
+      <div className="grid gap-6 xl:grid-cols-2">
+        <DashboardSection title="Waiting Collection" subtitle="Collection aging and pending pickups" action={<Link href="/dashboard/deliveries?filter=waiting_collection" className="text-sm text-[var(--fs-green-light)] hover:underline">View all</Link>}>
+          <div className="grid gap-3 sm:grid-cols-3">
+            <div className="rounded-xl border border-[var(--fs-border)] bg-[var(--fs-panel-strong)] p-3"><p className="text-xs text-[var(--fs-text-muted)]">Total Waiting</p><p className="mt-1 text-2xl font-bold">{waitingCollectionSummary.count}</p></div>
+            <div className="rounded-xl border border-[var(--fs-border)] bg-[var(--fs-panel-strong)] p-3"><p className="text-xs text-[var(--fs-text-muted)]">Oldest Waiting</p><p className="mt-1 text-2xl font-bold">{waitingCollectionSummary.oldestDays}d</p></div>
+            <div className="rounded-xl border border-[var(--fs-border)] bg-[var(--fs-panel-strong)] p-3"><p className="text-xs text-[var(--fs-text-muted)]">Attention Required</p><p className="mt-1 text-2xl font-bold text-[color:var(--fs-red)]">{waitingCollectionSummary.attentionRequiredCount}</p></div>
+          </div>
+          <div className="mt-3 space-y-2">
+            {waitingCollections.slice(0, 5).map((item) => {
+              const aging = calculateCollectionAging({
+                delivery_date: item.delivery_date,
+                delivered_at: item.delivered_at,
+                waiting_collection_since: item.waiting_collection_since,
+                collection_due_date: item.collection_due_date,
+              });
+              return (
+                <div key={item.id} className="rounded-xl border border-[var(--fs-border)] bg-[var(--fs-panel-strong)] p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="font-semibold">{item.trailer_number ?? "--"}</p>
+                    <span className={`fs-status ${aging.agingLevel === "red" ? "fs-status-maintenance" : aging.agingLevel === "amber" ? "fs-status-loaded" : "fs-status-ready"}`}>{aging.agingLabel}</span>
                   </div>
                 </div>
-              ))}
-            </div>
-          </section>
-        ) : null}
-
-        <section className="grid gap-6 lg:grid-cols-[1.5fr_1fr]">
-          <article className="rounded-3xl border border-white/10 bg-slate-900/70 p-5 shadow-lg shadow-black/20 backdrop-blur">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm font-semibold uppercase tracking-[0.25em] text-cyan-300">
-                  Compound Overview
-                </p>
-                <h2 className="mt-2 text-xl font-semibold text-white">
-                  Live trailer allocation
-                </h2>
-              </div>
-              <span className="rounded-full border border-emerald-400/30 bg-emerald-500/10 px-3 py-1 text-xs font-medium text-emerald-200">
-                Stable
-              </span>
-            </div>
-
-            <div className="mt-6">
-              <div className="mb-2 flex justify-between text-sm text-slate-300">
-                <span>Occupancy</span>
-                <span>{stats.occupancy}%</span>
-              </div>
-              <div className="h-4 overflow-hidden rounded-full bg-slate-800">
-                <div
-                  className="h-full rounded-full bg-cyan-400"
-                  style={{ width: `${stats.occupancy}%` }}
-                />
-              </div>
-            </div>
-          </article>
-
-          <article className="rounded-3xl border border-white/10 bg-slate-900/70 p-5 shadow-lg shadow-black/20 backdrop-blur">
-            <p className="text-sm font-semibold uppercase tracking-[0.25em] text-cyan-300">
-              Today Focus
-            </p>
-            <h2 className="mt-2 text-xl font-semibold text-white">
-              Priority operations
-            </h2>
-
-            <div className="mt-5 space-y-3">
-              <div className="rounded-2xl bg-slate-950/80 p-4">
-                <p className="font-medium text-white">New arrivals</p>
-                <p className="text-sm text-slate-400">
-                  {stats.arrivalsToday} trailers arrived today.
-                </p>
-              </div>
-
-              <div className="rounded-2xl bg-slate-950/80 p-4">
-                <p className="font-medium text-white">Departures</p>
-                <p className="text-sm text-slate-400">
-                  {stats.departuresToday} trailers departed today.
-                </p>
-              </div>
-
-              <div className="rounded-2xl bg-slate-950/80 p-4">
-                <p className="font-medium text-white">Load operations</p>
-                <p className="text-sm text-slate-400">
-                  {stats.emptyTrailers} empty trailers available for loading.
-                </p>
-              </div>
-            </div>
-          </article>
-        </section>
-
-        <section className="rounded-3xl border border-white/10 bg-slate-900/70 p-5 shadow-lg shadow-black/20 backdrop-blur">
-          <div className="flex items-center justify-between gap-4">
-            <div>
-              <p className="text-sm font-semibold uppercase tracking-[0.25em] text-cyan-300">
-                Recent Activity
-              </p>
-              <h2 className="mt-2 text-xl font-semibold text-white">
-                Latest trailer events
-              </h2>
-            </div>
-            <span className="rounded-full border border-slate-500/20 bg-slate-950/60 px-3 py-1 text-xs font-medium text-slate-300">
-              Latest 10
-            </span>
+              );
+            })}
           </div>
+        </DashboardSection>
 
-          <div className="mt-5 space-y-3">
+        <DashboardSection title="Latest Activity" subtitle="Real events from trailer operations">
+          <div className="space-y-2.5">
             {events.length === 0 ? (
-              <div className="rounded-2xl bg-slate-950/80 p-4 text-sm text-slate-400">
-                No recent activity available.
-              </div>
+              <p className="text-sm text-[var(--fs-text-muted)]">No recent activity available.</p>
             ) : (
               events.map((event) => (
-                <div
-                  key={event.id}
-                  className="rounded-3xl border border-white/10 bg-slate-950/80 p-4"
-                >
-                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                    <div>
-                      <p className="text-sm font-semibold text-white">{event.trailer_number}</p>
-                      <p className="mt-1 text-sm text-slate-400">{event.event_type}</p>
-                    </div>
-                    <p className="text-xs uppercase tracking-[0.3em] text-slate-500">
-                      {event.created_at ? new Date(event.created_at).toLocaleString("en-GB", {
-                        day: "2-digit",
-                        month: "short",
-                        year: "numeric",
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      }) : "Unknown"}
-                    </p>
+                <div key={event.id} className="rounded-xl border border-[var(--fs-border)] bg-[var(--fs-panel-strong)] p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="font-semibold">{event.trailer_number}</p>
+                    <p className="text-xs text-[var(--fs-text-muted)]">{event.created_at ? new Date(event.created_at).toLocaleString("en-GB") : "Unknown"}</p>
                   </div>
-                  <p className="mt-3 text-sm text-slate-300">{event.event_description ?? "No description"}</p>
+                  <p className="mt-1 text-sm text-[var(--fs-text-muted)]">{event.event_type}</p>
+                  <p className="mt-1 text-sm">{event.event_description ?? "No description"}</p>
                 </div>
               ))
             )}
           </div>
-        </section>
-
-        <section className="rounded-3xl border border-white/10 bg-slate-900/70 p-5 shadow-lg shadow-black/20 backdrop-blur">
-          <div className="flex items-center justify-between gap-4">
-            <div>
-              <p className="text-sm font-semibold uppercase tracking-[0.25em] text-emerald-300">
-                Today Schedule
-              </p>
-              <h2 className="mt-2 text-xl font-semibold text-white">
-                Planned deliveries
-              </h2>
-            </div>
-            <span className="rounded-full border border-slate-500/20 bg-slate-950/60 px-3 py-1 text-xs font-medium text-slate-300">
-              {todayDeliveries.length} booking{todayDeliveries.length === 1 ? "" : "s"}
-            </span>
-          </div>
-
-          <div className="mt-5 space-y-3">
-            {todayDeliveries.length === 0 ? (
-              <div className="rounded-2xl bg-slate-950/80 p-4 text-sm text-slate-400">
-                No deliveries scheduled for today.
-              </div>
-            ) : (
-              todayDeliveries.map((booking) => (
-                <Link
-                  key={booking.id}
-                  href={`/dashboard/deliveries/${booking.id}`}
-                  className="block rounded-3xl border border-white/10 bg-slate-950/80 p-4 hover:bg-slate-900/50"
-                >
-                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                    <div className="flex-1">
-                      <p className="text-sm font-semibold text-white">
-                        {booking.delivery_time ? booking.delivery_time.substring(0, 5) : "—"} · {booking.trailer_number}
-                      </p>
-                      <p className="mt-1 text-sm text-slate-400">
-                        {booking.customer || booking.consignee || booking.delivery_location || "—"}
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <span className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${
-                        booking.status === "delivered"
-                          ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200"
-                          : booking.status === "on_delivery"
-                            ? "border-cyan-500/30 bg-cyan-500/10 text-cyan-200"
-                            : booking.status === "waiting_collection"
-                              ? "border-amber-500/30 bg-amber-500/10 text-amber-200"
-                              : "border-slate-500/30 bg-slate-500/10 text-slate-300"
-                      }`}>
-                        {booking.status.replace(/_/g, " ")}
-                      </span>
-                    </div>
-                  </div>
-                </Link>
-              ))
-            )}
-
-            {todayDeliveries.length > 0 ? (
-              <Link
-                href="/dashboard/deliveries"
-                className="mt-4 block text-center text-sm font-semibold text-cyan-300 hover:text-cyan-200"
-              >
-                View all deliveries →
-              </Link>
-            ) : null}
-          </div>
-        </section>
-
-        {/* Waiting Collection summary */}
-        {waitingCollectionSummary.count > 0 ? (
-          <section className="rounded-3xl border border-purple-500/20 bg-purple-500/5 p-5 shadow-lg shadow-black/20 backdrop-blur">
-            <div className="flex items-center justify-between gap-4">
-              <div>
-                <p className="text-sm font-semibold uppercase tracking-[0.25em] text-purple-400">
-                  Waiting Collections
-                </p>
-                <h2 className="mt-2 text-xl font-semibold text-white">Operational Summary</h2>
-              </div>
-            </div>
-
-            <div className="mt-4 grid gap-3 sm:grid-cols-3">
-              <div className="rounded-2xl border border-purple-500/30 bg-purple-500/10 p-3">
-                <p className="text-[10px] uppercase tracking-[0.25em] text-purple-200">Waiting Collections</p>
-                <p className="mt-1 text-xl font-bold text-white">{waitingCollectionSummary.count}</p>
-              </div>
-              <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 p-3">
-                <p className="text-[10px] uppercase tracking-[0.25em] text-amber-200">Oldest Waiting</p>
-                <p className="mt-1 text-xl font-bold text-white">{waitingCollectionSummary.oldestDays}d</p>
-                {waitingCollectionSummary.oldestTrailer ? (
-                  <p className="mt-1 text-xs text-slate-300">{waitingCollectionSummary.oldestTrailer}</p>
-                ) : null}
-              </div>
-              <div className="rounded-2xl border border-rose-500/30 bg-rose-500/10 p-3">
-                <p className="text-[10px] uppercase tracking-[0.25em] text-rose-200">Attention Required</p>
-                <p className="mt-1 text-xl font-bold text-white">{waitingCollectionSummary.attentionRequiredCount}</p>
-              </div>
-            </div>
-
-            <Link
-              href="/dashboard/deliveries"
-              className="mt-4 block text-center text-sm font-semibold text-purple-300 hover:text-purple-200"
-            >
-              View Waiting Collections →
-            </Link>
-          </section>
-        ) : null}
+        </DashboardSection>
       </div>
-    </main>
+
+      <DashboardSection
+        title="Planned Deliveries"
+        subtitle="Today bookings and live status"
+        action={<Link href="/dashboard/deliveries" className="text-sm text-[var(--fs-green-light)] hover:underline">View all</Link>}
+      >
+        <div className="space-y-2">
+          {todayDeliveries.length === 0 ? (
+            <p className="text-sm text-[var(--fs-text-muted)]">No deliveries scheduled for today.</p>
+          ) : (
+            todayDeliveries.map((booking) => (
+              <Link key={booking.id} href={`/dashboard/deliveries/${booking.id}`} className="block rounded-xl border border-[var(--fs-border)] bg-[var(--fs-panel-strong)] p-3 hover:bg-[color:var(--fs-green)]/14 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fs-green-light)]">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <p className="font-semibold">{booking.delivery_time ? booking.delivery_time.substring(0, 5) : "--:--"} - {booking.trailer_number ?? "--"}</p>
+                    <p className="text-sm text-[var(--fs-text-muted)]">{booking.customer || booking.consignee || booking.delivery_location || "No customer"}</p>
+                  </div>
+                  <span className={statusClass(booking.status)}>{booking.status.replace(/_/g, " ")}</span>
+                </div>
+              </Link>
+            ))
+          )}
+        </div>
+      </DashboardSection>
+    </div>
   );
 }
