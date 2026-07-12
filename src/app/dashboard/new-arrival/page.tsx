@@ -115,6 +115,7 @@ export default function NewArrivalPage() {
     },
   });
 
+  // eslint-disable-next-line react-hooks/incompatible-library
   const trailerNumberValue = watch("trailerNumber") ?? "";
 
   useEffect(() => {
