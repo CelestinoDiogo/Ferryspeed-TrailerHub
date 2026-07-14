@@ -12,6 +12,7 @@ import {
 } from "@/lib/operational-readiness";
 import { calculateCollectionAging } from "@/lib/collection-aging";
 import { buildPriorityQueue, type OpsBooking, type OpsTrailer } from "@/lib/operations-centre-utils";
+import { isExportAllocationOverdue, normalizeExportAllocationRecord, type ExportAllocationRecord } from "@/lib/export-allocation";
 
 type DeliveryRow = OpsBooking;
 
@@ -56,6 +57,7 @@ const sortTodayDeliveries = (a: DeliveryRow, b: DeliveryRow) => {
 export default function OperationsCentrePage() {
   const [bookings, setBookings] = useState<DeliveryRow[]>([]);
   const [trailers, setTrailers] = useState<OpsTrailer[]>([]);
+  const [exportAllocations, setExportAllocations] = useState<ExportAllocationRecord[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -67,7 +69,7 @@ export default function OperationsCentrePage() {
       setError(null);
 
       try {
-        const [{ data: bookingsData, error: bookingsError }, { data: trailersData, error: trailersError }] = await Promise.all([
+        const [{ data: bookingsData, error: bookingsError }, { data: trailersData, error: trailersError }, { data: exportAllocationsData, error: exportAllocationsError }] = await Promise.all([
           supabase
             .from("delivery_bookings")
             .select(
@@ -81,10 +83,14 @@ export default function OperationsCentrePage() {
           supabase
             .from("trailers")
             .select("id, trailer_number, load_status, customer, consignee, compound_position, arrival_date, departure_date"),
+          supabase
+            .from("export_allocations")
+            .select("id, trailer_id, trailer_number, customer, collection_date, expected_return_at, priority, status, allocated_at, delivered_empty_at, waiting_loading_at, collected_loaded_at, completed_at, cancelled_at, collected_by_haulier_at, loading_started_at, loaded_at, returned_at, shipped_at, created_at, updated_at"),
         ]);
 
         if (bookingsError) throw bookingsError;
         if (trailersError) throw trailersError;
+        if (exportAllocationsError) throw exportAllocationsError;
 
         const bookingRows = ((bookingsData ?? []) as Array<Record<string, unknown>>).map((row) => {
           const joinedTrailer = row["trailers"] as Record<string, unknown> | null;
@@ -112,6 +118,7 @@ export default function OperationsCentrePage() {
 
         setBookings(bookingRows);
         setTrailers((trailersData ?? []) as OpsTrailer[]);
+        setExportAllocations(((exportAllocationsData ?? []) as ExportAllocationRecord[]).map((row) => normalizeExportAllocationRecord(row)));
       } catch (e) {
         setError(e instanceof Error ? e.message : "Unable to load operations centre data.");
       } finally {
@@ -219,6 +226,22 @@ export default function OperationsCentrePage() {
     () => todayDeliveries.filter((b) => b.status !== "collected" && b.status !== "cancelled"),
     [todayDeliveries]
   );
+
+  const exportOpsSummary = useMemo(() => {
+    const allocated = exportAllocations.filter((item) => item.status === "allocated").length;
+    const deliveredEmpty = exportAllocations.filter((item) => item.status === "delivered_empty").length;
+    const waitingLoading = exportAllocations.filter((item) => item.status === "waiting_loading").length;
+    const collectedLoaded = exportAllocations.filter((item) => item.status === "collected_loaded").length;
+    const overdue = exportAllocations.filter((item) => isExportAllocationOverdue(item)).length;
+
+    return {
+      allocated,
+      deliveredEmpty,
+      waitingLoading,
+      collectedLoaded,
+      overdue,
+    };
+  }, [exportAllocations]);
 
   return (
     <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 text-slate-100">
@@ -370,6 +393,39 @@ export default function OperationsCentrePage() {
               <article className="rounded-2xl border border-white/10 bg-slate-900/70 p-4"><p className="text-xs uppercase tracking-[0.25em] text-slate-500">Waiting Collections</p><p className="mt-2 text-2xl font-bold text-purple-300">{yardStatus.waitingCollections}</p></article>
               <article className="rounded-2xl border border-white/10 bg-slate-900/70 p-4"><p className="text-xs uppercase tracking-[0.25em] text-slate-500">Need Preparation</p><p className="mt-2 text-2xl font-bold text-amber-300">{yardStatus.needPreparation}</p></article>
               <article className="rounded-2xl border border-white/10 bg-slate-900/70 p-4"><p className="text-xs uppercase tracking-[0.25em] text-slate-500">Attention Required</p><p className="mt-2 text-2xl font-bold text-rose-300">{yardStatus.attentionRequired}</p></article>
+            </section>
+
+            <section className="rounded-3xl border border-white/10 bg-slate-900/70 p-5 shadow-lg shadow-black/20 backdrop-blur">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="text-sm font-semibold uppercase tracking-[0.3em] text-orange-300">Export Operations</p>
+                  <h2 className="mt-1 text-lg font-semibold text-white">Allocation status overview</h2>
+                </div>
+                <Link href="/dashboard/export-operations" className="text-sm font-semibold text-cyan-200 underline hover:text-cyan-100">Open Export Operations</Link>
+              </div>
+
+              <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+                <Link href="/dashboard/export-operations?filter=allocated" className="rounded-2xl border border-white/10 bg-slate-950/70 p-4 hover:bg-slate-900">
+                  <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Allocated</p>
+                  <p className="mt-2 text-2xl font-bold text-white">{exportOpsSummary.allocated}</p>
+                </Link>
+                <Link href="/dashboard/export-operations?filter=delivered_empty" className="rounded-2xl border border-white/10 bg-slate-950/70 p-4 hover:bg-slate-900">
+                  <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Delivered Empty</p>
+                  <p className="mt-2 text-2xl font-bold text-indigo-300">{exportOpsSummary.deliveredEmpty}</p>
+                </Link>
+                <Link href="/dashboard/export-operations?filter=waiting_loading" className="rounded-2xl border border-white/10 bg-slate-950/70 p-4 hover:bg-slate-900">
+                  <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Waiting Loading</p>
+                  <p className="mt-2 text-2xl font-bold text-amber-300">{exportOpsSummary.waitingLoading}</p>
+                </Link>
+                <Link href="/dashboard/export-operations?filter=collected_loaded" className="rounded-2xl border border-white/10 bg-slate-950/70 p-4 hover:bg-slate-900">
+                  <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Collected Loaded</p>
+                  <p className="mt-2 text-2xl font-bold text-orange-300">{exportOpsSummary.collectedLoaded}</p>
+                </Link>
+                <Link href="/dashboard/export-operations?filter=overdue" className="rounded-2xl border border-white/10 bg-slate-950/70 p-4 hover:bg-slate-900">
+                  <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Overdue</p>
+                  <p className="mt-2 text-2xl font-bold text-rose-300">{exportOpsSummary.overdue}</p>
+                </Link>
+              </div>
             </section>
           </>
         )}

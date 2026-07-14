@@ -3,13 +3,29 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
+import type { Database, Json } from "@/lib/database.types";
 import { supabase } from "@/lib/supabase";
+import {
+  buildTrailerRestorePatch,
+  canReverseTrailerEvent,
+} from "@/lib/trailer-movement-undo";
+import {
+  EXPORT_ACTIVE_STATUS_QUERY_VALUES,
+  normalizeExportAllocationStatus,
+  getExportAllocationStatusLabel,
+  getExportAllocationStatusClasses,
+  type ExportAllocationRecord,
+} from "@/lib/export-allocation";
 
 type Trailer = {
   id: string;
   trailer_number?: string | null;
   trailer_type?: string | null;
   compound_position?: string | null;
+  trailer_source?: string | null;
+  external_company?: string | null;
+  external_reference?: string | null;
+  is_local?: boolean | null;
   load_status?: string | null;
   operational_status?: string | null;
   customer?: string | null;
@@ -19,8 +35,6 @@ type Trailer = {
   notes?: string | null;
   arrival_date?: string | null;
   departure_date?: string | null;
-  delivered_at?: string | null;
-  returned_empty_at?: string | null;
 };
 
 type TrailerEvent = {
@@ -32,7 +46,6 @@ type TrailerEvent = {
   old_value?: unknown;
   new_value?: unknown;
   created_at?: string | null;
-  created_by?: string | null;
 };
 
 type TrailerForm = Pick<
@@ -47,6 +60,11 @@ type TrailerForm = Pick<
   | "container_number"
   | "load_description"
   | "notes"
+>;
+
+type ActiveExportAllocation = Pick<
+  ExportAllocationRecord,
+  "id" | "status" | "customer" | "collection_date" | "haulier" | "booking_reference"
 >;
 
 const formatDate = (value?: string | null) => {
@@ -171,6 +189,37 @@ const actions = [
 
 const trailerTypes = ["Dry Van", "Reefer", "Flatbed", "Tank", "Container"];
 
+const normalizeCompoundPosition = (value?: string | null) => {
+  const trimmed = value?.trim().toUpperCase();
+  if (!trimmed) {
+    return null;
+  }
+
+  const match = trimmed.match(/^(P|A)?0*(\d{1,2})$/);
+  if (!match) {
+    return null;
+  }
+
+  const numericValue = Number(match[2]);
+  if (numericValue < 1 || numericValue > 50) {
+    return null;
+  }
+
+  return `P${numericValue.toString().padStart(2, "0")}`;
+};
+
+const isActiveFromValue = (value: unknown) => {
+  if (value === null || value === undefined) {
+    return true;
+  }
+
+  if (typeof value === "string") {
+    return value.trim() === "";
+  }
+
+  return false;
+};
+
 export default function TrailerDetailsPage() {
   const params = useParams();
   const rawTrailerNumber = params?.id && typeof params.id === "string" ? decodeURIComponent(params.id) : undefined;
@@ -178,6 +227,7 @@ export default function TrailerDetailsPage() {
   const identifierError = trailerNumber ? null : "Unable to identify trailer from the URL.";
   const [trailer, setTrailer] = useState<Trailer | null>(null);
   const [events, setEvents] = useState<TrailerEvent[]>([]);
+  const [activeExportAllocation, setActiveExportAllocation] = useState<ActiveExportAllocation | null>(null);
   const [formState, setFormState] = useState<TrailerForm>({
     trailer_number: null,
     trailer_type: null,
@@ -193,6 +243,8 @@ export default function TrailerDetailsPage() {
   const [originalForm, setOriginalForm] = useState<TrailerForm | null>(null);
   const [isLoading, setIsLoading] = useState(Boolean(trailerNumber));
   const [isSaving, setIsSaving] = useState(false);
+  const [isReversing, setIsReversing] = useState(false);
+  const [showUndoConfirm, setShowUndoConfirm] = useState(false);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(identifierError);
 
@@ -215,7 +267,7 @@ export default function TrailerDetailsPage() {
           const { data, error: trailerError } = await supabase
             .from("trailers")
             .select(
-              "id, trailer_number, trailer_type, compound_position, load_status, operational_status, customer, consignee, container_number, load_description, notes, arrival_date, departure_date, delivered_at, returned_empty_at"
+              "id, trailer_number, trailer_type, compound_position, trailer_source, external_company, external_reference, is_local, load_status, operational_status, customer, consignee, container_number, load_description, notes, arrival_date, departure_date"
             )
             .eq("id", trailerNumber)
             .maybeSingle();
@@ -233,7 +285,7 @@ export default function TrailerDetailsPage() {
           const { data: exactData, error: exactError } = await supabase
             .from("trailers")
             .select(
-              "id, trailer_number, trailer_type, compound_position, load_status, operational_status, customer, consignee, container_number, load_description, notes, arrival_date, departure_date, delivered_at, returned_empty_at"
+              "id, trailer_number, trailer_type, compound_position, trailer_source, external_company, external_reference, is_local, load_status, operational_status, customer, consignee, container_number, load_description, notes, arrival_date, departure_date"
             )
             .ilike("trailer_number", exactSearch)
             .order("departure_date", { ascending: true, nullsFirst: true })
@@ -250,7 +302,7 @@ export default function TrailerDetailsPage() {
             const { data: wildcardData, error: wildcardError } = await supabase
               .from("trailers")
               .select(
-                "id, trailer_number, trailer_type, compound_position, load_status, operational_status, customer, consignee, container_number, load_description, notes, arrival_date, departure_date, delivered_at, returned_empty_at"
+                "id, trailer_number, trailer_type, compound_position, trailer_source, external_company, external_reference, is_local, load_status, operational_status, customer, consignee, container_number, load_description, notes, arrival_date, departure_date"
               )
               .ilike("trailer_number", wildcardSearch)
               .order("departure_date", { ascending: true, nullsFirst: true })
@@ -268,22 +320,44 @@ export default function TrailerDetailsPage() {
         if (!trailerRecord) {
           setTrailer(null);
           setEvents([]);
+          setActiveExportAllocation(null);
           setError("Trailer not found.");
           return;
         }
 
         const { data: eventData, error: eventError } = await supabase
           .from("trailer_events")
-          .select("id, trailer_id, trailer_number, event_type, event_description, old_value, new_value, created_at, created_by")
+          .select("id, trailer_id, trailer_number, event_type, event_description, old_value, new_value, created_at")
           .eq("trailer_id", trailerRecord.id)
           .order("created_at", { ascending: false });
+
+        const { data: exportData, error: exportError } = await supabase
+          .from("export_allocations")
+          .select("id, status, customer, collection_date, haulier, booking_reference")
+          .eq("trailer_id", trailerRecord.id)
+          .in("status", [...EXPORT_ACTIVE_STATUS_QUERY_VALUES])
+          .order("updated_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
 
         if (eventError) {
           throw new Error(getSupabaseErrorMessage(eventError) || "Unable to load trailer history.");
         }
 
+        if (exportError) {
+          throw new Error(getSupabaseErrorMessage(exportError) || "Unable to load active export allocation.");
+        }
+
         setTrailer(trailerRecord);
         setEvents((eventData ?? []) as TrailerEvent[]);
+        setActiveExportAllocation(
+          exportData
+            ? {
+                ...(exportData as ActiveExportAllocation),
+                status: normalizeExportAllocationStatus((exportData as { status?: string | null }).status),
+              }
+            : null,
+        );
         const initialForm: TrailerForm = {
           trailer_number: trailerRecord.trailer_number ?? null,
           trailer_type: trailerRecord.trailer_type ?? null,
@@ -302,6 +376,7 @@ export default function TrailerDetailsPage() {
         const message = err instanceof Error ? err.message : "Unable to load trailer details.";
         setTrailer(null);
         setEvents([]);
+        setActiveExportAllocation(null);
         setError(message);
       } finally {
         setIsLoading(false);
@@ -321,11 +396,184 @@ export default function TrailerDetailsPage() {
     [trailer?.operational_status]
   );
 
+  const lastReversibleEvent = useMemo(() => {
+    return events.find((event) => canReverseTrailerEvent(event).allowed) ?? null;
+  }, [events]);
+
+  const lastReversiblePatch = useMemo(() => {
+    if (!lastReversibleEvent) {
+      return null;
+    }
+
+    return buildTrailerRestorePatch(lastReversibleEvent.old_value);
+  }, [lastReversibleEvent]);
+
+  const undoPreviewEntries = useMemo(() => {
+    if (!lastReversiblePatch) {
+      return [];
+    }
+
+    return Object.entries(lastReversiblePatch);
+  }, [lastReversiblePatch]);
+
+  const findAvailableCompoundPosition = async (excludeTrailerId: string) => {
+    const { data, error: activeTrailersError } = await supabase
+      .from("trailers")
+      .select("id, compound_position")
+      .is("departure_date", null)
+      .neq("is_local", true)
+      .neq("id", excludeTrailerId);
+
+    if (activeTrailersError) {
+      throw new Error(getSupabaseErrorMessage(activeTrailersError) || "Unable to validate compound positions.");
+    }
+
+    const occupied = new Set<string>();
+    (data ?? []).forEach((item) => {
+      const normalized = normalizeCompoundPosition((item as Record<string, unknown>)["compound_position"] as string | null | undefined);
+      if (normalized) {
+        occupied.add(normalized);
+      }
+    });
+
+    const firstAvailable = Array.from({ length: 50 }, (_, index) => `P${String(index + 1).padStart(2, "0")}`).find(
+      (position) => !occupied.has(position),
+    );
+
+    return { occupied, firstAvailable };
+  };
+
+  const handleUndoLastMovement = async () => {
+    if (!trailer || !lastReversibleEvent) {
+      return;
+    }
+
+    setIsReversing(true);
+    setError(null);
+    setSuccessMessage(null);
+
+    try {
+      const { data: latestEvent, error: latestEventError } = await supabase
+        .from("trailer_events")
+        .select("id, trailer_id, trailer_number, event_type, event_description, old_value, new_value, created_at")
+        .eq("id", lastReversibleEvent.id)
+        .single();
+
+      if (latestEventError || !latestEvent) {
+        throw new Error(latestEventError?.message || "Unable to load latest event before undo.");
+      }
+
+      const eventValidation = canReverseTrailerEvent(latestEvent as TrailerEvent);
+      if (!eventValidation.allowed) {
+        throw new Error(eventValidation.reason || "This movement cannot be undone.");
+      }
+
+      const { data: currentTrailer, error: currentTrailerError } = await supabase
+        .from("trailers")
+        .select("id, trailer_number, trailer_type, load_status, load_description, customer, consignee, container_number, compound_position, arrival_date, departure_date, departure_time, trailer_source, external_company, external_reference, is_local, operational_status, notes")
+        .eq("id", trailer.id)
+        .single();
+
+      if (currentTrailerError || !currentTrailer) {
+        throw new Error(currentTrailerError?.message || "Unable to load current trailer before undo.");
+      }
+
+      const restorePatch = buildTrailerRestorePatch((latestEvent as TrailerEvent).old_value);
+      if (Object.keys(restorePatch).length === 0) {
+        throw new Error("Unable to undo because old_value has no reversible trailer fields.");
+      }
+
+      const currentSnapshot: Record<string, unknown> = {};
+      Object.keys(restorePatch).forEach((field) => {
+        currentSnapshot[field] = (currentTrailer as Record<string, unknown>)[field];
+      });
+
+      const effectivePatch: Database["public"]["Tables"]["trailers"]["Update"] = {
+        ...(restorePatch as Partial<Database["public"]["Tables"]["trailers"]["Update"]>),
+      };
+      let reassignedCompoundPosition = false;
+
+      const restoredLocalValue =
+        Object.prototype.hasOwnProperty.call(effectivePatch, "is_local")
+          ? effectivePatch["is_local"] === true
+          : (currentTrailer as Record<string, unknown>)["is_local"] === true;
+      const restoredDepartureValue =
+        Object.prototype.hasOwnProperty.call(effectivePatch, "departure_date")
+          ? effectivePatch["departure_date"]
+          : (currentTrailer as Record<string, unknown>)["departure_date"];
+      const willBeActive = isActiveFromValue(restoredDepartureValue);
+
+      if (restoredLocalValue) {
+        effectivePatch["compound_position"] = null;
+      } else if (willBeActive) {
+        const { occupied, firstAvailable } = await findAvailableCompoundPosition(trailer.id);
+        const desiredPositionRaw = Object.prototype.hasOwnProperty.call(effectivePatch, "compound_position")
+          ? (effectivePatch["compound_position"] as string | null | undefined)
+          : ((currentTrailer as Record<string, unknown>)["compound_position"] as string | null | undefined);
+        const desiredPosition = normalizeCompoundPosition(desiredPositionRaw);
+
+        if (desiredPosition && !occupied.has(desiredPosition)) {
+          effectivePatch["compound_position"] = desiredPosition;
+        } else {
+          if (!firstAvailable) {
+            throw new Error("Unable to undo departure because no compound position is available.");
+          }
+
+          effectivePatch["compound_position"] = firstAvailable;
+          reassignedCompoundPosition = Boolean(desiredPosition);
+        }
+      }
+
+      const { error: restoreError } = await supabase
+        .from("trailers")
+        .update(effectivePatch)
+        .eq("id", trailer.id);
+
+      if (restoreError) {
+        throw new Error(getSupabaseErrorMessage(restoreError) || "Unable to restore trailer state.");
+      }
+
+      const { error: reversalEventError } = await supabase
+        .from("trailer_events")
+        .insert({
+          trailer_id: latestEvent.trailer_id,
+          trailer_number: latestEvent.trailer_number,
+          event_type: "movement_reversed",
+          event_description: `Movement reversed: ${latestEvent.event_description ?? latestEvent.event_type}`,
+          old_value: currentSnapshot as Json,
+          new_value: effectivePatch as unknown as Json,
+        })
+        .select("id")
+        .single();
+
+      if (reversalEventError) {
+        throw new Error(getSupabaseErrorMessage(reversalEventError) || "Unable to create reversal event.");
+      }
+
+      const refreshedTrailer = await refreshTrailerData(trailer.id);
+      if (refreshedTrailer) {
+        setTrailer(refreshedTrailer);
+      }
+
+      await refreshEvents(trailer.id);
+      setShowUndoConfirm(false);
+      setSuccessMessage(
+        reassignedCompoundPosition
+          ? "Movement reversed successfully. The previous position was occupied, so a new compound position was assigned."
+          : "Last movement reversed successfully."
+      );
+    } catch (undoError) {
+      setError(undoError instanceof Error ? undoError.message : "Unable to reverse the last movement.");
+    } finally {
+      setIsReversing(false);
+    }
+  };
+
   const refreshTrailerData = async (id: string) => {
     const { data, error } = await supabase
       .from("trailers")
       .select(
-        "id, trailer_number, trailer_type, compound_position, load_status, operational_status, customer, consignee, container_number, load_description, notes, arrival_date, departure_date, delivered_at, returned_empty_at"
+        "id, trailer_number, trailer_type, compound_position, trailer_source, external_company, external_reference, is_local, load_status, operational_status, customer, consignee, container_number, load_description, notes, arrival_date, departure_date"
       )
       .eq("id", id)
       .single();
@@ -341,7 +589,7 @@ export default function TrailerDetailsPage() {
   const refreshEvents = async (trailerId: string) => {
     const { data: refreshedEvents, error: refreshedEventsError } = await supabase
       .from("trailer_events")
-      .select("id, trailer_id, trailer_number, event_type, event_description, old_value, new_value, created_at, created_by")
+      .select("id, trailer_id, trailer_number, event_type, event_description, old_value, new_value, created_at")
       .eq("trailer_id", trailerId)
       .order("created_at", { ascending: false });
 
@@ -372,12 +620,9 @@ export default function TrailerDetailsPage() {
       notes: trailer.notes,
       arrival_date: trailer.arrival_date,
       departure_date: trailer.departure_date,
-      delivered_at: trailer.delivered_at,
-      returned_empty_at: trailer.returned_empty_at,
     };
 
-    const now = new Date().toISOString();
-    let updatePayload: Partial<Trailer> = {};
+    let updatePayload: Database["public"]["Tables"]["trailers"]["Update"] = {};
     let eventDescription = "";
 
     switch (action) {
@@ -401,14 +646,12 @@ export default function TrailerDetailsPage() {
       case "Mark Delivered":
         updatePayload = {
           operational_status: "Delivered",
-          delivered_at: now,
         };
         eventDescription = "Trailer marked as delivered.";
         break;
       case "Return Empty":
         updatePayload = {
           operational_status: "Returned Empty",
-          returned_empty_at: now,
           load_status: "Empty",
         };
         eventDescription = "Trailer marked returned empty.";
@@ -520,7 +763,7 @@ export default function TrailerDetailsPage() {
         .from("trailers")
         .update(updatePayload)
         .eq("id", trailer.id)
-        .select("id, trailer_number, trailer_type, compound_position, load_status, operational_status, customer, consignee, container_number, load_description, notes, arrival_date, departure_date, delivered_at, returned_empty_at")
+        .select("id, trailer_number, trailer_type, compound_position, trailer_source, external_company, external_reference, is_local, load_status, operational_status, customer, consignee, container_number, load_description, notes, arrival_date, departure_date")
         .single();
 
       if (updateError) {
@@ -667,6 +910,83 @@ export default function TrailerDetailsPage() {
                 {successMessage}
               </section>
             ) : null}
+
+            <section className="rounded-3xl border border-amber-500/30 bg-amber-500/10 p-6">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="text-sm uppercase tracking-[0.3em] text-amber-300">Movement Control</p>
+                  <h3 className="mt-2 text-xl font-semibold text-white">Undo Last Movement</h3>
+                  <p className="mt-2 text-sm text-amber-100/90">
+                    Restore the trailer to its previous operational state while keeping a full audit trail.
+                  </p>
+                </div>
+                {lastReversibleEvent ? (
+                  <button
+                    type="button"
+                    onClick={() => setShowUndoConfirm(true)}
+                    disabled={isReversing}
+                    className="rounded-2xl border border-amber-300/40 bg-amber-300/15 px-4 py-2 text-sm font-semibold text-amber-100 transition hover:bg-amber-300/25 disabled:opacity-60"
+                  >
+                    {isReversing ? "Reversing..." : "Undo Last Movement"}
+                  </button>
+                ) : null}
+              </div>
+
+              {lastReversibleEvent ? (
+                <div className="mt-4 rounded-2xl border border-amber-300/25 bg-slate-950/40 p-4">
+                  <p className="text-sm font-semibold text-white">{lastReversibleEvent.event_description ?? lastReversibleEvent.event_type}</p>
+                  <p className="mt-1 text-xs text-slate-300">{formatDateTime(lastReversibleEvent.created_at)}</p>
+
+                  {undoPreviewEntries.length > 0 ? (
+                    <div className="mt-3 grid gap-2 text-xs text-slate-200 sm:grid-cols-2">
+                      {undoPreviewEntries.map(([field, value]) => (
+                        <div key={field} className="rounded-xl border border-white/10 bg-slate-900/70 px-3 py-2">
+                          <p className="uppercase tracking-[0.2em] text-slate-400">{field}</p>
+                          <p className="mt-1 text-sm text-white">{formatValue(value)}</p>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              ) : (
+                <div className="mt-4 rounded-2xl border border-dashed border-white/20 bg-slate-950/40 p-4 text-sm text-slate-300">
+                  No reversible movement is currently available for this trailer.
+                </div>
+              )}
+
+              {showUndoConfirm && lastReversibleEvent ? (
+                <div className="mt-4 rounded-2xl border border-rose-500/30 bg-rose-500/10 p-4">
+                  <p className="text-lg font-semibold text-rose-100">Undo Last Movement?</p>
+                  <p className="mt-2 text-sm text-rose-100/90">
+                    This will restore the trailer to its previous operational state. The original event will remain in the history and will be marked as reversed.
+                  </p>
+                  <div className="mt-3 grid gap-2 text-sm text-slate-100 sm:grid-cols-2">
+                    <p>Trailer Number: {trailer.trailer_number ?? "—"}</p>
+                    <p>Movement: {lastReversibleEvent.event_description ?? lastReversibleEvent.event_type ?? "—"}</p>
+                    <p>Event Date: {formatDateTime(lastReversibleEvent.created_at)}</p>
+                    <p>Fields to Restore: {undoPreviewEntries.length}</p>
+                  </div>
+                  <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+                    <button
+                      type="button"
+                      onClick={() => void handleUndoLastMovement()}
+                      disabled={isReversing}
+                      className="rounded-2xl bg-rose-500 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-400 disabled:opacity-60"
+                    >
+                      {isReversing ? "Reversing..." : "Confirm Undo"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowUndoConfirm(false)}
+                      disabled={isReversing}
+                      className="rounded-2xl border border-white/15 bg-slate-900 px-4 py-2 text-sm font-semibold text-slate-100 hover:bg-slate-800"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+            </section>
             <div className="grid gap-6 rounded-3xl border border-white/10 bg-slate-900/70 p-6 shadow-inner shadow-black/20 sm:grid-cols-[1.5fr_1fr]">
               <div className="space-y-3">
                 <p className="text-sm uppercase tracking-[0.24em] text-cyan-400">Trailer overview</p>
@@ -680,9 +1000,39 @@ export default function TrailerDetailsPage() {
 
               <div className="grid gap-3 rounded-3xl border border-white/5 bg-slate-950/80 p-5">
                 <div className="rounded-3xl bg-slate-900/70 p-4">
-                  <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Current position</p>
+                  <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Location type</p>
                   <p className="mt-2 text-lg font-semibold text-white">
-                    {trailer.compound_position ?? "Not assigned"}
+                    {trailer.is_local ? "Local" : "Compound"}
+                  </p>
+                </div>
+
+                {!trailer.is_local ? (
+                  <div className="rounded-3xl bg-slate-900/70 p-4">
+                    <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Current position</p>
+                    <p className="mt-2 text-lg font-semibold text-white">
+                      {trailer.compound_position ?? "Not assigned"}
+                    </p>
+                  </div>
+                ) : null}
+
+                <div className="rounded-3xl bg-slate-900/70 p-4">
+                  <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Ownership</p>
+                  <p className="mt-2 text-lg font-semibold text-white">
+                    {trailer.trailer_source === "outsourced" ? "Outsourced" : "Ferryspeed Fleet"}
+                  </p>
+                </div>
+
+                <div className="rounded-3xl bg-slate-900/70 p-4">
+                  <p className="text-xs uppercase tracking-[0.3em] text-slate-400">External Company</p>
+                  <p className="mt-2 text-lg font-semibold text-white">
+                    {trailer.trailer_source === "outsourced" ? trailer.external_company ?? "—" : "—"}
+                  </p>
+                </div>
+
+                <div className="rounded-3xl bg-slate-900/70 p-4">
+                  <p className="text-xs uppercase tracking-[0.3em] text-slate-400">External Reference</p>
+                  <p className="mt-2 text-lg font-semibold text-white">
+                    {trailer.trailer_source === "outsourced" ? trailer.external_reference ?? "—" : "—"}
                   </p>
                 </div>
 
@@ -699,6 +1049,27 @@ export default function TrailerDetailsPage() {
                     <span className={statusBadgeClass}>{currentStatus}</span>
                   </p>
                 </div>
+
+                {activeExportAllocation ? (
+                  <div className="rounded-3xl border border-orange-400/30 bg-orange-500/10 p-4">
+                    <p className="text-xs uppercase tracking-[0.3em] text-orange-200">Export Allocation</p>
+                    <p className="mt-2">
+                      <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${getExportAllocationStatusClasses(activeExportAllocation.status)}`}>
+                        {getExportAllocationStatusLabel(activeExportAllocation.status)}
+                      </span>
+                    </p>
+                    <p className="mt-3 text-sm text-slate-100">Allocation Customer: {activeExportAllocation.customer ?? "-"}</p>
+                    <p className="mt-1 text-sm text-slate-200">Collection Date: {formatDate(activeExportAllocation.collection_date)}</p>
+                    <p className="mt-1 text-sm text-slate-200">Haulier: {activeExportAllocation.haulier ?? "-"}</p>
+                    <p className="mt-1 text-sm text-slate-200">Booking Ref: {activeExportAllocation.booking_reference ?? "-"}</p>
+                    <Link
+                      href={`/dashboard/export-operations/${activeExportAllocation.id}`}
+                      className="mt-3 inline-block text-sm font-semibold text-cyan-200 underline hover:text-cyan-100"
+                    >
+                      View Export Allocation
+                    </Link>
+                  </div>
+                ) : null}
               </div>
             </div>
 
@@ -859,14 +1230,6 @@ export default function TrailerDetailsPage() {
                     <p className="text-sm uppercase tracking-[0.24em] text-slate-400">Departure date</p>
                     <p className="mt-2 text-base font-semibold text-white">{formatDate(trailer.departure_date)}</p>
                   </div>
-                  <div className="rounded-3xl bg-slate-950/80 p-4">
-                    <p className="text-sm uppercase tracking-[0.24em] text-slate-400">Delivered date</p>
-                    <p className="mt-2 text-base font-semibold text-white">{formatDate(trailer.delivered_at)}</p>
-                  </div>
-                  <div className="rounded-3xl bg-slate-950/80 p-4">
-                    <p className="text-sm uppercase tracking-[0.24em] text-slate-400">Returned empty date</p>
-                    <p className="mt-2 text-base font-semibold text-white">{formatDate(trailer.returned_empty_at)}</p>
-                  </div>
                 </div>
               </article>
             </div>
@@ -898,7 +1261,14 @@ export default function TrailerDetailsPage() {
                       <div className="flex-1">
                         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                           <div>
-                            <p className="text-sm font-semibold uppercase tracking-[0.25em] text-cyan-300">{event.event_type ?? "Event"}</p>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <p className="text-sm font-semibold uppercase tracking-[0.25em] text-cyan-300">{event.event_type ?? "Event"}</p>
+                              {event.event_type === "movement_reversed" ? (
+                                <span className="rounded-full border border-amber-400/40 bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.2em] text-amber-200">
+                                  Undo
+                                </span>
+                              ) : null}
+                            </div>
                             <p className="mt-1 text-base font-semibold text-white">{event.event_description ?? "History entry"}</p>
                           </div>
                           <p className="text-sm text-slate-400">{formatDateTime(event.created_at)}</p>

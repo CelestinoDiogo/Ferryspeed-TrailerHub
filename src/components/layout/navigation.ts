@@ -1,7 +1,7 @@
 export type NavItem = {
   label: string;
   href: string;
-  icon: "dashboard" | "arrival" | "departure" | "search" | "compound" | "load" | "edit" | "deliveries" | "waiting" | "calendar" | "fleet" | "operations" | "opsCentre";
+  icon: "dashboard" | "arrival" | "departure" | "search" | "compound" | "load" | "edit" | "deliveries" | "waiting" | "calendar" | "fleet" | "operations" | "opsCentre" | "exportOps" | "vesselOps";
 };
 
 export const navItems: NavItem[] = [
@@ -13,7 +13,9 @@ export const navItems: NavItem[] = [
   { label: "Load Trailer", href: "/dashboard/load-trailer", icon: "load" },
   { label: "Edit Trailer", href: "/dashboard/edit-trailer", icon: "edit" },
   { label: "Deliveries", href: "/dashboard/deliveries", icon: "deliveries" },
-  { label: "Waiting Collection", href: "/dashboard/deliveries?filter=waiting_collection", icon: "waiting" },
+  { label: "Export Operations", href: "/dashboard/export-operations", icon: "exportOps" },
+  { label: "Vessel Operations", href: "/dashboard/vessel-operations", icon: "vesselOps" },
+  { label: "Waiting Collection", href: "/dashboard/deliveries?filter=waiting", icon: "waiting" },
   { label: "Calendar", href: "/dashboard/calendar", icon: "calendar" },
   { label: "Company Trailers", href: "/dashboard/company-trailers", icon: "fleet" },
   { label: "Operations Board", href: "/dashboard/operations", icon: "operations" },

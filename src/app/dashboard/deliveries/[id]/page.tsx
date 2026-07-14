@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
+import type { Json } from "@/lib/database.types";
 import { supabase } from "@/lib/supabase";
 import {
   calculateOperationalReadiness,
@@ -225,15 +226,20 @@ export default function DeliveryDetailsPage() {
       const newStatus  = values.status;
 
       // Auto-set timestamps on status transitions
-      const timestampPatch: Record<string, unknown> = {};
-      if (newStatus === "delivered" && !booking.delivered_at) {
-        timestampPatch["delivered_at"] = now;
+      const deliveredAtPatch = newStatus === "delivered" && !booking.delivered_at ? now : null;
+      const waitingCollectionSincePatch =
+        newStatus === "waiting_collection" && !booking.waiting_collection_since ? now : null;
+      const collectedAtPatch = newStatus === "collected" && !booking.collected_at ? now : null;
+
+      const timestampPatch: Partial<Pick<DeliveryBooking, "delivered_at" | "waiting_collection_since" | "collected_at">> = {};
+      if (deliveredAtPatch) {
+        timestampPatch.delivered_at = deliveredAtPatch;
       }
-      if (newStatus === "waiting_collection" && !booking.waiting_collection_since) {
-        timestampPatch["waiting_collection_since"] = now;
+      if (waitingCollectionSincePatch) {
+        timestampPatch.waiting_collection_since = waitingCollectionSincePatch;
       }
-      if (newStatus === "collected" && !booking.collected_at) {
-        timestampPatch["collected_at"] = now;
+      if (collectedAtPatch) {
+        timestampPatch.collected_at = collectedAtPatch;
       }
 
       const dailyRate = values.demurrage_daily_rate === ""
@@ -265,7 +271,7 @@ export default function DeliveryDetailsPage() {
       if (updateErr) throw updateErr;
 
       // ── Trailer events ────────────────────────────────────────────────────
-      const events: { type: string; desc: string; old: unknown; next: unknown }[] = [];
+      const events: { type: string; desc: string; old: Json; next: Json }[] = [];
 
       if (prevStatus !== newStatus) {
         events.push({
@@ -276,14 +282,14 @@ export default function DeliveryDetailsPage() {
         });
       }
 
-      if (timestampPatch["delivered_at"]) {
-        events.push({ type: "delivery_completed", desc: "Delivery marked as completed.", old: null, next: { delivered_at: timestampPatch["delivered_at"] } });
+      if (deliveredAtPatch) {
+        events.push({ type: "delivery_completed", desc: "Delivery marked as completed.", old: null, next: { delivered_at: deliveredAtPatch } });
       }
-      if (timestampPatch["waiting_collection_since"]) {
-        events.push({ type: "waiting_collection_started", desc: "Trailer is now waiting for collection.", old: null, next: { waiting_collection_since: timestampPatch["waiting_collection_since"] } });
+      if (waitingCollectionSincePatch) {
+        events.push({ type: "waiting_collection_started", desc: "Trailer is now waiting for collection.", old: null, next: { waiting_collection_since: waitingCollectionSincePatch } });
       }
-      if (timestampPatch["collected_at"]) {
-        events.push({ type: "trailer_collected", desc: "Trailer has been collected.", old: null, next: { collected_at: timestampPatch["collected_at"] } });
+      if (collectedAtPatch) {
+        events.push({ type: "trailer_collected", desc: "Trailer has been collected.", old: null, next: { collected_at: collectedAtPatch } });
       }
 
       const dueChanged = (values.collection_due_date || null) !== booking.collection_due_date;

@@ -1,8 +1,22 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
+import { Suspense, useEffect, useMemo, useState } from "react";
+import { PrintButton } from "@/components/print/print-button";
+import { PrintFilters } from "@/components/print/print-filters";
+import { PrintFooter } from "@/components/print/print-footer";
+import { PrintHeader } from "@/components/print/print-header";
+import { PrintReportLayout } from "@/components/print/print-report-layout";
+import { PrintSummary } from "@/components/print/print-summary";
+import { PrintTable } from "@/components/print/print-table";
 import { supabase } from "@/lib/supabase";
+import {
+  EXPORT_ACTIVE_STATUS_QUERY_VALUES,
+  getExportAllocationStatusLabel,
+  normalizeExportAllocationStatus,
+  type ExportAllocationStatus,
+} from "@/lib/export-allocation";
 
 type TrailerRecord = {
   id: string;
@@ -14,6 +28,18 @@ type TrailerRecord = {
   compound_position?: string | null;
   arrival_date?: string | null;
   departure_date?: string | null;
+  trailer_source?: string | null;
+  external_company?: string | null;
+  external_reference?: string | null;
+  is_local?: boolean | null;
+  active_export_allocation?: {
+    id: string;
+    status: ExportAllocationStatus;
+    customer?: string | null;
+    collection_date?: string | null;
+    haulier?: string | null;
+    booking_reference?: string | null;
+  } | null;
 };
 
 type CompanyTrailerRecord = {
@@ -38,6 +64,18 @@ type SearchResultGroup = {
     container?: string | null;
     arrival_date?: string | null;
     departure_date?: string | null;
+    trailer_source?: string | null;
+    external_company?: string | null;
+    external_reference?: string | null;
+    is_local?: boolean | null;
+    active_export_allocation?: {
+      id: string;
+      status: ExportAllocationStatus;
+      customer?: string | null;
+      collection_date?: string | null;
+      haulier?: string | null;
+      booking_reference?: string | null;
+    } | null;
     status: string;
     source: "trailer" | "company";
   }>;
@@ -61,12 +99,101 @@ const formatDate = (value?: string | null) => {
 
 const normalizeText = (value?: string | null) => value?.trim().toLowerCase() ?? "";
 
-export default function DashboardSearchPage() {
+const getDateKey = (value?: string | null) => {
+  if (!value) return null;
+
+  try {
+    return new Date(value).toISOString().split("T")[0];
+  } catch {
+    return null;
+  }
+};
+
+const getPrintedDateTime = () =>
+  new Date().toLocaleString("en-GB", {
+    day: "2-digit",
+    month: "long",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+
+type ActiveFilterKey =
+  | "compound"
+  | "empty"
+  | "loaded"
+  | "maintenance"
+  | "local"
+  | "source_outsourced"
+  | "source_company"
+  | "arrivals_today"
+  | "departures_today";
+
+function DashboardSearchPageContent() {
+  const searchParams = useSearchParams();
+  const urlStatus = searchParams.get("status");
+  const urlFilter = searchParams.get("filter");
+  const urlSource = searchParams.get("source");
   const [search, setSearch] = useState("");
   const [trailers, setTrailers] = useState<TrailerRecord[]>([]);
   const [companyTrailers, setCompanyTrailers] = useState<CompanyTrailerRecord[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  const todayKey = useMemo(() => getDateKey(new Date().toISOString()), []);
+
+  const activeFilter = useMemo<ActiveFilterKey | null>(() => {
+    if (urlFilter === "compound") {
+      return "compound";
+    }
+
+    if (urlFilter === "arrivals_today") {
+      return "arrivals_today";
+    }
+
+    if (urlFilter === "departures_today") {
+      return "departures_today";
+    }
+
+    if (urlFilter === "local") {
+      return "local";
+    }
+
+    if (urlSource === "outsourced") {
+      return "source_outsourced";
+    }
+
+    if (urlSource === "company") {
+      return "source_company";
+    }
+
+    if (urlStatus === "empty") {
+      return "empty";
+    }
+
+    if (urlStatus === "loaded") {
+      return "loaded";
+    }
+
+    if (urlStatus === "maintenance") {
+      return "maintenance";
+    }
+
+    return null;
+  }, [urlFilter, urlSource, urlStatus]);
+
+  const activeFilterTitle = useMemo(() => {
+    if (activeFilter === "compound") return "Compound Trailers";
+    if (activeFilter === "empty") return "Available Empty Trailers";
+    if (activeFilter === "loaded") return "Loaded Trailers";
+    if (activeFilter === "maintenance") return "Maintenance Trailers";
+    if (activeFilter === "local") return "Local Trailers";
+    if (activeFilter === "source_outsourced") return "Outsourced Trailers";
+    if (activeFilter === "source_company") return "Ferryspeed Fleet Trailers";
+    if (activeFilter === "arrivals_today") return "Today's Arrivals";
+    if (activeFilter === "departures_today") return "Today's Departures";
+    return null;
+  }, [activeFilter]);
 
   useEffect(() => {
     let isMounted = true;
@@ -76,12 +203,18 @@ export default function DashboardSearchPage() {
       setError(null);
 
       try {
-        const [{ data: trailerData, error: trailerError }, { data: companyData, error: companyError }] = await Promise.all([
+        const activeStatuses = [...EXPORT_ACTIVE_STATUS_QUERY_VALUES];
+        const [{ data: trailerData, error: trailerError }, { data: companyData, error: companyError }, { data: exportData, error: exportError }] = await Promise.all([
           supabase
             .from("trailers")
-            .select("id, trailer_number, load_status, customer, consignee, container_number, compound_position, arrival_date, departure_date")
+            .select("id, trailer_number, load_status, customer, consignee, container_number, compound_position, arrival_date, departure_date, trailer_source, external_company, external_reference, is_local")
             .order("arrival_date", { ascending: false }),
           supabase.from("company_trailers").select("id, trailer_number, prefix, numeric_part").order("trailer_number", { ascending: true }),
+          supabase
+            .from("export_allocations")
+            .select("id, trailer_id, status, customer, collection_date, haulier, booking_reference, updated_at")
+            .in("status", activeStatuses)
+            .order("updated_at", { ascending: false }),
         ]);
 
         if (trailerError) {
@@ -92,11 +225,37 @@ export default function DashboardSearchPage() {
           throw companyError;
         }
 
+        if (exportError) {
+          throw exportError;
+        }
+
         if (!isMounted) {
           return;
         }
 
-        setTrailers((trailerData ?? []) as TrailerRecord[]);
+        const exportByTrailer = new Map<string, TrailerRecord["active_export_allocation"]>();
+        (exportData ?? []).forEach((row) => {
+          const trailerId = (row as { trailer_id?: string | null }).trailer_id;
+          if (!trailerId || exportByTrailer.has(trailerId)) {
+            return;
+          }
+
+          exportByTrailer.set(trailerId, {
+            id: (row as { id: string }).id,
+            status: normalizeExportAllocationStatus((row as { status?: string | null }).status),
+            customer: (row as { customer?: string | null }).customer ?? null,
+            collection_date: (row as { collection_date?: string | null }).collection_date ?? null,
+            haulier: (row as { haulier?: string | null }).haulier ?? null,
+            booking_reference: (row as { booking_reference?: string | null }).booking_reference ?? null,
+          });
+        });
+
+        const enrichedTrailers = ((trailerData ?? []) as TrailerRecord[]).map((item) => ({
+          ...item,
+          active_export_allocation: exportByTrailer.get(item.id) ?? null,
+        }));
+
+        setTrailers(enrichedTrailers);
         setCompanyTrailers((companyData ?? []) as CompanyTrailerRecord[]);
       } catch (err) {
         if (!isMounted) {
@@ -121,10 +280,16 @@ export default function DashboardSearchPage() {
 
   const searchGroups = useMemo<SearchResultGroup[]>(() => {
     const term = search.trim().toLowerCase();
+    const hasSearchTerm = term.length > 0;
+
+    const normalizedLoadStatus = (value?: string | null) => value?.trim().toLowerCase() ?? "";
+
+    const isActiveTrailer = (item: TrailerRecord) =>
+      item.departure_date === null || item.departure_date === undefined || item.departure_date === "";
 
     const matchesTextSearch = (values: Array<string | null | undefined>) => {
-      if (!term) {
-        return false;
+      if (!hasSearchTerm) {
+        return true;
       }
 
       const haystack = values
@@ -142,6 +307,13 @@ export default function DashboardSearchPage() {
         item.customer,
         item.consignee,
         item.compound_position,
+        item.external_company,
+        item.external_reference,
+        item.trailer_source,
+        item.is_local ? "local" : "compound",
+        item.active_export_allocation?.customer,
+        item.active_export_allocation?.haulier,
+        item.active_export_allocation?.booking_reference,
       ]);
     };
 
@@ -153,42 +325,160 @@ export default function DashboardSearchPage() {
       ]);
     };
 
+    const toTrailerItem = (item: TrailerRecord, status: string) => ({
+      id: item.id,
+      trailer_number: item.trailer_number,
+      load_status: item.load_status,
+      position: item.compound_position,
+      customer: item.customer,
+      consignee: item.consignee,
+      container: item.container_number,
+      arrival_date: item.arrival_date,
+      departure_date: item.departure_date,
+      trailer_source: item.trailer_source,
+      external_company: item.external_company,
+      external_reference: item.external_reference,
+      is_local: item.is_local,
+      active_export_allocation: item.active_export_allocation ?? null,
+      status,
+      source: "trailer" as const,
+    });
+
+    if (!activeFilter && !hasSearchTerm) {
+      return [
+        {
+          id: "active",
+          title: "Active trailers in compound",
+          description: "Current trailers still on site",
+          accent: "from-cyan-500 to-blue-600",
+          items: [],
+        },
+        {
+          id: "historical",
+          title: "Historical movements",
+          description: "Trailers already departed",
+          accent: "from-violet-500 to-fuchsia-600",
+          items: [],
+        },
+        {
+          id: "company",
+          title: "Company fleet",
+          description: "Fleet records from the wider company inventory",
+          accent: "from-emerald-500 to-teal-600",
+          items: [],
+        },
+      ];
+    }
+
+    if (activeFilter) {
+      let filteredTrailers: TrailerRecord[] = [];
+      let statusLabel = "In Compound";
+      let groupTitle = "Filtered trailers";
+      let groupDescription = "Trailer records matching the selected dashboard filter";
+      let accent = "from-cyan-500 to-blue-600";
+
+      if (activeFilter === "compound") {
+        filteredTrailers = trailers.filter((item) => isActiveTrailer(item));
+        groupTitle = "Active trailers in compound";
+        groupDescription = "Current trailers still on site";
+      } else if (activeFilter === "empty") {
+        filteredTrailers = trailers.filter(
+          (item) =>
+            isActiveTrailer(item) &&
+            normalizedLoadStatus(item.load_status) === "empty" &&
+            !item.active_export_allocation
+        );
+        statusLabel = "Empty";
+        groupTitle = "Available empty trailers";
+        groupDescription = "Active empty trailers with no active export allocation";
+        accent = "from-emerald-500 to-teal-600";
+      } else if (activeFilter === "loaded") {
+        filteredTrailers = trailers.filter(
+          (item) => isActiveTrailer(item) && normalizedLoadStatus(item.load_status) === "loaded"
+        );
+        statusLabel = "Loaded";
+        groupTitle = "Loaded trailers";
+        groupDescription = "Active trailers ready for departure";
+        accent = "from-amber-500 to-orange-600";
+      } else if (activeFilter === "maintenance") {
+        filteredTrailers = trailers.filter((item) => {
+          if (!isActiveTrailer(item)) {
+            return false;
+          }
+
+          const status = normalizedLoadStatus(item.load_status);
+          return status !== "empty" && status !== "loaded";
+        });
+        statusLabel = "Maintenance";
+        groupTitle = "Maintenance trailers";
+        groupDescription = "Active trailers requiring operational review";
+        accent = "from-rose-500 to-pink-600";
+      } else if (activeFilter === "local") {
+        filteredTrailers = trailers.filter((item) => isActiveTrailer(item) && item.is_local === true);
+        statusLabel = "Local";
+        groupTitle = "Local trailers";
+        groupDescription = "Active trailers outside compound capacity";
+        accent = "from-indigo-500 to-violet-600";
+      } else if (activeFilter === "source_outsourced") {
+        filteredTrailers = trailers.filter((item) => isActiveTrailer(item) && item.trailer_source === "outsourced");
+        statusLabel = "Outsourced";
+        groupTitle = "Outsourced trailers";
+        groupDescription = "Active trailers from external transport companies";
+        accent = "from-amber-500 to-orange-600";
+      } else if (activeFilter === "source_company") {
+        filteredTrailers = trailers.filter((item) => isActiveTrailer(item) && (item.trailer_source ?? "company") === "company");
+        statusLabel = "Ferryspeed Fleet";
+        groupTitle = "Ferryspeed fleet trailers";
+        groupDescription = "Active trailers from the Ferryspeed fleet";
+        accent = "from-cyan-500 to-blue-600";
+      } else if (activeFilter === "arrivals_today") {
+        filteredTrailers = trailers.filter((item) => getDateKey(item.arrival_date) === todayKey);
+        statusLabel = "Arrived Today";
+        groupTitle = "Today's arrivals";
+        groupDescription = "Trailers that arrived today";
+        accent = "from-sky-500 to-cyan-600";
+      } else if (activeFilter === "departures_today") {
+        filteredTrailers = trailers.filter((item) => getDateKey(item.departure_date) === todayKey);
+        statusLabel = "Departed Today";
+        groupTitle = "Today's departures";
+        groupDescription = "Trailers that departed today";
+        accent = "from-violet-500 to-fuchsia-600";
+      }
+
+      return [
+        {
+          id: "filtered_trailers",
+          title: groupTitle,
+          description: groupDescription,
+          accent,
+          items: filteredTrailers
+            .filter((item) => matchesTrailer(item))
+            .map((item) =>
+              toTrailerItem(
+                item,
+                activeFilter === "compound"
+                  ? isActiveTrailer(item)
+                    ? "In Compound"
+                    : "Departed"
+                  : statusLabel
+              )
+            ),
+        },
+      ];
+    }
+
     const activeItems = trailers
-      .filter((item) => item.departure_date === null || item.departure_date === undefined || item.departure_date === "")
-      .filter((item) => (term ? matchesTrailer(item) : false))
-      .map((item) => ({
-        id: item.id,
-        trailer_number: item.trailer_number,
-        load_status: item.load_status,
-        position: item.compound_position,
-        customer: item.customer,
-        consignee: item.consignee,
-        container: item.container_number,
-        arrival_date: item.arrival_date,
-        departure_date: item.departure_date,
-        status: "In Compound",
-        source: "trailer" as const,
-      }));
+      .filter((item) => isActiveTrailer(item))
+      .filter((item) => matchesTrailer(item))
+      .map((item) => toTrailerItem(item, "In Compound"));
 
     const historicalItems = trailers
-      .filter((item) => Boolean(item.departure_date))
-      .filter((item) => (term ? matchesTrailer(item) : false))
-      .map((item) => ({
-        id: item.id,
-        trailer_number: item.trailer_number,
-        load_status: item.load_status,
-        position: item.compound_position,
-        customer: item.customer,
-        consignee: item.consignee,
-        container: item.container_number,
-        arrival_date: item.arrival_date,
-        departure_date: item.departure_date,
-        status: "Departed",
-        source: "trailer" as const,
-      }));
+      .filter((item) => !isActiveTrailer(item))
+      .filter((item) => matchesTrailer(item))
+      .map((item) => toTrailerItem(item, "Departed"));
 
     const companyItems = companyTrailers
-      .filter((item) => (term ? matchesCompanyTrailer(item) : false))
+      .filter((item) => matchesCompanyTrailer(item))
       .map((item) => ({
         id: item.id,
         trailer_number: item.trailer_number,
@@ -199,6 +489,11 @@ export default function DashboardSearchPage() {
         container: "—",
         arrival_date: null,
         departure_date: null,
+        trailer_source: "company",
+        external_company: null,
+        external_reference: null,
+        is_local: false,
+        active_export_allocation: null,
         status: "Fleet Record",
         source: "company" as const,
       }));
@@ -226,10 +521,23 @@ export default function DashboardSearchPage() {
         items: companyItems,
       },
     ];
-  }, [companyTrailers, search, trailers]);
+  }, [activeFilter, companyTrailers, search, todayKey, trailers]);
 
   const hasAnyResults = searchGroups.some((group) => group.items.length > 0);
   const totalResults = searchGroups.reduce((count, group) => count + group.items.length, 0);
+  const hasSearchTerm = Boolean(search.trim());
+  const hasFilter = Boolean(activeFilter);
+  const printableRows = useMemo(
+    () =>
+      searchGroups.flatMap((group) =>
+        group.items.map((item) => ({
+          group: group.title,
+          ...item,
+        })),
+      ),
+    [searchGroups],
+  );
+  const printedAt = getPrintedDateTime();
 
   return (
     <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(34,211,238,0.16),_transparent_32%),linear-gradient(135deg,_#020617_0%,_#0f172a_55%,_#111827_100%)] px-4 py-6 text-slate-100 sm:px-6 lg:px-8">
@@ -244,14 +552,56 @@ export default function DashboardSearchPage() {
               </p>
             </div>
 
-            <Link
-              href="/dashboard"
-              className="rounded-2xl border border-cyan-400/30 bg-cyan-500/10 px-4 py-2 text-sm font-medium text-cyan-200 transition hover:bg-cyan-500/20"
-            >
-              Back to dashboard
-            </Link>
+            <div className="flex flex-wrap gap-2">
+              <PrintButton label="Print / Export" disabled={isLoading || !hasAnyResults} />
+              <Link
+                href="/dashboard"
+                className="rounded-2xl border border-cyan-400/30 bg-cyan-500/10 px-4 py-2 text-sm font-medium text-cyan-200 transition hover:bg-cyan-500/20"
+              >
+                Back to dashboard
+              </Link>
+            </div>
           </div>
         </header>
+
+        {hasAnyResults ? (
+          <PrintReportLayout orientation="landscape">
+            <PrintHeader title="Trailer Search Report" printedAt={printedAt} userName="Diogo Ferreira" totalRecords={totalResults}>
+              <PrintFilters
+                items={[
+                  { label: "Search", value: search.trim() || "Current filtered view" },
+                  { label: "Dashboard Filter", value: activeFilterTitle ?? "None" },
+                ]}
+              />
+            </PrintHeader>
+
+            <PrintSummary
+              items={[
+                { label: "Total Results", value: totalResults },
+                { label: "Groups", value: searchGroups.filter((group) => group.items.length > 0).length },
+                { label: "Active Filter", value: activeFilterTitle ?? "General Search" },
+                { label: "Search Term", value: search.trim() || "All visible records" },
+                { label: "Today", value: todayKey ?? "—" },
+              ]}
+            />
+
+            <PrintTable
+              rows={printableRows}
+              columns={[
+                { key: "group", header: "Group", render: (row) => row.group },
+                { key: "trailer_number", header: "Trailer", render: (row) => row.trailer_number ?? "—" },
+                { key: "status", header: "Status", render: (row) => row.status },
+                { key: "customer", header: "Customer", render: (row) => row.customer ?? "—" },
+                { key: "position", header: "Position", render: (row) => row.position ?? "—" },
+                { key: "arrival_date", header: "Arrival", render: (row) => formatDate(row.arrival_date) },
+                { key: "departure_date", header: "Departure", render: (row) => formatDate(row.departure_date) },
+                { key: "source", header: "Source", render: (row) => row.source === "company" ? "Company fleet" : "Trailer record" },
+              ]}
+            />
+
+            <PrintFooter />
+          </PrintReportLayout>
+        ) : null}
 
         <section className="rounded-3xl border border-white/10 bg-slate-900/70 p-4 shadow-lg shadow-black/20 backdrop-blur sm:p-5">
           <label className="mb-2 block text-sm font-medium text-slate-200" htmlFor="global-search">
@@ -269,6 +619,17 @@ export default function DashboardSearchPage() {
           </p>
         </section>
 
+        {hasFilter && activeFilterTitle ? (
+          <section className="rounded-2xl border border-cyan-400/30 bg-cyan-500/10 px-4 py-3 text-sm text-cyan-100">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <p className="font-semibold">Filter active: {activeFilterTitle}</p>
+              <Link href="/dashboard/search" className="text-cyan-200 underline decoration-cyan-300/70 underline-offset-2 hover:text-cyan-100">
+                Clear Filter
+              </Link>
+            </div>
+          </section>
+        ) : null}
+
         {error ? (
           <div className="rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
             {error}
@@ -281,15 +642,15 @@ export default function DashboardSearchPage() {
           </div>
         ) : null}
 
-        {!isLoading && !error && !search.trim() ? (
+        {!isLoading && !error && !hasFilter && !hasSearchTerm ? (
           <div className="rounded-3xl border border-dashed border-cyan-400/30 bg-slate-900/70 p-6 text-sm text-slate-300 shadow-lg shadow-black/20 backdrop-blur">
             Enter a trailer number, container, customer, consignee, position, or fleet prefix to begin searching.
           </div>
         ) : null}
 
-        {!isLoading && !error && search.trim() && !hasAnyResults ? (
+        {!isLoading && !error && (hasFilter || hasSearchTerm) && !hasAnyResults ? (
           <div className="rounded-3xl border border-white/10 bg-slate-900/70 p-6 text-sm text-slate-300 shadow-lg shadow-black/20 backdrop-blur">
-            No matches found for “{search.trim()}”. Try a different reference or prefix.
+            {hasSearchTerm ? `No matches found for “${search.trim()}”.` : "No matches found for the selected filter."} Try a different reference or prefix.
           </div>
         ) : null}
 
@@ -332,9 +693,16 @@ export default function DashboardSearchPage() {
                               )}
                             </p>
                           </div>
-                          <span className="rounded-full border border-cyan-400/20 bg-cyan-500/10 px-3 py-1 text-sm text-cyan-200">
-                            {item.status}
-                          </span>
+                          <div className="flex flex-wrap gap-2">
+                            <span className="rounded-full border border-cyan-400/20 bg-cyan-500/10 px-3 py-1 text-sm text-cyan-200">
+                              {item.status}
+                            </span>
+                            {item.active_export_allocation ? (
+                              <span className="rounded-full border border-orange-400/30 bg-orange-500/10 px-3 py-1 text-sm text-orange-200">
+                                {getExportAllocationStatusLabel(item.active_export_allocation.status)}
+                              </span>
+                            ) : null}
+                          </div>
                         </div>
 
                         <dl className="mt-4 grid gap-3 text-sm text-slate-300 sm:grid-cols-2 xl:grid-cols-4">
@@ -370,7 +738,50 @@ export default function DashboardSearchPage() {
                             <dt className="text-xs uppercase tracking-[0.25em] text-slate-500">Source</dt>
                             <dd className="mt-1">{item.source === "company" ? "Company fleet" : "Trailer record"}</dd>
                           </div>
+                          <div>
+                            <dt className="text-xs uppercase tracking-[0.25em] text-slate-500">Ownership</dt>
+                            <dd className="mt-1">{item.trailer_source === "outsourced" ? "Outsourced" : "Ferryspeed Fleet"}</dd>
+                          </div>
+                          <div>
+                            <dt className="text-xs uppercase tracking-[0.25em] text-slate-500">External Company</dt>
+                            <dd className="mt-1">{item.trailer_source === "outsourced" ? item.external_company ?? "—" : "—"}</dd>
+                          </div>
+                          <div>
+                            <dt className="text-xs uppercase tracking-[0.25em] text-slate-500">External Reference</dt>
+                            <dd className="mt-1">{item.trailer_source === "outsourced" ? item.external_reference ?? "—" : "—"}</dd>
+                          </div>
+                          <div>
+                            <dt className="text-xs uppercase tracking-[0.25em] text-slate-500">Location Type</dt>
+                            <dd className="mt-1">{item.is_local ? "Local" : "Compound"}</dd>
+                          </div>
+                          <div>
+                            <dt className="text-xs uppercase tracking-[0.25em] text-slate-500">Allocation Customer</dt>
+                            <dd className="mt-1">{item.active_export_allocation?.customer ?? "-"}</dd>
+                          </div>
+                          <div>
+                            <dt className="text-xs uppercase tracking-[0.25em] text-slate-500">Collection Date</dt>
+                            <dd className="mt-1">{formatDate(item.active_export_allocation?.collection_date)}</dd>
+                          </div>
+                          <div>
+                            <dt className="text-xs uppercase tracking-[0.25em] text-slate-500">Haulier</dt>
+                            <dd className="mt-1">{item.active_export_allocation?.haulier ?? "-"}</dd>
+                          </div>
+                          <div>
+                            <dt className="text-xs uppercase tracking-[0.25em] text-slate-500">Booking Reference</dt>
+                            <dd className="mt-1">{item.active_export_allocation?.booking_reference ?? "-"}</dd>
+                          </div>
                         </dl>
+
+                        {item.active_export_allocation ? (
+                          <div className="mt-3">
+                            <Link
+                              href={`/dashboard/export-operations/${item.active_export_allocation.id}`}
+                              className="text-sm font-semibold text-cyan-200 underline hover:text-cyan-100"
+                            >
+                              View Export Allocation
+                            </Link>
+                          </div>
+                        ) : null}
                       </article>
                     ))}
                   </div>
@@ -385,5 +796,21 @@ export default function DashboardSearchPage() {
         ) : null}
       </div>
     </main>
+  );
+}
+
+export default function DashboardSearchPage() {
+  return (
+    <Suspense
+      fallback={
+        <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(34,211,238,0.16),_transparent_32%),linear-gradient(135deg,_#020617_0%,_#0f172a_55%,_#111827_100%)] px-4 py-6 text-slate-100 sm:px-6 lg:px-8">
+          <div className="mx-auto max-w-7xl rounded-3xl border border-white/10 bg-slate-900/70 p-6 text-sm text-slate-400 shadow-lg shadow-black/20 backdrop-blur">
+            Loading search data...
+          </div>
+        </main>
+      }
+    >
+      <DashboardSearchPageContent />
+    </Suspense>
   );
 }

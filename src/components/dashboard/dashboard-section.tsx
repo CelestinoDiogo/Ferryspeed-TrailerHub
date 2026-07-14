@@ -9,10 +9,10 @@ type DashboardSectionProps = {
 
 export function DashboardSection({ title, subtitle, action, children }: DashboardSectionProps) {
   return (
-    <section className="fs-panel-card rounded-3xl p-4 sm:p-5">
+    <section className="rounded-3xl border border-[var(--fs-border-strong)] bg-[var(--fs-panel)] p-5 shadow-xl shadow-black/10 backdrop-blur">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <p className="text-sm font-semibold uppercase tracking-[0.18em] text-[var(--fs-green-light)]">{title}</p>
+          <p className="text-lg font-semibold text-[var(--fs-text)]">{title}</p>
           {subtitle ? <p className="mt-1 text-sm text-[var(--fs-text-muted)]">{subtitle}</p> : null}
         </div>
         {action ? <div>{action}</div> : null}

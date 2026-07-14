@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "./print.css";
 
 :root {
   --background: #020b0a;
@@ -7,10 +8,11 @@
   --fs-background-secondary: #041512;
   --fs-sidebar: #020908;
   --fs-header: rgba(2, 13, 11, 0.96);
-  --fs-panel: rgba(6, 24, 20, 0.88);
-  --fs-panel-hover: rgba(8, 34, 28, 0.94);
-  --fs-panel-strong: #081c18;
-  --fs-border: rgba(44, 120, 95, 0.28);
+  --fs-panel: rgba(30, 41, 59, 0.88);
+  --fs-panel-hover: rgba(46, 63, 89, 0.96);
+  --fs-panel-strong: rgba(36, 50, 72, 0.92);
+  --fs-border: rgba(148, 163, 184, 0.16);
+  --fs-border-strong: rgba(148, 163, 184, 0.24);
   --fs-green: #00835f;
   --fs-green-light: #21c88a;
   --fs-red: #dc2638;
@@ -21,8 +23,8 @@
   --fs-indigo: #5f6ee8;
   --fs-cyan: #22b8d8;
   --fs-emerald: #14a173;
-  --fs-text: #f4f7f6;
-  --fs-text-muted: #9fb0ab;
+  --fs-text: #f8fafc;
+  --fs-text-muted: #aebdd0;
 }
 
 @theme inline {
@@ -47,16 +49,16 @@ body {
 
 .bg-fs-main {
   background:
-    radial-gradient(circle at 85% -10%, rgba(40, 130, 99, 0.12), transparent 36%),
-    linear-gradient(135deg, #020908 0%, #041512 48%, #020b0a 100%);
+    radial-gradient(circle at top left, rgba(62, 183, 138, 0.09), transparent 30%),
+    linear-gradient(135deg, #0b1220 0%, #111c2f 55%, #162238 100%);
 }
 
 .fs-panel-card {
-  border: 1px solid var(--fs-border);
+  border: 1px solid var(--fs-border-strong);
   background: var(--fs-panel);
-  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.3);
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.16);
   backdrop-filter: blur(12px);
-  transition: background-color 180ms ease, border-color 180ms ease;
+  transition: background-color 180ms ease, border-color 180ms ease, transform 180ms ease;
 }
 
 .fs-panel-card:hover {

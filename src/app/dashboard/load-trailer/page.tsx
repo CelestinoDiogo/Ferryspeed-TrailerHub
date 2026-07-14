@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
+import { EXPORT_ACTIVE_STATUS_QUERY_VALUES } from "@/lib/export-allocation";
 
 type Trailer = {
   id: string;
@@ -33,19 +34,36 @@ export default function LoadTrailerPage() {
     async function loadEmptyTrailers() {
       setLoading(true);
 
-      const { data, error } = await supabase
-        .from("trailers")
-        .select(
-          "id, trailer_number, load_status, compound_position, customer, consignee, container_number, load_description"
-        )
-        .is("departure_date", null)
-        .ilike("load_status", "Empty")
-        .order("compound_position", { ascending: true });
+      const activeStatuses = [...EXPORT_ACTIVE_STATUS_QUERY_VALUES];
 
-      if (error) {
-        setError(error.message);
+      const [{ data, error }, { data: activeAllocations, error: allocationError }] = await Promise.all([
+        supabase
+          .from("trailers")
+          .select(
+            "id, trailer_number, load_status, compound_position, customer, consignee, container_number, load_description"
+          )
+          .is("departure_date", null)
+          .ilike("load_status", "Empty")
+          .order("compound_position", { ascending: true }),
+        supabase
+          .from("export_allocations")
+          .select("trailer_id, status")
+          .in("status", activeStatuses),
+      ]);
+
+      if (error || allocationError) {
+        setError(error?.message || allocationError?.message || "Unable to load trailers.");
       } else {
-        setTrailers((data ?? []) as Trailer[]);
+        const blockedTrailerIds = new Set<string>();
+        (activeAllocations ?? []).forEach((row) => {
+          const trailerId = (row as { trailer_id?: string | null }).trailer_id;
+          if (trailerId) {
+            blockedTrailerIds.add(trailerId);
+          }
+        });
+
+        const available = ((data ?? []) as Trailer[]).filter((item) => !blockedTrailerIds.has(item.id));
+        setTrailers(available);
       }
 
       setLoading(false);
@@ -90,16 +108,32 @@ export default function LoadTrailerPage() {
     setSaving(true);
     setError("");
 
+    const { data: currentTrailer, error: currentTrailerError } = await supabase
+      .from("trailers")
+      .select("id, trailer_number, load_status, customer, consignee, container_number, load_description, notes")
+      .eq("id", selectedTrailer.id)
+      .single();
+
+    if (currentTrailerError || !currentTrailer) {
+      setSaving(false);
+      const message = currentTrailerError?.message || "Unable to load current trailer state before loading.";
+      setError(message);
+      alert(message);
+      return;
+    }
+
+    const updatePayload = {
+      load_status: "Loaded",
+      customer: customer.trim(),
+      consignee: consignee.trim() || null,
+      container_number: containerNumber.trim() || null,
+      load_description: loadDescription.trim() || null,
+      notes: notes.trim() || null,
+    };
+
     const { data, error } = await supabase
       .from("trailers")
-      .update({
-        load_status: "Loaded",
-        customer: customer.trim(),
-        consignee: consignee.trim() || null,
-        container_number: containerNumber.trim() || null,
-        load_description: loadDescription.trim() || null,
-        notes: notes.trim() || null,
-      })
+      .update(updatePayload)
       .eq("id", selectedTrailer.id)
       .select();
 
@@ -114,6 +148,34 @@ export default function LoadTrailerPage() {
     if (!data || data.length === 0) {
       alert("No trailer was updated.");
       return;
+    }
+
+    const { error: eventError } = await supabase.from("trailer_events").insert({
+      trailer_id: currentTrailer.id,
+      trailer_number: currentTrailer.trailer_number,
+      event_type: "trailer_loaded",
+      event_description: "Trailer marked as loaded.",
+      old_value: {
+        load_status: currentTrailer.load_status ?? null,
+        customer: currentTrailer.customer ?? null,
+        consignee: currentTrailer.consignee ?? null,
+        container_number: currentTrailer.container_number ?? null,
+        load_description: currentTrailer.load_description ?? null,
+        notes: currentTrailer.notes ?? null,
+      },
+      new_value: {
+        load_status: updatePayload.load_status,
+        customer: updatePayload.customer,
+        consignee: updatePayload.consignee,
+        container_number: updatePayload.container_number,
+        load_description: updatePayload.load_description,
+        notes: updatePayload.notes,
+      },
+    });
+
+    if (eventError) {
+      console.error("Load update saved but trailer event creation failed:", eventError);
+      alert("Trailer updated, but history event could not be recorded.");
     }
 
     router.push("/dashboard?saved=1");

@@ -1,7 +1,15 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
+import { Suspense, useEffect, useMemo, useState } from "react";
+import { PrintButton } from "@/components/print/print-button";
+import { PrintFilters } from "@/components/print/print-filters";
+import { PrintHeader } from "@/components/print/print-header";
+import { PrintReportLayout } from "@/components/print/print-report-layout";
+import { ReportPrintLayout } from "@/components/print/report-print-layout";
+import { PrintSummary } from "@/components/print/print-summary";
+import { PrintTable } from "@/components/print/print-table";
 import { supabase } from "@/lib/supabase";
 import {
   getDateKey,
@@ -84,14 +92,41 @@ const statusLabel = (status: string) => {
     .join(" ");
 };
 
-export default function DeliveriesPage() {
+const filterLabel = (filter: FilterType) => {
+  if (filter === "today") return "Today";
+  if (filter === "tomorrow") return "Tomorrow";
+  if (filter === "upcoming") return "All Upcoming";
+  return "Waiting Collection";
+};
+
+const getPrintedDateTime = () =>
+  new Date().toLocaleString("en-GB", {
+    day: "2-digit",
+    month: "long",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+
+function DeliveriesPageContent() {
+  const searchParams = useSearchParams();
+  const initialFilter: FilterType = searchParams.get("filter") === "waiting" ? "waiting" : "today";
   const [bookings, setBookings] = useState<DeliveryBooking[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [filter, setFilter] = useState<FilterType>("today");
+  const [filter, setFilter] = useState<FilterType>(initialFilter);
   const [statusChanging, setStatusChanging] = useState<string | null>(null);
   const [markingCollected, setMarkingCollected] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      const urlFilter = searchParams.get("filter");
+      setFilter(urlFilter === "waiting" ? "waiting" : "today");
+    }, 0);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [searchParams]);
 
   useEffect(() => {
     const loadBookings = async () => {
@@ -165,6 +200,19 @@ export default function DeliveriesPage() {
 
     return filtered;
   }, [bookings, filter]);
+
+  const summaryTotals = useMemo(
+    () => ({
+      bookings: filteredBookings.length,
+      waitingCollection: filteredBookings.filter((booking) => booking.status === "waiting_collection").length,
+      onDelivery: filteredBookings.filter((booking) => booking.status === "on_delivery").length,
+      delivered: filteredBookings.filter((booking) => booking.status === "delivered").length,
+      collected: filteredBookings.filter((booking) => booking.status === "collected").length,
+    }),
+    [filteredBookings],
+  );
+
+  const printedAt = getPrintedDateTime();
 
   const handleStatusChange = async (bookingId: string, currentStatus: string, newStatus: string) => {
     setStatusChanging(bookingId);
@@ -254,10 +302,20 @@ export default function DeliveriesPage() {
     return sequence[currentStatus] || null;
   };
 
+  const handlePrint = () => {
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        window.print();
+      });
+    });
+  };
+
   return (
-    <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(34,211,238,0.16),_transparent_32%),linear-gradient(135deg,_#020617_0%,_#0f172a_55%,_#111827_100%)] px-4 py-6 text-slate-100 sm:px-6 lg:px-8">
+    <ReportPrintLayout
+      screen={
+        <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(34,211,238,0.16),_transparent_32%),linear-gradient(135deg,_#020617_0%,_#0f172a_55%,_#111827_100%)] px-4 py-6 text-slate-100 sm:px-6 lg:px-8">
       <div className="mx-auto flex max-w-7xl flex-col gap-6">
-        <header className="rounded-3xl border border-white/10 bg-slate-900/70 p-5 shadow-2xl shadow-black/20 backdrop-blur sm:p-6">
+        <header className="screen-header rounded-3xl border border-white/10 bg-slate-900/70 p-5 shadow-2xl shadow-black/20 backdrop-blur sm:p-6">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
             <div>
               <p className="text-sm font-semibold uppercase tracking-[0.3em] text-cyan-400">
@@ -272,6 +330,7 @@ export default function DeliveriesPage() {
             </div>
 
             <div className="flex flex-wrap gap-2">
+              <PrintButton label="Print / Export" disabled={isLoading || filteredBookings.length === 0} onPrint={handlePrint} className="action-buttons" />
               <Link
                 href="/dashboard/calendar"
                 className="rounded-2xl border border-white/10 bg-slate-800 px-5 py-3 text-center font-semibold text-white hover:bg-slate-700"
@@ -295,12 +354,12 @@ export default function DeliveriesPage() {
         ) : null}
 
         {error ? (
-          <div className="rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+          <div className="alert-screen-only rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
             {error}
           </div>
         ) : null}
 
-        <section className="flex flex-wrap gap-3">
+        <section className="filters flex flex-wrap gap-3">
           {(["today", "tomorrow", "upcoming", "waiting"] as FilterType[]).map((f) => (
             <button
               key={f}
@@ -613,12 +672,61 @@ export default function DeliveriesPage() {
         <div className="mt-6">
           <Link
             href="/dashboard"
-            className="rounded-2xl border border-white/10 bg-slate-800 px-5 py-3 font-semibold text-white hover:bg-slate-700"
+            className="screen-footer rounded-2xl border border-white/10 bg-slate-800 px-5 py-3 font-semibold text-white hover:bg-slate-700"
           >
             Back to Dashboard
           </Link>
         </div>
       </div>
-    </main>
+        </main>
+      }
+      print={
+        <PrintReportLayout orientation="landscape">
+          <PrintHeader title="Delivery Bookings" printedAt={printedAt} totalRecords={filteredBookings.length}>
+            <PrintFilters items={[{ label: "Current Filter", value: filterLabel(filter) }]} />
+          </PrintHeader>
+
+          <PrintSummary
+            items={[
+              { label: "Bookings", value: summaryTotals.bookings },
+              { label: "Waiting Collection", value: summaryTotals.waitingCollection },
+              { label: "On Delivery", value: summaryTotals.onDelivery },
+              { label: "Delivered", value: summaryTotals.delivered },
+              { label: "Collected", value: summaryTotals.collected },
+            ]}
+          />
+
+          <PrintTable
+            rows={filteredBookings}
+            columns={[
+              { key: "delivery_date", header: "Delivery Date", render: (booking) => formatDate(booking.delivery_date) },
+              { key: "delivery_time", header: "Time", render: (booking) => formatTime(booking.delivery_time) },
+              { key: "trailer_number", header: "Trailer", render: (booking) => booking.trailer_number ?? "—" },
+              { key: "customer", header: "Customer", render: (booking) => booking.customer ?? booking.consignee ?? "—" },
+              { key: "delivery_location", header: "Location", render: (booking) => booking.delivery_location ?? "—" },
+              { key: "booking_reference", header: "Booking Reference", render: (booking) => booking.booking_reference ?? "—" },
+              { key: "status", header: "Status", render: (booking) => statusLabel(booking.status) },
+              { key: "notes", header: "Notes", render: (booking) => booking.notes?.trim() || "—" },
+            ]}
+          />
+        </PrintReportLayout>
+      }
+    />
+  );
+}
+
+export default function DeliveriesPage() {
+  return (
+    <Suspense
+      fallback={
+        <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(34,211,238,0.16),_transparent_32%),linear-gradient(135deg,_#020617_0%,_#0f172a_55%,_#111827_100%)] px-4 py-6 text-slate-100 sm:px-6 lg:px-8">
+          <div className="mx-auto max-w-7xl rounded-3xl border border-white/10 bg-slate-900/70 p-6 text-center text-slate-400">
+            Loading deliveries...
+          </div>
+        </main>
+      }
+    >
+      <DeliveriesPageContent />
+    </Suspense>
   );
 }

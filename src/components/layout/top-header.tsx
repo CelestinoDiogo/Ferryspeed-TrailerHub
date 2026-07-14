@@ -43,7 +43,7 @@ export function TopHeader({ title, subtitle, onMenuClick }: TopHeaderProps) {
   }, []);
 
   return (
-    <header className="sticky top-0 z-30 border-b border-[color:var(--fs-green)]/40 bg-[var(--fs-header)] px-4 py-3 backdrop-blur md:px-6">
+    <header className="sticky top-0 z-30 border-b border-[color:var(--fs-green)]/40 bg-[var(--fs-header)] px-4 py-3 backdrop-blur print:hidden md:px-6">
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-3">
           <button

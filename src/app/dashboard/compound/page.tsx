@@ -2,6 +2,13 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
+import { PrintButton } from "@/components/print/print-button";
+import { PrintFilters } from "@/components/print/print-filters";
+import { PrintFooter } from "@/components/print/print-footer";
+import { PrintHeader } from "@/components/print/print-header";
+import { PrintReportLayout } from "@/components/print/print-report-layout";
+import { PrintSummary } from "@/components/print/print-summary";
+import { PrintTable } from "@/components/print/print-table";
 import { supabase } from "@/lib/supabase";
 import {
   calculateOperationalReadiness,
@@ -23,6 +30,9 @@ type TrailerRecord = {
   container_number?: string | null;
   compound_position?: string | null;
   departure_date?: string | null;
+  is_local?: boolean | null;
+  trailer_source?: string | null;
+  external_company?: string | null;
 };
 
 type DeliveryBooking = {
@@ -82,6 +92,15 @@ const formatTime = (value?: string | null): string => {
 
 const statusLabel = (status: string): string =>
   status.split("_").map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+
+const getPrintedDateTime = () =>
+  new Date().toLocaleString("en-GB", {
+    day: "2-digit",
+    month: "long",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 
 // ============================================================================
 // Colour system (operational-importance based)
@@ -196,9 +215,10 @@ export default function CompoundPage() {
           supabase
             .from("trailers")
             .select(
-              "id, trailer_number, load_status, customer, consignee, container_number, compound_position, departure_date"
+              "id, trailer_number, load_status, customer, consignee, container_number, compound_position, departure_date, is_local, trailer_source, external_company"
             )
             .is("departure_date", null)
+            .neq("is_local", true)
             .order("compound_position", { ascending: true }),
           supabase
             .from("delivery_bookings")
@@ -366,6 +386,7 @@ export default function CompoundPage() {
   const selectedState = selectedPosition
     ? allPositionStates.find((s) => s.position === selectedPosition) ?? null
     : null;
+  const printedAt = getPrintedDateTime();
 
   const FILTERS: { value: FilterType; label: string }[] = [
     { value: "all", label: "All" },
@@ -383,12 +404,47 @@ export default function CompoundPage() {
 
         {/* Header */}
         <header className="rounded-3xl border border-white/10 bg-slate-900/70 p-5 shadow-2xl shadow-black/20 backdrop-blur sm:p-6">
-          <p className="text-sm font-semibold uppercase tracking-[0.3em] text-cyan-400">Ferryspeed TrailerHub</p>
-          <h1 className="mt-2 text-2xl font-semibold sm:text-3xl">Smart Compound</h1>
-          <p className="mt-2 text-sm text-slate-300 sm:text-base">
-            Live operational map — position, readiness and delivery status at a glance.
-          </p>
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <p className="text-sm font-semibold uppercase tracking-[0.3em] text-cyan-400">Ferryspeed TrailerHub</p>
+              <h1 className="mt-2 text-2xl font-semibold sm:text-3xl">Smart Compound</h1>
+              <p className="mt-2 text-sm text-slate-300 sm:text-base">
+                Live operational map — position, readiness and delivery status at a glance.
+              </p>
+            </div>
+            <PrintButton label="Print / Export" disabled={isLoading || filteredPositions.length === 0} />
+          </div>
         </header>
+
+        {filteredPositions.length > 0 ? (
+          <PrintReportLayout orientation="landscape">
+            <PrintHeader title="Compound Position Report" printedAt={printedAt} userName="Diogo Ferreira" totalRecords={filteredPositions.length}>
+              <PrintFilters items={[{ label: "Filter", value: FILTERS.find((item) => item.value === filter)?.label ?? "All" }, { label: "Search", value: search.trim() || "Current filtered positions" }]} />
+            </PrintHeader>
+            <PrintSummary
+              items={[
+                { label: "Occupied", value: summary.occupied },
+                { label: "Empty", value: summary.empty },
+                { label: "Deliveries Today", value: summary.deliveriesToday },
+                { label: "Ready", value: summary.ready },
+                { label: "Waiting Collection", value: summary.waitingCollection },
+              ]}
+            />
+            <PrintTable
+              rows={filteredPositions}
+              columns={[
+                { key: "position", header: "Position", render: (state) => state.position },
+                { key: "trailer", header: "Trailer", render: (state) => state.trailer?.trailer_number ?? "Available" },
+                { key: "customer", header: "Customer", render: (state) => state.trailer?.customer ?? "—" },
+                { key: "load_status", header: "Load", render: (state) => state.trailer?.load_status ?? "—" },
+                { key: "booking_status", header: "Booking Status", render: (state) => state.booking ? statusLabel(state.booking.status) : "No Booking" },
+                { key: "readiness", header: "Readiness", render: (state) => getReadinessLabel(state.readiness) },
+                { key: "time", header: "Delivery Time", render: (state) => state.booking?.delivery_time ? formatTime(state.booking.delivery_time) : "—" },
+              ]}
+            />
+            <PrintFooter />
+          </PrintReportLayout>
+        ) : null}
 
         {error ? (
           <div className="rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">

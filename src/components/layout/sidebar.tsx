@@ -40,6 +40,10 @@ const NavIcon = ({ icon }: { icon: NavItem["icon"] }) => {
       return <svg viewBox="0 0 24 24" fill="none" className={classes}><path d="M4 18h4v-6H4v6Zm6 0h4V6h-4v12Zm6 0h4v-9h-4v9Z" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>;
     case "opsCentre":
       return <svg viewBox="0 0 24 24" fill="none" className={classes}><circle cx="12" cy="12" r="8" strokeWidth="1.6" /><path d="M12 12 16 9m-4 3-5 4" strokeWidth="1.6" strokeLinecap="round" /></svg>;
+    case "exportOps":
+      return <svg viewBox="0 0 24 24" fill="none" className={classes}><path d="M4 7h11v10H4V7Zm11 3h3l2 2v5h-5v-7Zm-8 3h5m-5-3h5" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>;
+    case "vesselOps":
+      return <svg viewBox="0 0 24 24" fill="none" className={classes}><path d="M4 17c3-1 4.5-2 8-2s5 1 8 2c-1 2-3 3-8 3s-7-1-8-3Z" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /><path d="M6 11h12l-1 4H7l-1-4Zm4-6h4v6h-4V5Z" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>;
     default:
       return null;
   }
@@ -49,7 +53,7 @@ export function Sidebar({ onNavigate, mobile = false }: SidebarProps) {
   const pathname = usePathname();
 
   return (
-    <aside className={mobile ? "h-full w-full" : "sticky top-0 h-screen w-[248px] shrink-0 border-r border-[var(--fs-border)] bg-[linear-gradient(180deg,#020908_0%,#03110e_100%)]"}>
+    <aside className={mobile ? "h-full w-full print:hidden" : "sticky top-0 h-screen w-[248px] shrink-0 border-r border-[var(--fs-border)] bg-[linear-gradient(180deg,#020908_0%,#03110e_100%)] print:hidden"}>
       <div className="flex h-full flex-col px-4 py-5">
         <Link href="/dashboard" className="mb-5 rounded-xl px-2 py-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fs-green-light)]" onClick={onNavigate}>
           <div className="w-[180px]">

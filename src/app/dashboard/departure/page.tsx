@@ -15,6 +15,10 @@ type TrailerRecord = {
   container_number?: string | null;
   compound_position?: string | null;
   arrival_date?: string | null;
+  departure_date?: string | null;
+  departure_time?: string | null;
+  operational_status?: string | null;
+  is_local?: boolean | null;
 };
 
 export default function DeparturePage() {
@@ -94,13 +98,32 @@ export default function DeparturePage() {
 
     try {
       const now = new Date();
+      const nowIso = now.toISOString();
+      const nowTime = now.toTimeString().slice(0, 8);
+
+      const { data: currentTrailer, error: currentTrailerError } = await supabase
+        .from("trailers")
+        .select("id, trailer_number, departure_date, departure_time, compound_position, operational_status, is_local")
+        .eq("id", selectedTrailerId)
+        .single();
+
+      if (currentTrailerError || !currentTrailer) {
+        const message = currentTrailerError?.message || "Unable to load current trailer state before departure.";
+        setError(message);
+        alert(message);
+        return;
+      }
+
+      const updatePayload = {
+        departure_date: nowIso,
+        departure_time: nowTime,
+        operational_status: "Departed",
+        compound_position: null,
+      };
 
       const { data, error } = await supabase
         .from("trailers")
-        .update({
-          departure_date: now.toISOString(),
-          departure_time: now.toTimeString().slice(0, 8),
-        })
+        .update(updatePayload)
         .eq("id", selectedTrailerId)
         .select();
 
@@ -118,6 +141,30 @@ export default function DeparturePage() {
         setError(message);
         alert(message);
         return;
+      }
+
+      const { error: eventError } = await supabase.from("trailer_events").insert({
+        trailer_id: currentTrailer.id,
+        trailer_number: currentTrailer.trailer_number,
+        event_type: "departure_registered",
+        event_description: "Trailer departure registered.",
+        old_value: {
+          departure_date: currentTrailer.departure_date ?? null,
+          departure_time: currentTrailer.departure_time ?? null,
+          compound_position: currentTrailer.compound_position ?? null,
+          operational_status: currentTrailer.operational_status ?? null,
+        },
+        new_value: {
+          departure_date: updatePayload.departure_date,
+          departure_time: updatePayload.departure_time,
+          compound_position: updatePayload.compound_position,
+          operational_status: updatePayload.operational_status,
+        },
+      });
+
+      if (eventError) {
+        console.error("Departure saved but trailer event creation failed:", eventError);
+        alert("Departure saved, but history event could not be recorded.");
       }
 
       router.push("/dashboard?saved=1");

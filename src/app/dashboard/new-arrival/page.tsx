@@ -2,13 +2,16 @@
 
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 import { supabase } from "@/lib/supabase";
 
 const arrivalSchema = z.object({
   trailerNumber: z.string().trim().min(1, "Trailer Number is required"),
+  externalCompany: z.string().trim().optional(),
+  externalReference: z.string().trim().optional(),
   trailerType: z.string().min(1, "Select a trailer type"),
   loadStatus: z.enum(["Empty", "Loaded"]),
   loadDescription: z.string().trim().optional(),
@@ -32,8 +35,13 @@ type TrailerInsert = {
   compound_position: string | null;
   notes: string | null;
   arrival_date: string;
-  arrival_time: string;
+  trailer_source: "company" | "outsourced";
+  external_company: string | null;
+  external_reference: string | null;
+  is_local: boolean;
 };
+
+type TrailerSource = "company" | "outsourced";
 
 type CompanyTrailerOption = {
   id: string;
@@ -42,6 +50,13 @@ type CompanyTrailerOption = {
   numeric_part: number | null;
   trailer_type: string | null;
   active: boolean | null;
+};
+
+type VesselTrailerPrefill = {
+  trailer_number?: string | null;
+  customer?: string | null;
+  load_description?: string | null;
+  trailer_id?: string | null;
 };
 
 const trailerTypes = ["Dry Van", "Reefer", "Flatbed", "Tank", "Container"];
@@ -69,7 +84,8 @@ const getCompoundPositionState = async () => {
   const { data, error } = await supabase
     .from("trailers")
     .select("compound_position")
-    .is("departure_date", null);
+    .is("departure_date", null)
+    .neq("is_local", true);
 
   if (error) {
     throw error;
@@ -90,10 +106,13 @@ const getCompoundPositionState = async () => {
   return { occupiedPositions, availablePosition };
 };
 
-export default function NewArrivalPage() {
+function NewArrivalPageContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [assignedPosition, setAssignedPosition] = useState<string | null>(null);
   const [positionError, setPositionError] = useState<string | null>(null);
+  const [trailerSource, setTrailerSource] = useState<TrailerSource>("company");
+  const [isLocal, setIsLocal] = useState(false);
   const [companyTrailers, setCompanyTrailers] = useState<CompanyTrailerOption[]>([]);
   const [companyTrailerError, setCompanyTrailerError] = useState<string | null>(null);
   const [showSuggestions, setShowSuggestions] = useState(false);
@@ -112,11 +131,76 @@ export default function NewArrivalPage() {
     defaultValues: {
       trailerType: "Dry Van",
       loadStatus: "Empty",
+      externalCompany: "",
+      externalReference: "",
     },
   });
 
+  useEffect(() => {
+    const vesselTrailerId = searchParams.get("vesselTrailerId");
+
+    if (!vesselTrailerId) {
+      return;
+    }
+
+    const loadVesselTrailer = async () => {
+      try {
+        const { data, error } = await supabase
+          .from("vessel_operation_trailers")
+          .select("trailer_number, customer, load_description, trailer_id")
+          .eq("id", vesselTrailerId)
+          .single();
+
+        if (error) {
+          throw error;
+        }
+
+        const vesselTrailer = data as VesselTrailerPrefill;
+        if (vesselTrailer.trailer_number?.trim()) {
+          setValue("trailerNumber", vesselTrailer.trailer_number.trim(), { shouldDirty: true, shouldValidate: true });
+        }
+
+        if (vesselTrailer.customer?.trim()) {
+          setValue("customer", vesselTrailer.customer.trim(), { shouldDirty: true, shouldValidate: true });
+        }
+
+        if (vesselTrailer.load_description?.trim()) {
+          setValue("loadDescription", vesselTrailer.load_description.trim(), { shouldDirty: true, shouldValidate: true });
+        }
+
+        setTrailerSource("company");
+        setShowSuggestions(false);
+      } catch (prefillError) {
+        const message = prefillError instanceof Error ? prefillError.message : "Unable to prefill vessel trailer.";
+        setCompanyTrailerError(message);
+      }
+    };
+
+    void loadVesselTrailer();
+  }, [searchParams, setValue]);
+
   // eslint-disable-next-line react-hooks/incompatible-library
   const trailerNumberValue = watch("trailerNumber") ?? "";
+
+  useEffect(() => {
+    if (trailerSource === "outsourced") {
+      setSelectedCompanyTrailer(null);
+      setShowSuggestions(false);
+    } else {
+      setValue("externalCompany", "", { shouldDirty: true });
+      setValue("externalReference", "", { shouldDirty: true });
+      clearErrors("externalCompany");
+    }
+  }, [clearErrors, setValue, trailerSource]);
+
+  useEffect(() => {
+    if (!isLocal) {
+      return;
+    }
+
+    setValue("compoundPosition", "", { shouldDirty: true });
+    setPositionError(null);
+  }, [isLocal, setValue]);
 
   useEffect(() => {
     const loadAssignedPosition = async () => {
@@ -158,6 +242,10 @@ export default function NewArrivalPage() {
   }, []);
 
   useEffect(() => {
+    if (trailerSource !== "company") {
+      return;
+    }
+
     if (!trailerNumberValue?.trim()) {
       setSelectedCompanyTrailer(null);
       return;
@@ -176,7 +264,7 @@ export default function NewArrivalPage() {
     } else {
       setSelectedCompanyTrailer(null);
     }
-  }, [companyTrailers, setValue, trailerNumberValue]);
+  }, [companyTrailers, setValue, trailerNumberValue, trailerSource]);
 
   const filteredCompanyTrailers = trailerNumberValue.trim()
     ? companyTrailers.filter((trailer) => {
@@ -202,11 +290,6 @@ export default function NewArrivalPage() {
 
   const onSubmit = async (values: ArrivalFormValues) => {
     const arrivalDate = new Date().toISOString().split("T")[0];
-    const arrivalTime = new Date().toLocaleTimeString("en-GB", {
-      hour: "2-digit",
-      minute: "2-digit",
-      hour12: false,
-    });
 
     setPositionError(null);
 
@@ -215,58 +298,83 @@ export default function NewArrivalPage() {
       (trailer) => trailer.trailer_number.trim().toLowerCase() === normalizedTrailerNumber.toLowerCase(),
     );
 
-    if (!matchedTrailer) {
+    if (trailerSource === "company" && !matchedTrailer) {
       const message = "Please select a trailer number from the company trailer master list.";
       setError("trailerNumber", { type: "manual", message });
       window.alert(message);
       return;
     }
 
-    try {
-      const { occupiedPositions, availablePosition } = await getCompoundPositionState();
-      const manualPosition = values.compoundPosition?.trim();
-      let finalPosition: string | null = null;
-
-      if (manualPosition) {
-        const normalizedManualPosition = normalizeCompoundPosition(manualPosition);
-        if (!normalizedManualPosition) {
-          const message = "Please select a valid compound position from P01 to P50.";
-          setPositionError(message);
-          window.alert(message);
-          return;
-        }
-
-        if (occupiedPositions.has(normalizedManualPosition)) {
-          const message = `Position ${normalizedManualPosition} is already occupied.`;
-          setPositionError(message);
-          window.alert(message);
-          return;
-        }
-
-        finalPosition = normalizedManualPosition;
-      } else {
-        finalPosition = availablePosition ?? null;
-      }
-
-      if (!finalPosition) {
-        const message = "Compound is full.";
-        setPositionError(message);
+    if (trailerSource === "outsourced") {
+      if (!normalizedTrailerNumber) {
+        const message = "Trailer Number is required for outsourced trailers.";
+        setError("trailerNumber", { type: "manual", message });
         window.alert(message);
         return;
       }
 
+      if (!values.externalCompany?.trim()) {
+        const message = "Transport Company is required for outsourced trailers.";
+        setError("externalCompany", { type: "manual", message });
+        window.alert(message);
+        return;
+      }
+    }
+
+    try {
+      let finalPosition: string | null = null;
+
+      if (!isLocal) {
+        const { occupiedPositions, availablePosition } = await getCompoundPositionState();
+        const manualPosition = values.compoundPosition?.trim();
+
+        if (manualPosition) {
+          const normalizedManualPosition = normalizeCompoundPosition(manualPosition);
+          if (!normalizedManualPosition) {
+            const message = "Please select a valid compound position from P01 to P50.";
+            setPositionError(message);
+            window.alert(message);
+            return;
+          }
+
+          if (occupiedPositions.has(normalizedManualPosition)) {
+            const message = `Position ${normalizedManualPosition} is already occupied.`;
+            setPositionError(message);
+            window.alert(message);
+            return;
+          }
+
+          finalPosition = normalizedManualPosition;
+        } else {
+          finalPosition = availablePosition ?? null;
+        }
+
+        if (!finalPosition) {
+          const message = "Compound is full.";
+          setPositionError(message);
+          window.alert(message);
+          return;
+        }
+      }
+
       const payload: TrailerInsert = {
-        trailer_number: matchedTrailer.trailer_number,
+        trailer_number:
+          trailerSource === "company"
+            ? (matchedTrailer?.trailer_number ?? normalizedTrailerNumber).trim()
+            : normalizedTrailerNumber.toUpperCase(),
         trailer_type: values.trailerType,
         load_status: values.loadStatus,
         load_description: values.loadDescription?.trim() || null,
         customer: values.customer?.trim() || null,
         consignee: values.consignee?.trim() || null,
         container_number: values.containerNumber?.trim() || null,
-        compound_position: finalPosition,
+        compound_position: isLocal ? null : finalPosition,
         notes: values.notes?.trim() || null,
         arrival_date: arrivalDate,
-        arrival_time: arrivalTime,
+        trailer_source: trailerSource,
+        external_company: trailerSource === "outsourced" ? values.externalCompany?.trim() || null : null,
+        external_reference: trailerSource === "outsourced" ? values.externalReference?.trim() || null : null,
+        is_local: isLocal,
       };
 
       const { data, error } = await supabase.from("trailers").insert([payload]).select().single();
@@ -282,7 +390,34 @@ export default function NewArrivalPage() {
         return;
       }
 
+      const eventDescription = isLocal
+        ? "Local trailer arrival registered."
+        : trailerSource === "outsourced"
+          ? "Outsourced trailer arrival registered."
+          : "Ferryspeed fleet trailer arrival registered.";
+
+      const { error: eventError } = await supabase.from("trailer_events").insert({
+        trailer_id: data.id,
+        trailer_number: data.trailer_number,
+        event_type: "arrival_registered",
+        event_description: eventDescription,
+        new_value: {
+          trailer_source: payload.trailer_source,
+          external_company: payload.external_company,
+          external_reference: payload.external_reference,
+          is_local: payload.is_local,
+          compound_position: payload.compound_position,
+          load_status: payload.load_status,
+        },
+      });
+
+      if (eventError) {
+        console.error("Failed to save trailer arrival event:", eventError);
+      }
+
       reset();
+      setTrailerSource("company");
+      setIsLocal(false);
       router.push("/dashboard?saved=1");
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to save arrival.";
@@ -305,6 +440,67 @@ export default function NewArrivalPage() {
           onSubmit={handleSubmit(onSubmit)}
           className="rounded-3xl border border-white/10 bg-slate-900/70 p-4 shadow-2xl shadow-black/20 backdrop-blur sm:p-6"
         >
+          <section className="mb-5 rounded-2xl border border-white/10 bg-slate-950/40 p-4">
+            <p className="text-sm font-semibold text-white">Trailer Ownership</p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => setTrailerSource("company")}
+                className={`rounded-2xl px-4 py-2 text-sm font-semibold transition ${
+                  trailerSource === "company"
+                    ? "bg-cyan-500 text-slate-950"
+                    : "border border-white/10 bg-slate-900 text-slate-200 hover:bg-slate-800"
+                }`}
+              >
+                Ferryspeed Fleet
+              </button>
+              <button
+                type="button"
+                onClick={() => setTrailerSource("outsourced")}
+                className={`rounded-2xl px-4 py-2 text-sm font-semibold transition ${
+                  trailerSource === "outsourced"
+                    ? "bg-cyan-500 text-slate-950"
+                    : "border border-white/10 bg-slate-900 text-slate-200 hover:bg-slate-800"
+                }`}
+              >
+                Outsourced / External
+              </button>
+            </div>
+          </section>
+
+          <section className="mb-5 rounded-2xl border border-white/10 bg-slate-950/40 p-4">
+            <p className="text-sm font-semibold text-white">Trailer Location</p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => setIsLocal(false)}
+                className={`rounded-2xl px-4 py-2 text-sm font-semibold transition ${
+                  !isLocal
+                    ? "bg-cyan-500 text-slate-950"
+                    : "border border-white/10 bg-slate-900 text-slate-200 hover:bg-slate-800"
+                }`}
+              >
+                Compound Trailer
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsLocal(true)}
+                className={`rounded-2xl px-4 py-2 text-sm font-semibold transition ${
+                  isLocal
+                    ? "bg-cyan-500 text-slate-950"
+                    : "border border-white/10 bg-slate-900 text-slate-200 hover:bg-slate-800"
+                }`}
+              >
+                Local Trailer
+              </button>
+            </div>
+            {isLocal ? (
+              <p className="mt-3 text-sm text-indigo-200">
+                Local trailers do not occupy a compound position and are excluded from compound occupancy.
+              </p>
+            ) : null}
+          </section>
+
           <div className="grid gap-4 md:grid-cols-2">
             <div className="md:col-span-2">
               <label className="mb-2 block text-sm font-medium text-slate-200">Trailer Number</label>
@@ -316,17 +512,27 @@ export default function NewArrivalPage() {
                     const nextValue = event.target.value;
                     setValue("trailerNumber", nextValue, { shouldDirty: true, shouldValidate: true });
                     clearErrors("trailerNumber");
-                    setSelectedCompanyTrailer(null);
-                    setShowSuggestions(true);
+                    if (trailerSource === "company") {
+                      setSelectedCompanyTrailer(null);
+                      setShowSuggestions(true);
+                    }
                   }}
-                  onFocus={() => setShowSuggestions(true)}
-                  onBlur={() => window.setTimeout(() => setShowSuggestions(false), 120)}
+                  onFocus={() => {
+                    if (trailerSource === "company") {
+                      setShowSuggestions(true);
+                    }
+                  }}
+                  onBlur={() => {
+                    if (trailerSource === "company") {
+                      window.setTimeout(() => setShowSuggestions(false), 120);
+                    }
+                  }}
                   className="w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm outline-none ring-0"
-                  placeholder="Search company trailers"
+                  placeholder={trailerSource === "company" ? "Search company trailers" : "Enter trailer number"}
                   autoComplete="off"
                 />
 
-                {showSuggestions && filteredCompanyTrailers.length > 0 ? (
+                {trailerSource === "company" && showSuggestions && filteredCompanyTrailers.length > 0 ? (
                   <div className="absolute z-20 mt-2 max-h-56 w-full overflow-auto rounded-2xl border border-white/10 bg-slate-950/95 shadow-xl shadow-black/30">
                     {filteredCompanyTrailers.map((trailer) => {
                       const label = [trailer.trailer_number, trailer.prefix ? `• ${trailer.prefix}` : null]
@@ -355,10 +561,33 @@ export default function NewArrivalPage() {
 
               {companyTrailerError ? <p className="mt-2 text-sm text-amber-400">{companyTrailerError}</p> : null}
               {errors.trailerNumber ? <p className="mt-2 text-sm text-rose-400">{errors.trailerNumber.message}</p> : null}
-              {selectedCompanyTrailer ? (
+              {trailerSource === "company" && selectedCompanyTrailer ? (
                 <p className="mt-2 text-sm text-emerald-400">Selected from company master list.</p>
               ) : null}
             </div>
+
+            {trailerSource === "outsourced" ? (
+              <>
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-slate-200">Transport Company *</label>
+                  <input
+                    {...register("externalCompany")}
+                    className="w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm outline-none"
+                    placeholder="External transport company"
+                  />
+                  {errors.externalCompany ? <p className="mt-2 text-sm text-rose-400">{errors.externalCompany.message}</p> : null}
+                </div>
+
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-slate-200">External Reference</label>
+                  <input
+                    {...register("externalReference")}
+                    className="w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm outline-none"
+                    placeholder="Optional"
+                  />
+                </div>
+              </>
+            ) : null}
 
             <div>
               <label className="mb-2 block text-sm font-medium text-slate-200">Trailer Type</label>
@@ -426,12 +655,13 @@ export default function NewArrivalPage() {
               <label className="mb-2 block text-sm font-medium text-slate-200">Compound Position</label>
               <div className="space-y-2">
                 <input
-                  value={assignedPosition ?? "Loading..."}
+                  value={isLocal ? "Local trailer" : assignedPosition ?? "Loading..."}
                   readOnly
                   className="w-full rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-3 text-sm text-slate-300 outline-none"
                 />
                 <select
                   {...register("compoundPosition")}
+                  disabled={isLocal}
                   className="w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm outline-none"
                 >
                   <option value="">Use auto-assigned position</option>
@@ -442,7 +672,7 @@ export default function NewArrivalPage() {
                   ))}
                 </select>
               </div>
-              {positionError ? <p className="mt-2 text-sm text-rose-400">{positionError}</p> : null}
+              {!isLocal && positionError ? <p className="mt-2 text-sm text-rose-400">{positionError}</p> : null}
             </div>
 
             <div className="md:col-span-2">
@@ -497,5 +727,13 @@ export default function NewArrivalPage() {
         </form>
       </div>
     </main>
+  );
+}
+
+export default function NewArrivalPage() {
+  return (
+    <Suspense fallback={<div className="min-h-screen bg-slate-950 p-6 text-slate-200">Loading New Arrival...</div>}>
+      <NewArrivalPageContent />
+    </Suspense>
   );
 }

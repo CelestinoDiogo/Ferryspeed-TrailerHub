@@ -16,6 +16,10 @@ type TrailerRecord = {
   compound_position?: string | null;
   notes?: string | null;
   departure_date?: string | null;
+  trailer_source?: "company" | "outsourced" | null;
+  external_company?: string | null;
+  external_reference?: string | null;
+  is_local?: boolean | null;
 };
 
 type TrailerFormValues = {
@@ -27,6 +31,10 @@ type TrailerFormValues = {
   containerNumber: string;
   compoundPosition: string;
   notes: string;
+  trailerSource: "company" | "outsourced";
+  externalCompany: string;
+  externalReference: string;
+  isLocal: boolean;
 };
 
 const trailerTypes = ["Dry Van", "Reefer", "Flatbed", "Tank", "Container"];
@@ -40,6 +48,10 @@ const initialFormValues: TrailerFormValues = {
   containerNumber: "",
   compoundPosition: "",
   notes: "",
+  trailerSource: "company",
+  externalCompany: "",
+  externalReference: "",
+  isLocal: false,
 };
 
 const normalizeCompoundPosition = (value?: string | null) => {
@@ -66,14 +78,53 @@ const isActiveTrailer = (trailer: TrailerRecord) => {
   return departureDate === null || departureDate === undefined || departureDate === "";
 };
 
+const getCompoundPositionState = async (currentTrailerId?: string) => {
+  const query = supabase
+    .from("trailers")
+    .select("id, compound_position")
+    .is("departure_date", null)
+    .neq("is_local", true);
+
+  const { data, error } = currentTrailerId ? await query.neq("id", currentTrailerId) : await query;
+
+  if (error) {
+    throw error;
+  }
+
+  const occupiedPositions = new Set<string>();
+  (data ?? []).forEach((item) => {
+    const normalizedPosition = normalizeCompoundPosition(item.compound_position as string | null | undefined);
+    if (normalizedPosition) {
+      occupiedPositions.add(normalizedPosition);
+    }
+  });
+
+  const firstAvailable = Array.from({ length: 50 }, (_, index) => `P${String(index + 1).padStart(2, "0")}`).find(
+    (position) => !occupiedPositions.has(position),
+  );
+
+  return { occupiedPositions, firstAvailable };
+};
+
 export default function EditTrailerPage() {
   const [trailers, setTrailers] = useState<TrailerRecord[]>([]);
   const [selectedTrailerId, setSelectedTrailerId] = useState("");
+  const [requestedTrailerId, setRequestedTrailerId] = useState<string | null>(null);
+  const [requestedAction, setRequestedAction] = useState<string | null>(null);
   const [formValues, setFormValues] = useState<TrailerFormValues>(initialFormValues);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const idFromQuery = params.get("id") || params.get("trailerId");
+    const actionFromQuery = params.get("action");
+
+    setRequestedTrailerId(idFromQuery);
+    setRequestedAction(actionFromQuery);
+  }, []);
 
   useEffect(() => {
     const loadTrailers = async () => {
@@ -83,7 +134,7 @@ export default function EditTrailerPage() {
       try {
         const { data, error: supabaseError } = await supabase
           .from("trailers")
-          .select("id, trailer_number, trailer_type, load_status, load_description, customer, consignee, container_number, compound_position, notes, departure_date")
+          .select("id, trailer_number, trailer_type, load_status, load_description, customer, consignee, container_number, compound_position, notes, departure_date, trailer_source, external_company, external_reference, is_local")
           .is("departure_date", null)
           .order("trailer_number", { ascending: true });
 
@@ -101,7 +152,10 @@ export default function EditTrailerPage() {
 
         setTrailers(availableTrailers);
         if (availableTrailers.length > 0) {
-          const initialTrailer = availableTrailers[0];
+          const requestedTrailer = requestedTrailerId
+            ? availableTrailers.find((trailer) => trailer.id === requestedTrailerId)
+            : null;
+          const initialTrailer = requestedTrailer ?? availableTrailers[0];
           setSelectedTrailerId((current) => current || initialTrailer.id);
           setFormValues({
             trailerType: initialTrailer.trailer_type?.trim() || "Dry Van",
@@ -112,7 +166,16 @@ export default function EditTrailerPage() {
             containerNumber: initialTrailer.container_number ?? "",
             compoundPosition: initialTrailer.compound_position ?? "",
             notes: initialTrailer.notes ?? "",
+            trailerSource: initialTrailer.trailer_source === "outsourced" ? "outsourced" : "company",
+            externalCompany: initialTrailer.external_company ?? "",
+            externalReference: initialTrailer.external_reference ?? "",
+            isLocal: initialTrailer.is_local === true,
           });
+
+          if (requestedAction === "move_to_compound") {
+            setFormValues((current) => ({ ...current, isLocal: false }));
+            setNotice("Move to compound requested. Please assign or confirm a compound position and save.");
+          }
         } else {
           setSelectedTrailerId("");
           setFormValues(initialFormValues);
@@ -126,7 +189,7 @@ export default function EditTrailerPage() {
     };
 
     void loadTrailers();
-  }, []);
+  }, [requestedAction, requestedTrailerId]);
 
   const applyTrailerToForm = (trailerId: string) => {
     const trailer = trailers.find((item) => item.id === trailerId) ?? null;
@@ -143,6 +206,10 @@ export default function EditTrailerPage() {
       containerNumber: trailer.container_number ?? "",
       compoundPosition: trailer.compound_position ?? "",
       notes: trailer.notes ?? "",
+      trailerSource: trailer.trailer_source === "outsourced" ? "outsourced" : "company",
+      externalCompany: trailer.external_company ?? "",
+      externalReference: trailer.external_reference ?? "",
+      isLocal: trailer.is_local === true,
     });
   };
 
@@ -160,7 +227,7 @@ export default function EditTrailerPage() {
     [selectedTrailerId, trailers]
   );
 
-  const handleChange = (field: keyof TrailerFormValues, value: string) => {
+  const handleChange = (field: keyof TrailerFormValues, value: string | boolean) => {
     setFormValues((current) => ({ ...current, [field]: value }));
   };
 
@@ -177,15 +244,44 @@ export default function EditTrailerPage() {
     setNotice(null);
 
     try {
+      const { data: currentTrailerSnapshot, error: currentTrailerError } = await supabase
+        .from("trailers")
+        .select("id, trailer_number, trailer_type, load_status, load_description, customer, consignee, container_number, compound_position, notes, trailer_source, external_company, external_reference, is_local")
+        .eq("id", selectedTrailer.id)
+        .single();
+
+      if (currentTrailerError || !currentTrailerSnapshot) {
+        setError(currentTrailerError?.message || "Unable to load current trailer state before save.");
+        return;
+      }
+
+      if (formValues.trailerSource === "outsourced" && !formValues.externalCompany.trim()) {
+        setError("External Company is required for outsourced trailers.");
+        return;
+      }
+
       const normalizedPosition = normalizeCompoundPosition(formValues.compoundPosition);
+      const targetIsLocal = formValues.isLocal === true;
+      let finalPosition = normalizedPosition;
       let hasPositionConflict = false;
 
-      if (normalizedPosition) {
+      if (!targetIsLocal && !finalPosition) {
+        const { firstAvailable } = await getCompoundPositionState(selectedTrailer.id);
+        if (!firstAvailable) {
+          setError("No compound positions available for this trailer.");
+          return;
+        }
+
+        finalPosition = firstAvailable;
+      }
+
+      if (!targetIsLocal && finalPosition) {
         const { data: occupiedTrailers, error: positionError } = await supabase
           .from("trailers")
           .select("id, trailer_number, compound_position")
           .is("departure_date", null)
-          .eq("compound_position", normalizedPosition)
+          .neq("is_local", true)
+          .eq("compound_position", finalPosition)
           .neq("id", selectedTrailer.id)
           .limit(1);
 
@@ -213,7 +309,7 @@ export default function EditTrailerPage() {
       }
 
       if (hasPositionConflict) {
-        const message = `Compound position ${normalizedPosition} is already occupied by another active trailer.`;
+        const message = `Compound position ${finalPosition} is already occupied by another active trailer.`;
         setError(message);
         return;
       }
@@ -225,8 +321,12 @@ export default function EditTrailerPage() {
         customer: formValues.customer.trim() || null,
         consignee: formValues.consignee.trim() || null,
         container_number: formValues.containerNumber.trim() || null,
-        compound_position: normalizedPosition ?? null,
+        compound_position: targetIsLocal ? null : finalPosition,
         notes: formValues.notes.trim() || null,
+        trailer_source: formValues.trailerSource,
+        external_company: formValues.trailerSource === "outsourced" ? formValues.externalCompany.trim() || null : null,
+        external_reference: formValues.trailerSource === "outsourced" ? formValues.externalReference.trim() || null : null,
+        is_local: targetIsLocal,
       };
 
       const { data, error: updateError } = await supabase
@@ -258,9 +358,119 @@ export default function EditTrailerPage() {
         return;
       }
 
+      const eventInserts: Array<{
+        trailer_id: string;
+        trailer_number: string | null;
+        event_type: string;
+        event_description: string;
+        old_value: Record<string, unknown>;
+        new_value: Record<string, unknown>;
+      }> = [];
+
+      eventInserts.push({
+        trailer_id: selectedTrailer.id,
+        trailer_number: selectedTrailer.trailer_number ?? null,
+        event_type: "trailer_updated",
+        event_description: "Trailer details updated.",
+        old_value: {
+          trailer_type: currentTrailerSnapshot.trailer_type ?? null,
+          load_status: currentTrailerSnapshot.load_status ?? null,
+          load_description: currentTrailerSnapshot.load_description ?? null,
+          customer: currentTrailerSnapshot.customer ?? null,
+          consignee: currentTrailerSnapshot.consignee ?? null,
+          container_number: currentTrailerSnapshot.container_number ?? null,
+          compound_position: currentTrailerSnapshot.compound_position ?? null,
+          notes: currentTrailerSnapshot.notes ?? null,
+          trailer_source: currentTrailerSnapshot.trailer_source ?? "company",
+          external_company: currentTrailerSnapshot.external_company ?? null,
+          external_reference: currentTrailerSnapshot.external_reference ?? null,
+          is_local: currentTrailerSnapshot.is_local === true,
+        },
+        new_value: {
+          trailer_type: updatePayload.trailer_type,
+          load_status: updatePayload.load_status,
+          load_description: updatePayload.load_description,
+          customer: updatePayload.customer,
+          consignee: updatePayload.consignee,
+          container_number: updatePayload.container_number,
+          compound_position: updatePayload.compound_position,
+          notes: updatePayload.notes,
+          trailer_source: updatePayload.trailer_source,
+          external_company: updatePayload.external_company,
+          external_reference: updatePayload.external_reference,
+          is_local: updatePayload.is_local,
+        },
+      });
+
+      if ((currentTrailerSnapshot.trailer_source ?? "company") !== updatePayload.trailer_source) {
+        eventInserts.push({
+          trailer_id: selectedTrailer.id,
+          trailer_number: selectedTrailer.trailer_number ?? null,
+          event_type: "trailer_source_changed",
+          event_description: "Trailer ownership source updated.",
+          old_value: { trailer_source: currentTrailerSnapshot.trailer_source ?? "company" },
+          new_value: { trailer_source: updatePayload.trailer_source },
+        });
+      }
+
+      if ((currentTrailerSnapshot.is_local === true) !== (updatePayload.is_local === true)) {
+        eventInserts.push({
+          trailer_id: selectedTrailer.id,
+          trailer_number: selectedTrailer.trailer_number ?? null,
+          event_type: "trailer_location_changed",
+          event_description: "Trailer location type updated between compound and local.",
+          old_value: { is_local: currentTrailerSnapshot.is_local === true },
+          new_value: { is_local: updatePayload.is_local === true },
+        });
+      }
+
+      if ((currentTrailerSnapshot.external_company ?? "") !== (updatePayload.external_company ?? "")) {
+        eventInserts.push({
+          trailer_id: selectedTrailer.id,
+          trailer_number: selectedTrailer.trailer_number ?? null,
+          event_type: "external_company_changed",
+          event_description: "External company assignment updated.",
+          old_value: { external_company: currentTrailerSnapshot.external_company ?? null },
+          new_value: { external_company: updatePayload.external_company ?? null },
+        });
+      }
+
+      if ((currentTrailerSnapshot.compound_position ?? "") !== (updatePayload.compound_position ?? "")) {
+        eventInserts.push({
+          trailer_id: selectedTrailer.id,
+          trailer_number: selectedTrailer.trailer_number ?? null,
+          event_type: "compound_position_changed",
+          event_description: "Compound position updated.",
+          old_value: { compound_position: currentTrailerSnapshot.compound_position ?? null },
+          new_value: { compound_position: updatePayload.compound_position ?? null },
+        });
+      }
+
+      if (eventInserts.length > 0) {
+        const { error: eventError } = await supabase.from("trailer_events").insert(eventInserts);
+        if (eventError) {
+          console.error("Failed to save edit trailer events:", eventError);
+        }
+      }
+
       setTrailers((current) =>
         current.map((trailer) => (trailer.id === selectedTrailer.id ? { ...trailer, ...(data as TrailerRecord) } : trailer))
       );
+      const savedTrailer = data as TrailerRecord;
+      setFormValues({
+        trailerType: savedTrailer.trailer_type?.trim() || "Dry Van",
+        loadStatus: savedTrailer.load_status?.trim() || "Empty",
+        loadDescription: savedTrailer.load_description ?? "",
+        customer: savedTrailer.customer ?? "",
+        consignee: savedTrailer.consignee ?? "",
+        containerNumber: savedTrailer.container_number ?? "",
+        compoundPosition: savedTrailer.compound_position ?? "",
+        notes: savedTrailer.notes ?? "",
+        trailerSource: savedTrailer.trailer_source === "outsourced" ? "outsourced" : "company",
+        externalCompany: savedTrailer.external_company ?? "",
+        externalReference: savedTrailer.external_reference ?? "",
+        isLocal: savedTrailer.is_local === true,
+      });
       setNotice("Trailer updated successfully.");
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unable to update the trailer.";
@@ -338,6 +548,70 @@ export default function EditTrailerPage() {
           onSubmit={handleSubmit}
           className="rounded-3xl border border-white/10 bg-slate-900/70 p-4 shadow-2xl shadow-black/20 backdrop-blur sm:p-6"
         >
+          <section className="mb-5 rounded-2xl border border-white/10 bg-slate-950/40 p-4">
+            <p className="text-sm font-semibold text-white">Trailer Ownership</p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => handleChange("trailerSource", "company")}
+                className={`rounded-2xl px-4 py-2 text-sm font-semibold transition ${
+                  formValues.trailerSource === "company"
+                    ? "bg-cyan-500 text-slate-950"
+                    : "border border-white/10 bg-slate-900 text-slate-200 hover:bg-slate-800"
+                }`}
+              >
+                Ferryspeed Fleet
+              </button>
+              <button
+                type="button"
+                onClick={() => handleChange("trailerSource", "outsourced")}
+                className={`rounded-2xl px-4 py-2 text-sm font-semibold transition ${
+                  formValues.trailerSource === "outsourced"
+                    ? "bg-cyan-500 text-slate-950"
+                    : "border border-white/10 bg-slate-900 text-slate-200 hover:bg-slate-800"
+                }`}
+              >
+                Outsourced / External
+              </button>
+            </div>
+          </section>
+
+          <section className="mb-5 rounded-2xl border border-white/10 bg-slate-950/40 p-4">
+            <p className="text-sm font-semibold text-white">Trailer Location</p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => handleChange("isLocal", false)}
+                className={`rounded-2xl px-4 py-2 text-sm font-semibold transition ${
+                  !formValues.isLocal
+                    ? "bg-cyan-500 text-slate-950"
+                    : "border border-white/10 bg-slate-900 text-slate-200 hover:bg-slate-800"
+                }`}
+              >
+                Compound Trailer
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  handleChange("isLocal", true);
+                  handleChange("compoundPosition", "");
+                }}
+                className={`rounded-2xl px-4 py-2 text-sm font-semibold transition ${
+                  formValues.isLocal
+                    ? "bg-cyan-500 text-slate-950"
+                    : "border border-white/10 bg-slate-900 text-slate-200 hover:bg-slate-800"
+                }`}
+              >
+                Local Trailer
+              </button>
+            </div>
+            {formValues.isLocal ? (
+              <p className="mt-3 text-sm text-indigo-200">
+                Local trailers do not occupy a compound position and are excluded from compound occupancy.
+              </p>
+            ) : null}
+          </section>
+
           <div className="grid gap-4 md:grid-cols-2">
             <div>
               <label className="mb-2 block text-sm font-medium text-slate-200">Trailer Type</label>
@@ -406,15 +680,44 @@ export default function EditTrailerPage() {
               />
             </div>
 
+            {formValues.trailerSource === "outsourced" ? (
+              <>
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-slate-200">External Company *</label>
+                  <input
+                    value={formValues.externalCompany}
+                    onChange={(event) => handleChange("externalCompany", event.target.value)}
+                    className="w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm outline-none"
+                    placeholder="External company"
+                  />
+                </div>
+
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-slate-200">External Reference</label>
+                  <input
+                    value={formValues.externalReference}
+                    onChange={(event) => handleChange("externalReference", event.target.value)}
+                    className="w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm outline-none"
+                    placeholder="Optional reference"
+                  />
+                </div>
+              </>
+            ) : null}
+
             <div>
               <label className="mb-2 block text-sm font-medium text-slate-200">Compound Position</label>
               <input
                 value={formValues.compoundPosition}
                 onChange={(event) => handleChange("compoundPosition", event.target.value)}
+                disabled={formValues.isLocal}
                 className="w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm outline-none"
                 placeholder="P01"
               />
-              <p className="mt-2 text-sm text-slate-400">Use a value like P01 to P50. Occupied positions are blocked.</p>
+              <p className="mt-2 text-sm text-slate-400">
+                {formValues.isLocal
+                  ? "Local trailer selected. Compound position will be cleared on save."
+                  : "Use a value like P01 to P50. Occupied positions are blocked. If left empty, first available position is assigned."}
+              </p>
             </div>
 
             <div className="md:col-span-2">
