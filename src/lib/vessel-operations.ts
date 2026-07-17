@@ -1,18 +1,21 @@
 export type VesselOperationStatus =
+  | "draft"
+  | "confirmed"
+  | "completed"
   | "planning"
   | "arriving"
   | "discharging"
   | "inspection"
-  | "completed"
   | "cancelled";
 
 export type VesselTrailerStatus =
   | "expected"
-  | "available_for_arrival"
   | "arrived"
+  | "inspected"
+  | "not_arrived"
+  | "available_for_arrival"
   | "inspection_pending"
   | "inspection_in_progress"
-  | "inspected"
   | "positioned"
   | "not_discharged"
   | "cancelled";
@@ -52,7 +55,7 @@ export type VesselOperationTrailerRecord = {
   planning_notes?: string | null;
   status: VesselTrailerStatus;
   arrived_at?: string | null;
-  arrival_status?: "expected" | "available_for_arrival" | "arrived" | "cancelled" | "not_discharged" | null;
+  arrival_status?: "expected" | "arrived" | "not_arrived" | "available_for_arrival" | "cancelled" | "not_discharged" | null;
   arrival_confirmed_at?: string | null;
   arrival_record_id?: string | null;
   arrival_confirmed_by?: string | null;
@@ -75,8 +78,7 @@ export type SupabaseErrorLike = {
 
 export type VesselInspectionDamageRecord = {
   id: string;
-  vessel_operation_id: string;
-  vessel_operation_trailer_id: string;
+  vessel_trailer_id?: string | null;
   damage_type?: string | null;
   damage_location?: string | null;
   severity?: string | null;
@@ -87,21 +89,26 @@ export type VesselInspectionDamageRecord = {
 
 export type VesselInspectionTemperatureRecord = {
   id: string;
-  vessel_operation_id: string;
-  vessel_operation_trailer_id: string;
+  vessel_trailer_id?: string | null;
+  trailer_id?: string | null;
+  trailer_number?: string | null;
   temperature_value?: number | string | null;
-  unit?: string | null;
+  temperature_unit?: string | null;
   reading_point?: string | null;
   notes?: string | null;
-  out_of_range?: boolean | null;
+  is_out_of_range?: boolean | null;
   recorded_at?: string | null;
   recorded_by?: string | null;
 };
 
+export type VesselTrailerTemperaturePair = {
+  front: VesselInspectionTemperatureRecord | null;
+  rear: VesselInspectionTemperatureRecord | null;
+};
+
 export type VesselInspectionPhotoRecord = {
   id: string;
-  vessel_operation_id: string;
-  vessel_operation_trailer_id: string;
+  vessel_trailer_id?: string | null;
   category?: string | null;
   storage_path?: string | null;
   file_name?: string | null;
@@ -112,42 +119,55 @@ export type VesselInspectionPhotoRecord = {
 
 export type VesselOperationSummary = {
   expected: number;
-  availableForArrival: number;
   arrived: number;
+  notArrived: number;
   remaining: number;
+  inspectionPending: number;
+  inspected: number;
+  damages: number;
+  temperatureAlerts: number;
+  availableForArrival: number;
   pending: number;
   priority: number;
   priorityRemaining: number;
   normal: number;
   cancelled: number;
   notDischarged: number;
-  pendingInspection: number;
   inProgress: number;
-  inspected: number;
   positioned: number;
+  pendingInspection: number;
   damagedTrailers: number;
-  temperatureAlerts: number;
 };
 
+export type VesselReceptionDestination = "compound" | "local" | "hold";
+export type VesselReceptionLoadStatus = "Empty" | "Loaded";
+
+export type VesselArrivalWorkflowState = "expected" | "arrived" | "inspection_pending" | "ready_for_reception" | "received" | "cancelled";
+
+export type VesselInspectionProgressState = "not_started" | "in_progress" | "completed" | "issues_found";
+
 export const VESSEL_OPERATION_STATUS_LABELS: Record<VesselOperationStatus, string> = {
-  planning: "Planning",
-  arriving: "Arriving",
-  discharging: "Discharging",
-  inspection: "Inspection",
+  draft: "Draft",
+  confirmed: "Confirmed",
   completed: "Completed",
-  cancelled: "Cancelled",
+  planning: "Draft",
+  arriving: "Confirmed",
+  discharging: "Confirmed",
+  inspection: "Confirmed",
+  cancelled: "Completed",
 };
 
 export const VESSEL_TRAILER_STATUS_LABELS: Record<VesselTrailerStatus, string> = {
   expected: "Expected",
-  available_for_arrival: "Available for Arrival",
   arrived: "Arrived",
-  inspection_pending: "Inspection Pending",
-  inspection_in_progress: "Inspection In Progress",
   inspected: "Inspected",
-  positioned: "Positioned",
-  not_discharged: "Not Discharged",
-  cancelled: "Cancelled",
+  not_arrived: "Not Arrived",
+  available_for_arrival: "Expected",
+  inspection_pending: "Arrived",
+  inspection_in_progress: "Arrived",
+  positioned: "Inspected",
+  not_discharged: "Not Arrived",
+  cancelled: "Not Arrived",
 };
 
 export const VESSEL_PRIORITY_LABELS: Record<VesselPriorityLevel, string> = {
@@ -164,6 +184,8 @@ export const PLANNED_DESTINATION_SUGGESTIONS = [
   "Customs Area",
   "Other",
 ];
+
+export const COMPOUND_POSITIONS = Array.from({ length: 50 }, (_, index) => `P${String(index + 1).padStart(2, "0")}`);
 
 export const VESSEL_OPERATION_FILTERS = ["today", "tomorrow", "upcoming", "completed", "all"] as const;
 
@@ -213,6 +235,23 @@ export const formatVesselDateTime = (value?: string | null) => {
   }
 };
 
+export const normalizeTemperatureReadingPoint = (value?: string | null) => (value ?? "").trim().toLowerCase();
+
+export const getTrailerTemperaturePair = (rows: VesselInspectionTemperatureRecord[]): VesselTrailerTemperaturePair => {
+  const front = rows.find((row) => normalizeTemperatureReadingPoint(row.reading_point) === "front") ?? null;
+  const rear = rows.find((row) => normalizeTemperatureReadingPoint(row.reading_point) === "rear") ?? null;
+
+  return { front, rear };
+};
+
+export const formatTemperatureReading = (row?: VesselInspectionTemperatureRecord | null) => {
+  if (!row || row.temperature_value === null || row.temperature_value === undefined || row.temperature_value === "") {
+    return "-";
+  }
+
+  return `${row.temperature_value} ${row.temperature_unit ?? "C"}`;
+};
+
 export const formatVesselTime = (value?: string | null) => {
   if (!value) return "—";
   return value.slice(0, 5) || "—";
@@ -220,6 +259,144 @@ export const formatVesselTime = (value?: string | null) => {
 
 export const normalizeTrailerNumber = (value?: string | null) =>
   normalizeTrimmed(value).replace(/\s+/g, " ").toUpperCase();
+
+export const normalizeCompoundPosition = (value?: string | null) => {
+  const trimmed = value?.trim().toUpperCase();
+  if (!trimmed) {
+    return null;
+  }
+
+  const match = trimmed.match(/^(P|A)?0*(\d{1,2})$/);
+  if (!match) {
+    return null;
+  }
+
+  const numericValue = Number(match[2]);
+  if (numericValue < 1 || numericValue > 50) {
+    return null;
+  }
+
+  return `P${numericValue.toString().padStart(2, "0")}`;
+};
+
+export const getAvailableCompoundPositions = (occupiedPositions: Set<string>) =>
+  COMPOUND_POSITIONS.filter((position) => !occupiedPositions.has(position));
+
+export const getFirstAvailableCompoundPosition = (occupiedPositions: Set<string>) =>
+  COMPOUND_POSITIONS.find((position) => !occupiedPositions.has(position)) ?? null;
+
+export const hasCompletedBoatCheck = (trailer: Pick<VesselOperationTrailerRecord, "status" | "inspection_completed_at">) =>
+  trailer.status === "inspected" || Boolean(trailer.inspection_completed_at);
+
+export const getVesselInspectionProgressState = (
+  trailer: Pick<VesselOperationTrailerRecord, "inspection_started_at" | "inspection_completed_at" | "has_damage" | "has_temperature_alert" | "status">,
+): VesselInspectionProgressState => {
+  const completed = trailer.status === "inspected" || Boolean(trailer.inspection_completed_at);
+  const started = Boolean(trailer.inspection_started_at);
+  const hasIssues = Boolean(trailer.has_damage) || Boolean(trailer.has_temperature_alert);
+
+  if (completed && hasIssues) {
+    return "issues_found";
+  }
+
+  if (completed) {
+    return "completed";
+  }
+
+  if (started) {
+    return "in_progress";
+  }
+
+  return "not_started";
+};
+
+export const getVesselInspectionProgressLabel = (state: VesselInspectionProgressState) => {
+  switch (state) {
+    case "not_started":
+      return "Not Started";
+    case "in_progress":
+      return "In Progress";
+    case "completed":
+      return "Completed";
+    case "issues_found":
+      return "Issues Found";
+    default:
+      return "Not Started";
+  }
+};
+
+export const getVesselArrivalWorkflowState = (
+  trailer: Pick<
+    VesselOperationTrailerRecord,
+    "arrival_status" | "arrival_record_id" | "status" | "inspection_started_at" | "inspection_completed_at" | "has_damage" | "has_temperature_alert"
+  >,
+): VesselArrivalWorkflowState => {
+  if (trailer.arrival_status === "cancelled" || trailer.status === "cancelled" || trailer.arrival_status === "not_discharged" || trailer.status === "not_discharged") {
+    return "cancelled";
+  }
+
+  if (trailer.arrival_record_id) {
+    return "received";
+  }
+
+  if (trailer.arrival_status !== "arrived") {
+    return "expected";
+  }
+
+  const inspectionState = getVesselInspectionProgressState(trailer);
+  if (inspectionState === "not_started" || inspectionState === "in_progress") {
+    return "inspection_pending";
+  }
+
+  return "ready_for_reception";
+};
+
+export const getVesselArrivalWorkflowLabel = (state: VesselArrivalWorkflowState) => {
+  switch (state) {
+    case "expected":
+      return "Expected";
+    case "arrived":
+      return "Arrived";
+    case "inspection_pending":
+      return "Inspection Pending";
+    case "ready_for_reception":
+      return "Ready for Reception";
+    case "received":
+      return "Received";
+    case "cancelled":
+      return "Cancelled";
+    default:
+      return "Expected";
+  }
+};
+
+export const canConfirmVesselTrailerReception = (
+  trailer: Pick<VesselOperationTrailerRecord, "arrival_status" | "arrival_record_id" | "status" | "inspection_completed_at">,
+  operation?: Pick<VesselOperationRecord, "status"> | null,
+) => {
+  if (!trailer || trailer.arrival_status !== "arrived") {
+    return false;
+  }
+
+  if (trailer.arrival_record_id) {
+    return false;
+  }
+
+  if (trailer.status === "not_arrived") {
+    return false;
+  }
+
+  if (!hasCompletedBoatCheck(trailer)) {
+    return false;
+  }
+
+  return operation?.status !== "cancelled";
+};
+
+export const getVesselReceptionDate = (value?: string | null) => {
+  const sourceValue = value ?? new Date().toISOString();
+  return sourceValue.split("T")[0] ?? new Date().toISOString().split("T")[0];
+};
 
 export const normalizeVesselText = (value?: string | null) => normalizeTrimmed(value).toLowerCase();
 
@@ -231,18 +408,17 @@ export const getVesselPriorityLabel = (priority: VesselPriorityLevel) => VESSEL_
 
 export const getVesselOperationStatusClass = (status: VesselOperationStatus) => {
   switch (status) {
+    case "draft":
     case "planning":
       return "border-slate-500/30 bg-slate-500/10 text-slate-200";
+    case "confirmed":
     case "arriving":
-      return "border-amber-500/30 bg-amber-500/10 text-amber-200";
     case "discharging":
-      return "border-orange-500/30 bg-orange-500/10 text-orange-200";
     case "inspection":
       return "border-cyan-500/30 bg-cyan-500/10 text-cyan-200";
     case "completed":
-      return "border-emerald-500/30 bg-emerald-500/10 text-emerald-200";
     case "cancelled":
-      return "border-rose-500/30 bg-rose-500/10 text-rose-200";
+      return "border-emerald-500/30 bg-emerald-500/10 text-emerald-200";
     default:
       return "border-slate-500/30 bg-slate-500/10 text-slate-200";
   }
@@ -251,23 +427,19 @@ export const getVesselOperationStatusClass = (status: VesselOperationStatus) => 
 export const getVesselTrailerStatusClass = (status: VesselTrailerStatus) => {
   switch (status) {
     case "expected":
-      return "border-slate-500/30 bg-slate-500/10 text-slate-200";
     case "available_for_arrival":
-      return "border-cyan-500/30 bg-cyan-500/10 text-cyan-200";
+      return "border-slate-500/30 bg-slate-500/10 text-slate-200";
     case "arrived":
-      return "border-amber-500/30 bg-amber-500/10 text-amber-200";
     case "inspection_pending":
-      return "border-cyan-500/30 bg-cyan-500/10 text-cyan-200";
     case "inspection_in_progress":
-      return "border-orange-500/30 bg-orange-500/10 text-orange-200";
+      return "border-amber-500/30 bg-amber-500/10 text-amber-200";
     case "inspected":
-      return "border-emerald-500/30 bg-emerald-500/10 text-emerald-200";
     case "positioned":
-      return "border-violet-500/30 bg-violet-500/10 text-violet-200";
+      return "border-emerald-500/30 bg-emerald-500/10 text-emerald-200";
+    case "not_arrived":
     case "not_discharged":
-      return "border-fuchsia-500/30 bg-fuchsia-500/10 text-fuchsia-200";
     case "cancelled":
-      return "border-rose-500/30 bg-rose-500/10 text-rose-200";
+      return "border-fuchsia-500/30 bg-fuchsia-500/10 text-fuchsia-200";
     default:
       return "border-slate-500/30 bg-slate-500/10 text-slate-200";
   }
@@ -287,25 +459,21 @@ export const getVesselPriorityClass = (priority: VesselPriorityLevel) => {
 export const getVesselTrailerSortRank = (status: VesselTrailerStatus) => {
   switch (status) {
     case "expected":
-      return 0;
     case "available_for_arrival":
-      return 1;
-    case "inspection_pending":
-      return 2;
-    case "inspection_in_progress":
-      return 3;
+      return 0;
     case "arrived":
-      return 4;
+    case "inspection_pending":
+    case "inspection_in_progress":
+      return 1;
     case "inspected":
-      return 5;
     case "positioned":
-      return 6;
+      return 2;
+    case "not_arrived":
     case "not_discharged":
-      return 7;
     case "cancelled":
-      return 8;
+      return 3;
     default:
-      return 9;
+      return 4;
   }
 };
 
@@ -325,40 +493,53 @@ export const sortVesselOperationTrailersForArrivals = <T extends { priority_leve
 export const computeVesselOperationSummary = (
   trailers: Array<Pick<VesselOperationTrailerRecord, "priority_level" | "status" | "has_damage" | "has_temperature_alert" | "arrival_status">>,
 ): VesselOperationSummary => {
-  const expected = trailers.filter((item) => item.arrival_status !== "cancelled").length;
-  const availableForArrival = trailers.filter((item) => item.arrival_status === "available_for_arrival").length;
-  const arrived = trailers.filter((item) => item.arrival_status === "arrived").length;
-  const remaining = trailers.filter((item) => item.arrival_status === "expected").length;
-  const pending = trailers.filter((item) => item.arrival_status === "expected" || item.arrival_status === "available_for_arrival").length;
-  const priority = trailers.filter((item) => item.priority_level === "priority" && item.arrival_status !== "cancelled").length;
-  const priorityRemaining = trailers.filter((item) => item.priority_level === "priority" && (item.arrival_status === "expected" || item.arrival_status === "available_for_arrival")).length;
-  const normal = trailers.filter((item) => item.priority_level === "normal" && item.arrival_status !== "cancelled").length;
-  const cancelled = trailers.filter((item) => item.arrival_status === "cancelled").length;
-  const notDischarged = trailers.filter((item) => item.arrival_status === "not_discharged").length;
-  const pendingInspection = trailers.filter((item) => item.status === "inspection_pending").length;
+  const isNotArrived = (item: Pick<VesselOperationTrailerRecord, "status" | "arrival_status">) =>
+    item.status === "not_arrived" || item.arrival_status === "not_arrived" || item.status === "cancelled" || item.arrival_status === "cancelled" || item.status === "not_discharged" || item.arrival_status === "not_discharged";
+
+  const isArrived = (item: Pick<VesselOperationTrailerRecord, "status" | "arrival_status">) =>
+    item.arrival_status === "arrived" || item.status === "arrived" || item.status === "inspected" || item.status === "positioned" || item.status === "inspection_pending" || item.status === "inspection_in_progress";
+
+  const isInspected = (item: Pick<VesselOperationTrailerRecord, "status">) =>
+    item.status === "inspected" || item.status === "positioned";
+
+  const expected = trailers.length;
+  const arrived = trailers.filter((item) => isArrived(item)).length;
+  const inspected = trailers.filter((item) => isInspected(item)).length;
+  const notArrived = trailers.filter((item) => isNotArrived(item)).length;
+  const remaining = Math.max(expected - arrived - notArrived, 0);
+  const inspectionPending = Math.max(arrived - inspected, 0);
+  const availableForArrival = remaining;
+  const pending = remaining;
+  const priority = trailers.filter((item) => item.priority_level === "priority").length;
+  const priorityRemaining = trailers.filter((item) => item.priority_level === "priority" && !isArrived(item) && !isNotArrived(item)).length;
+  const normal = trailers.filter((item) => item.priority_level !== "priority").length;
+  const cancelled = trailers.filter((item) => item.status === "cancelled" || item.arrival_status === "cancelled").length;
+  const notDischarged = trailers.filter((item) => item.status === "not_discharged" || item.arrival_status === "not_discharged").length;
   const inProgress = trailers.filter((item) => item.status === "inspection_in_progress").length;
-  const inspected = trailers.filter((item) => item.status === "inspected" || item.status === "positioned").length;
   const positioned = trailers.filter((item) => item.status === "positioned").length;
   const damagedTrailers = trailers.filter((item) => item.has_damage).length;
   const temperatureAlerts = trailers.filter((item) => item.has_temperature_alert).length;
 
   return {
     expected,
-    availableForArrival,
     arrived,
+    notArrived,
     remaining,
+    inspectionPending,
+    inspected,
+    damages: damagedTrailers,
+    temperatureAlerts,
+    availableForArrival,
     pending,
     priority,
     priorityRemaining,
     normal,
     cancelled,
     notDischarged,
-    pendingInspection,
     inProgress,
-    inspected,
     positioned,
+    pendingInspection: inspectionPending,
     damagedTrailers,
-    temperatureAlerts,
   };
 };
 

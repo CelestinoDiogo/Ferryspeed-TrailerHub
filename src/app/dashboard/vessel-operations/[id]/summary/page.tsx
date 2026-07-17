@@ -1,42 +1,56 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
-import { useParams, useRouter } from "next/navigation";
+import { useParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabase";
-import {
-  computeVesselOperationSummary,
-  formatVesselDateTime,
-  getVesselOperationStatusClass,
-  getVesselOperationStatusLabel,
-  getVesselPriorityClass,
-  getVesselPriorityLabel,
-  type VesselInspectionDamageRecord,
-  type VesselInspectionTemperatureRecord,
-  type VesselOperationRecord,
-  type VesselOperationTrailerRecord,
-} from "@/lib/vessel-operations";
+import { getVesselOperationReport } from "@/lib/vessel-report";
+import { buildDeterministicVesselOperationAiReportDraft } from "@/lib/reports/vessel-operation-ai-report-shared";
+import { formatVesselDateTime } from "@/lib/vessel-operations";
+import type { VesselOperationalReportData, VesselOperationAiReportDraft, VesselOperationAiReportResponse } from "@/lib/reports/types";
+import { VesselOperationAiReportPreviewModal } from "@/components/reports/vessel-operation-ai-report-preview-modal";
 
-type SummaryRow = VesselOperationTrailerRecord & {
-  damageCount?: number;
-  temperatureCount?: number;
+type SummaryFilter = "all" | "arrived" | "inspected" | "damage" | "temperature_alert" | "not_discharged";
+
+const FILTER_OPTIONS: Array<{ value: SummaryFilter; label: string }> = [
+  { value: "all", label: "All" },
+  { value: "arrived", label: "Arrived" },
+  { value: "inspected", label: "Inspected" },
+  { value: "damage", label: "Damage" },
+  { value: "temperature_alert", label: "Temperature Alert" },
+  { value: "not_discharged", label: "Not Discharged" },
+];
+
+const formatStatusLabel = (value?: string | null) => {
+  if (!value) {
+    return "-";
+  }
+
+  return value
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (char) => char.toUpperCase());
 };
 
-function VesselSummaryPageContent() {
+const formatTemperatureValue = (value: number | null, unit: string) => {
+  return value === null ? "-" : `${value} ${unit}`;
+};
+
+export default function VesselSummaryPage() {
   const params = useParams();
-  const router = useRouter();
   const operationId = typeof params?.id === "string" ? params.id : "";
 
-  const [operation, setOperation] = useState<VesselOperationRecord | null>(null);
-  const [trailers, setTrailers] = useState<SummaryRow[]>([]);
-  const [damages, setDamages] = useState<VesselInspectionDamageRecord[]>([]);
-  const [temperatures, setTemperatures] = useState<VesselInspectionTemperatureRecord[]>([]);
+  const [reportData, setReportData] = useState<VesselOperationalReportData | null>(null);
+  const [aiReportDraft, setAiReportDraft] = useState<VesselOperationAiReportDraft | null>(null);
+  const [activeFilter, setActiveFilter] = useState<SummaryFilter>("all");
   const [isLoading, setIsLoading] = useState(true);
-  const [isSaving, setIsSaving] = useState(false);
+  const [isAiReportGenerating, setIsAiReportGenerating] = useState(false);
+  const [isAiReportPreviewOpen, setIsAiReportPreviewOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
+  const [errorDetails, setErrorDetails] = useState<string | null>(null);
+  const [reportNotice, setReportNotice] = useState<string | null>(null);
 
-  const loadSummary = useCallback(async () => {
+  const loadReport = useCallback(async () => {
     if (!operationId) {
       setError("Invalid vessel operation id.");
       setIsLoading(false);
@@ -45,243 +59,319 @@ function VesselSummaryPageContent() {
 
     setIsLoading(true);
     setError(null);
+    setErrorDetails(null);
 
     try {
-      const [operationResult, trailersResult, damagesResult, temperaturesResult] = await Promise.all([
-        supabase
-          .from("vessel_operations")
-          .select("id, vessel_name, sailing_reference, origin_port, berth, expected_arrival_at, actual_arrival_at, status, notes, created_at, updated_at")
-          .eq("id", operationId)
-          .single(),
-        supabase
-          .from("vessel_operation_trailers")
-          .select("id, vessel_operation_id, trailer_id, trailer_number, customer, booking_reference, load_status, load_description, temperature_required, priority_level, priority_reason, planned_destination, planning_notes, status, arrived_at, arrival_confirmed_by, inspection_started_at, inspection_completed_at, position_assigned_at, assigned_position, has_damage, has_temperature_alert, created_at, updated_at")
-          .eq("vessel_operation_id", operationId)
-          .order("created_at", { ascending: true }),
-        supabase.from("vessel_inspection_damages").select("id, vessel_operation_id, vessel_operation_trailer_id, damage_type, damage_location, severity, description, recorded_at, recorded_by").eq("vessel_operation_id", operationId),
-        supabase.from("vessel_inspection_temperatures").select("id, vessel_operation_id, vessel_operation_trailer_id, temperature_value, unit, reading_point, notes, out_of_range, recorded_at, recorded_by").eq("vessel_operation_id", operationId),
-      ]);
-
-      if (operationResult.error || !operationResult.data) throw operationResult.error ?? new Error("Operation not found.");
-      if (trailersResult.error) throw trailersResult.error;
-      if (damagesResult.error) throw damagesResult.error;
-      if (temperaturesResult.error) throw temperaturesResult.error;
-
-      const damageCounts = new Map<string, number>();
-      (damagesResult.data ?? []).forEach((item) => {
-        const trailerId = item.vessel_operation_trailer_id;
-        if (trailerId) damageCounts.set(trailerId, (damageCounts.get(trailerId) ?? 0) + 1);
-      });
-
-      const temperatureCounts = new Map<string, number>();
-      (temperaturesResult.data ?? []).forEach((item) => {
-        const trailerId = item.vessel_operation_trailer_id;
-        if (trailerId) temperatureCounts.set(trailerId, (temperatureCounts.get(trailerId) ?? 0) + 1);
-      });
-
-      setOperation(operationResult.data as VesselOperationRecord);
-      setTrailers(
-        (trailersResult.data ?? []).map((row) => ({
-          ...(row as VesselOperationTrailerRecord),
-          damageCount: damageCounts.get(row.id) ?? 0,
-          temperatureCount: temperatureCounts.get(row.id) ?? 0,
-        })),
-      );
-      setDamages((damagesResult.data ?? []) as VesselInspectionDamageRecord[]);
-      setTemperatures((temperaturesResult.data ?? []) as VesselInspectionTemperatureRecord[]);
+      const report = await getVesselOperationReport(supabase, operationId);
+      setReportData(report);
     } catch (loadErr) {
-      console.error("Unable to load summary:", loadErr);
-      setError("Unable to load summary.");
+      console.error("Unable to load vessel summary report:", loadErr);
+      setError("Unable to load Vessel Operation Report.");
+      setErrorDetails(loadErr instanceof Error ? loadErr.message : "Unknown error.");
     } finally {
       setIsLoading(false);
     }
   }, [operationId]);
 
+  const getAuthHeaders = useCallback(async (): Promise<HeadersInit | undefined> => {
+    const { data } = await supabase.auth.getSession();
+    const accessToken = data.session?.access_token;
+    if (!accessToken) {
+      return undefined;
+    }
+
+    return { Authorization: `Bearer ${accessToken}` };
+  }, [supabase]);
+
   useEffect(() => {
-    const timeoutId = window.setTimeout(() => {
-      void loadSummary();
-    }, 0);
-
-    return () => window.clearTimeout(timeoutId);
-  }, [loadSummary]);
-
-  const summary = useMemo(() => computeVesselOperationSummary(trailers), [trailers]);
-
-  let durationText = "—";
-  if (operation?.actual_arrival_at && operation?.updated_at && operation.status === "completed") {
-    const started = new Date(operation.actual_arrival_at).getTime();
-    const finished = new Date(operation.updated_at).getTime();
-    const minutes = Math.max(0, Math.round((finished - started) / 60000));
-    const hours = Math.floor(minutes / 60);
-    const remainder = minutes % 60;
-    durationText = hours > 0 ? `${hours}h ${remainder}m` : `${minutes}m`;
-  }
-
-  const completeOperation = async () => {
-    if (!operation || trailers.some((trailer) => trailer.status === "inspection_in_progress")) {
-      setError("Complete all inspections before closing the vessel operation.");
+    if (!reportData || reportData.operation.status !== "completed") {
+      setAiReportDraft(null);
       return;
     }
 
-    const confirmed = window.confirm(`Complete vessel operation ${operation.vessel_name ?? ""}?`);
-    if (!confirmed) return;
+    setAiReportDraft((current) => {
+      if (current?.generationMode === "ai") {
+        return current;
+      }
 
-    setIsSaving(true);
-    setError(null);
+      return buildDeterministicVesselOperationAiReportDraft(reportData);
+    });
+  }, [reportData]);
+
+  const generateAiReport = useCallback(async () => {
+    if (!operationId || !reportData || reportData.operation.status !== "completed") {
+      return;
+    }
+
+    setIsAiReportGenerating(true);
+    setReportNotice(null);
 
     try {
-      const nowIso = new Date().toISOString();
-      const { error: updateError } = await supabase
-        .from("vessel_operations")
-        .update({ status: "completed", updated_at: nowIso })
-        .eq("id", operation.id);
-
-      if (updateError) throw updateError;
-
-      const { error: eventError } = await supabase.from("trailer_events").insert({
-        trailer_id: null,
-        trailer_number: operation.vessel_name ?? operation.sailing_reference ?? "Vessel Operation",
-        event_type: "vessel_operation_completed",
-        event_description: `Vessel operation completed for ${operation.vessel_name ?? "operation"}.`,
-        old_value: { vessel_operation_id: operation.id, status: operation.status },
-        new_value: { vessel_operation_id: operation.id, status: "completed", updated_at: nowIso },
+      const authHeaders = await getAuthHeaders();
+      const response = await fetch(`/api/vessel-operations/${operationId}/ai-report`, {
+        method: "POST",
+        headers: authHeaders,
       });
 
-      if (eventError) console.error("Failed to save vessel completion event:", eventError);
+      const payload = (await response.json()) as VesselOperationAiReportResponse & { error?: string };
+      if (!response.ok || !payload.reportDraft) {
+        throw new Error(payload.error || "Unable to generate AI report.");
+      }
 
-      setOperation((current) => (current ? { ...current, status: "completed", updated_at: nowIso } : current));
-      setSuccess("Vessel operation completed.");
-      router.refresh();
-    } catch (completeErr) {
-      console.error("Unable to complete vessel operation:", completeErr);
-      setError("Unable to complete vessel operation.");
+      setAiReportDraft(payload.reportDraft);
+      setIsAiReportPreviewOpen(true);
+      setReportNotice(payload.message ?? (payload.usedFallback ? "Template-generated report created from live data." : "AI report generated successfully."));
+    } catch (generateErr) {
+      console.error("Unable to generate AI report:", generateErr);
+      setReportNotice(generateErr instanceof Error ? generateErr.message : "Unable to generate AI report.");
     } finally {
-      setIsSaving(false);
+      setIsAiReportGenerating(false);
     }
-  };
+  }, [aiReportDraft?.reportId, getAuthHeaders, operationId, reportData]);
+
+  const handleCopyAiReport = useCallback(async () => {
+    if (!aiReportDraft) {
+      return;
+    }
+
+    await navigator.clipboard.writeText(`${aiReportDraft.subject}\n\n${aiReportDraft.body}`);
+    setReportNotice("Report copied to clipboard.");
+  }, [aiReportDraft]);
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      void loadReport();
+    }, 0);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [loadReport]);
+
+  const filteredTrailers = useMemo(() => {
+    if (!reportData) {
+      return [];
+    }
+
+    return reportData.trailers.filter((trailer) => {
+      switch (activeFilter) {
+        case "arrived":
+          return trailer.arrivalStatusRaw === "arrived";
+        case "inspected":
+          return trailer.inspectionStatus === "inspected";
+        case "damage":
+          return trailer.hasDamage;
+        case "temperature_alert":
+          return trailer.hasTemperatureAlert;
+        case "not_discharged":
+          return trailer.arrivalStatusRaw === "not_discharged";
+        case "all":
+        default:
+          return true;
+      }
+    });
+  }, [activeFilter, reportData]);
 
   if (isLoading) {
     return (
-      <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(34,211,238,0.16),_transparent_32%),linear-gradient(135deg,_#020617_0%,_#0f172a_55%,_#111827_100%)] px-4 py-6 text-slate-100 sm:px-6 lg:px-8">
-        <div className="mx-auto max-w-7xl rounded-3xl border border-white/10 bg-slate-900/70 p-6 text-sm text-slate-400">Loading summary...</div>
+      <main className="min-h-screen bg-slate-100 px-4 py-6 text-slate-900 sm:px-6 lg:px-8">
+        <div className="mx-auto max-w-7xl rounded-3xl border border-slate-200 bg-white p-6 text-sm text-slate-500 shadow-sm">Loading vessel report...</div>
       </main>
     );
   }
 
-  if (!operation) {
+  if (!reportData) {
     return (
-      <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(34,211,238,0.16),_transparent_32%),linear-gradient(135deg,_#020617_0%,_#0f172a_55%,_#111827_100%)] px-4 py-6 text-slate-100 sm:px-6 lg:px-8">
-        <div className="mx-auto max-w-7xl rounded-3xl border border-rose-500/30 bg-rose-500/10 p-6 text-sm text-rose-200">{error ?? "Vessel operation not found."}</div>
+      <main className="min-h-screen bg-slate-100 px-4 py-6 text-slate-900 sm:px-6 lg:px-8">
+        <div className="mx-auto max-w-7xl rounded-3xl border border-rose-200 bg-rose-50 p-6 shadow-sm">
+          <p className="text-sm font-semibold uppercase tracking-[0.25em] text-rose-700">Ferryspeed TrailerHub</p>
+          <h1 className="mt-3 text-2xl font-semibold text-slate-950">Unable to load Vessel Operation Report.</h1>
+          <p className="mt-3 text-sm text-rose-700">{error ?? "Unable to load Vessel Operation Report."}</p>
+          {errorDetails ? <p className="mt-2 text-sm text-slate-600">{errorDetails}</p> : null}
+        </div>
       </main>
     );
   }
 
-  const allDone = summary.remaining === 0 && summary.pendingInspection === 0 && summary.inProgress === 0;
+  const { operation, statistics } = reportData;
+  const completed = operation.status === "completed";
 
   return (
-    <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(34,211,238,0.16),_transparent_32%),linear-gradient(135deg,_#020617_0%,_#0f172a_55%,_#111827_100%)] px-4 py-6 text-slate-100 sm:px-6 lg:px-8">
+    <main className="min-h-screen bg-slate-100 px-4 py-6 text-slate-900 sm:px-6 lg:px-8">
       <div className="mx-auto flex max-w-7xl flex-col gap-6">
-        <header className="rounded-3xl border border-white/10 bg-slate-900/70 p-5 shadow-2xl shadow-black/20 backdrop-blur sm:p-6">
-          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+        <header className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
             <div>
-              <p className="text-sm font-semibold uppercase tracking-[0.3em] text-cyan-400">Ferryspeed TrailerHub</p>
-              <h1 className="mt-2 text-2xl font-semibold sm:text-3xl">Vessel Summary</h1>
-              <p className="mt-2 text-sm text-slate-300 sm:text-base">{operation.vessel_name ?? "Unnamed vessel"} - {operation.sailing_reference ?? "No sailing reference"}</p>
+              <p className="text-sm font-semibold uppercase tracking-[0.3em] text-cyan-700">Ferryspeed TrailerHub</p>
+              <h1 className="mt-2 text-3xl font-semibold text-slate-950">Vessel Operation Summary</h1>
+              <p className="mt-2 text-sm text-slate-600">Read-only operation report with inspection, damage, temperature, and photo detail.</p>
             </div>
             <div className="flex flex-wrap gap-2">
-              <Link href={`/dashboard/vessel-operations/${operation.id}/planning`} className="rounded-2xl border border-white/10 bg-slate-800 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700">Planning</Link>
-              <Link href={`/dashboard/vessel-operations/${operation.id}/arrivals`} className="rounded-2xl border border-white/10 bg-slate-800 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700">Arrivals</Link>
-              <Link href={`/dashboard/vessel-operations/${operation.id}/boat-check`} className="rounded-2xl border border-white/10 bg-slate-800 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700">Boat Check</Link>
+              <Link href={`/dashboard/vessel-operations/${operation.id}`} className="rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-900 hover:bg-slate-50">Back to Operation</Link>
+              <Link href={`/dashboard/vessel-operations/${operation.id}/boat-check`} className="rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-900 hover:bg-slate-50">Boat Check</Link>
+              <Link href={`/dashboard/vessel-operations/${operation.id}/print`} className="rounded-2xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800">Print Report</Link>
+              {completed ? (
+                <button
+                  type="button"
+                  onClick={() => void generateAiReport()}
+                  disabled={isAiReportGenerating}
+                  className="rounded-2xl bg-cyan-700 px-4 py-2 text-sm font-semibold text-white hover:bg-cyan-600 disabled:opacity-60"
+                >
+                  {isAiReportGenerating ? "Generating AI Report..." : "Generate AI Report"}
+                </button>
+              ) : null}
+              {completed ? (
+                <button
+                  type="button"
+                  onClick={() => setIsAiReportPreviewOpen(true)}
+                  disabled={!aiReportDraft || isAiReportGenerating}
+                  className="rounded-2xl border border-cyan-300 bg-cyan-50 px-4 py-2 text-sm font-semibold text-cyan-900 hover:bg-cyan-100 disabled:opacity-60"
+                >
+                  Preview Report
+                </button>
+              ) : null}
             </div>
           </div>
         </header>
 
-        {error ? <div className="rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">{error}</div> : null}
-        {success ? <div className="rounded-2xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">{success}</div> : null}
+        {completed ? <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800">Operation Completed</div> : null}
+        {reportNotice ? <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">{reportNotice}</div> : null}
 
-        <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          <div className="rounded-2xl border border-white/10 bg-slate-900/70 p-4"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Operation Status</p><p className={`mt-2 inline-flex rounded-full border px-3 py-1 text-xs font-semibold ${getVesselOperationStatusClass(operation.status)}`}>{getVesselOperationStatusLabel(operation.status)}</p></div>
-          <div className="rounded-2xl border border-white/10 bg-slate-900/70 p-4"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Duration</p><p className="mt-2 text-lg font-semibold text-white">{durationText}</p></div>
-          <div className="rounded-2xl border border-white/10 bg-slate-900/70 p-4"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Trailer Count</p><p className="mt-2 text-lg font-semibold text-white">{summary.expected}</p></div>
-          <div className="rounded-2xl border border-white/10 bg-slate-900/70 p-4"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Last Updated</p><p className="mt-2 text-lg font-semibold text-white">{formatVesselDateTime(operation.updated_at)}</p></div>
-        </section>
-
-        <section className="grid gap-4 xl:grid-cols-3">
-          <div className="rounded-3xl border border-white/10 bg-slate-900/70 p-5 shadow-lg shadow-black/20 backdrop-blur sm:p-6">
-            <p className="text-sm font-semibold uppercase tracking-[0.3em] text-cyan-400">Operational Breakdown</p>
+        <section className="grid gap-4 lg:grid-cols-[1.2fr_0.8fr]">
+          <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+            <p className="text-sm font-semibold uppercase tracking-[0.3em] text-cyan-700">Operation Header</p>
             <div className="mt-4 grid gap-3 sm:grid-cols-2">
-              <div className="rounded-2xl border border-white/10 bg-slate-950/70 p-3"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Expected</p><p className="mt-1 text-2xl font-bold text-white">{summary.expected}</p></div>
-              <div className="rounded-2xl border border-white/10 bg-slate-950/70 p-3"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Arrived</p><p className="mt-1 text-2xl font-bold text-amber-200">{summary.arrived}</p></div>
-              <div className="rounded-2xl border border-white/10 bg-slate-950/70 p-3"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Remaining</p><p className="mt-1 text-2xl font-bold text-cyan-200">{summary.remaining}</p></div>
-              <div className="rounded-2xl border border-white/10 bg-slate-950/70 p-3"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Positioned</p><p className="mt-1 text-2xl font-bold text-violet-200">{summary.positioned}</p></div>
+              <div><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Vessel Name</p><p className="mt-1 text-base font-semibold text-slate-950">{operation.vesselName}</p></div>
+              <div><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Voyage / Sailing Ref</p><p className="mt-1 text-base font-semibold text-slate-950">{operation.voyageReference ?? "-"}</p></div>
+              <div><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Origin Port</p><p className="mt-1 text-base font-semibold text-slate-950">{operation.port ?? "-"}</p></div>
+              <div><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Berth</p><p className="mt-1 text-base font-semibold text-slate-950">{operation.berth ?? "-"}</p></div>
+              <div><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Expected Arrival</p><p className="mt-1 text-base font-semibold text-slate-950">{formatVesselDateTime(operation.expectedArrivalAt)}</p></div>
+              <div><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Actual Arrival</p><p className="mt-1 text-base font-semibold text-slate-950">{formatVesselDateTime(operation.actualArrivalAt)}</p></div>
+              <div><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Operation Status</p><p className="mt-1 text-base font-semibold text-slate-950">{formatStatusLabel(operation.status)}</p></div>
+              <div><p className="text-xs uppercase tracking-[0.2em] text-slate-500">List Confirmed</p><p className="mt-1 text-base font-semibold text-slate-950">{formatVesselDateTime(operation.listConfirmedAt)}{operation.listConfirmedBy ? ` by ${operation.listConfirmedBy}` : ""}</p></div>
+              <div className="sm:col-span-2"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Completion Status</p><p className="mt-1 text-base font-semibold text-slate-950">{completed ? `Completed at ${formatVesselDateTime(operation.operationCompletedAt)}` : "Operation not completed"}</p></div>
             </div>
           </div>
 
-          <div className="rounded-3xl border border-white/10 bg-slate-900/70 p-5 shadow-lg shadow-black/20 backdrop-blur sm:p-6">
-            <p className="text-sm font-semibold uppercase tracking-[0.3em] text-cyan-400">Inspection Breakdown</p>
-            <div className="mt-4 grid gap-3 sm:grid-cols-2">
-              <div className="rounded-2xl border border-white/10 bg-slate-950/70 p-3"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Pending</p><p className="mt-1 text-2xl font-bold text-cyan-200">{summary.pendingInspection}</p></div>
-              <div className="rounded-2xl border border-white/10 bg-slate-950/70 p-3"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">In Progress</p><p className="mt-1 text-2xl font-bold text-orange-200">{summary.inProgress}</p></div>
-              <div className="rounded-2xl border border-white/10 bg-slate-950/70 p-3"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Inspected</p><p className="mt-1 text-2xl font-bold text-emerald-200">{summary.inspected}</p></div>
-              <div className="rounded-2xl border border-white/10 bg-slate-950/70 p-3"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Damaged</p><p className="mt-1 text-2xl font-bold text-rose-200">{summary.damagedTrailers}</p></div>
-            </div>
-          </div>
-
-          <div className="rounded-3xl border border-white/10 bg-slate-900/70 p-5 shadow-lg shadow-black/20 backdrop-blur sm:p-6">
-            <p className="text-sm font-semibold uppercase tracking-[0.3em] text-cyan-400">Priority</p>
-            <div className="mt-4 grid gap-3 sm:grid-cols-2">
-              <div className="rounded-2xl border border-white/10 bg-slate-950/70 p-3"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Priority</p><p className={`mt-1 inline-flex rounded-full border px-3 py-1 text-xs font-semibold ${getVesselPriorityClass("priority")}`}>{getVesselPriorityLabel("priority")}</p><p className="mt-2 text-2xl font-bold text-white">{summary.priority}</p></div>
-              <div className="rounded-2xl border border-white/10 bg-slate-950/70 p-3"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Normal</p><p className={`mt-1 inline-flex rounded-full border px-3 py-1 text-xs font-semibold ${getVesselPriorityClass("normal")}`}>{getVesselPriorityLabel("normal")}</p><p className="mt-2 text-2xl font-bold text-white">{summary.normal}</p></div>
-            </div>
-            <div className="mt-3 rounded-2xl border border-white/10 bg-slate-950/70 p-3 text-sm text-slate-300">Priority remaining: <span className="font-semibold text-white">{summary.priorityRemaining}</span></div>
-          </div>
-        </section>
-
-        <section className="grid gap-4 xl:grid-cols-2">
-          <div className="rounded-3xl border border-white/10 bg-slate-900/70 p-5 shadow-lg shadow-black/20 backdrop-blur sm:p-6">
-            <p className="text-sm font-semibold uppercase tracking-[0.3em] text-cyan-400">Damages</p>
-            <div className="mt-4 space-y-3">
-              {damages.length === 0 ? <p className="text-sm text-slate-400">No damages recorded.</p> : damages.map((damage) => (
-                <div key={damage.id} className="rounded-2xl border border-white/10 bg-slate-950/70 p-4 text-sm text-slate-200">
-                  <p className="font-semibold text-white">{damage.damage_type ?? "Damage"}</p>
-                  <p className="mt-1 text-slate-300">{damage.description ?? "-"}</p>
-                  <p className="mt-1 text-xs text-slate-400">{formatVesselDateTime(damage.recorded_at)}</p>
-                </div>
+          <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+            <p className="text-sm font-semibold uppercase tracking-[0.3em] text-cyan-700">Filters</p>
+            <div className="mt-4 flex flex-wrap gap-2">
+              {FILTER_OPTIONS.map((filter) => (
+                <button
+                  key={filter.value}
+                  type="button"
+                  onClick={() => setActiveFilter(filter.value)}
+                  className={`rounded-full px-4 py-2 text-sm font-semibold ${activeFilter === filter.value ? "bg-slate-900 text-white" : "border border-slate-300 bg-white text-slate-800 hover:bg-slate-50"}`}
+                >
+                  {filter.label}
+                </button>
               ))}
             </div>
+            <div className="mt-6 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
+              Showing <span className="font-semibold text-slate-950">{filteredTrailers.length}</span> trailer report{filteredTrailers.length === 1 ? "" : "s"}.
+            </div>
           </div>
+        </section>
 
-          <div className="rounded-3xl border border-white/10 bg-slate-900/70 p-5 shadow-lg shadow-black/20 backdrop-blur sm:p-6">
-            <p className="text-sm font-semibold uppercase tracking-[0.3em] text-cyan-400">Temperature Alerts</p>
-            <div className="mt-4 space-y-3">
-              {temperatures.length === 0 ? <p className="text-sm text-slate-400">No temperatures recorded.</p> : temperatures.map((reading) => (
-                <div key={reading.id} className="rounded-2xl border border-white/10 bg-slate-950/70 p-4 text-sm text-slate-200">
-                  <p className="font-semibold text-white">{reading.temperature_value}{reading.unit ?? "C"} - {reading.reading_point ?? "-"}</p>
-                  <p className="mt-1 text-slate-300">{reading.notes ?? "-"}</p>
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    {reading.out_of_range ? <span className="rounded-full border border-rose-500/30 bg-rose-500/10 px-2.5 py-1 text-xs font-semibold text-rose-200">Out of Range</span> : null}
-                    <span className="rounded-full border border-white/10 bg-slate-900 px-2.5 py-1 text-xs">{formatVesselDateTime(reading.recorded_at)}</span>
+        <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-7">
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Total Trailers</p><p className="mt-2 text-2xl font-bold text-slate-950">{statistics.totalTrailers}</p></div>
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Arrived</p><p className="mt-2 text-2xl font-bold text-amber-700">{statistics.arrivedTrailers}</p></div>
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Not Discharged</p><p className="mt-2 text-2xl font-bold text-fuchsia-700">{statistics.notDischargedTrailers}</p></div>
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Inspected</p><p className="mt-2 text-2xl font-bold text-emerald-700">{statistics.inspectedTrailers}</p></div>
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Pending Inspection</p><p className="mt-2 text-2xl font-bold text-cyan-700">{statistics.pendingInspections}</p></div>
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Damages</p><p className="mt-2 text-2xl font-bold text-rose-700">{statistics.damagedTrailers}</p></div>
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Temperature Alerts</p><p className="mt-2 text-2xl font-bold text-orange-700">{statistics.temperatureAlertTrailers}</p></div>
+        </section>
+
+        <section className="space-y-4">
+          {filteredTrailers.length === 0 ? (
+            <div className="rounded-3xl border border-slate-200 bg-white p-6 text-sm text-slate-500 shadow-sm">No trailers match the current filter.</div>
+          ) : (
+            filteredTrailers.map((trailer) => (
+              <article key={trailer.id} className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+                <div className="flex flex-col gap-5">
+                  <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                    <div className="space-y-3">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h2 className="text-2xl font-bold text-slate-950">{trailer.trailerNumber}</h2>
+                        <span className={`rounded-full px-3 py-1 text-xs font-semibold ${trailer.priority === "priority" ? "bg-rose-100 text-rose-800" : "bg-slate-100 text-slate-700"}`}>{trailer.priority === "priority" ? "Priority" : "Normal"}</span>
+                        <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">{trailer.arrivalStatus}</span>
+                        <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">{formatStatusLabel(trailer.inspectionStatus)}</span>
+                      </div>
+
+                      <div className="grid gap-3 text-sm text-slate-700 sm:grid-cols-2 xl:grid-cols-4">
+                        <p>Arrival Date/Time: <span className="font-semibold text-slate-950">{formatVesselDateTime(trailer.arrivedAt)}</span></p>
+                        <p>Customer: <span className="font-semibold text-slate-950">{trailer.customer ?? "-"}</span></p>
+                        <p>Booking Ref: <span className="font-semibold text-slate-950">{trailer.bookingReference ?? "-"}</span></p>
+                        <p>Load Status: <span className="font-semibold text-slate-950">{trailer.loadStatus ?? "-"}</span></p>
+                        <p className="sm:col-span-2 xl:col-span-4">Notes: <span className="font-semibold text-slate-950">{trailer.notes ?? "-"}</span></p>
+                      </div>
+                    </div>
                   </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </section>
 
-        <section className="rounded-3xl border border-white/10 bg-slate-900/70 p-5 shadow-lg shadow-black/20 backdrop-blur sm:p-6">
-          <p className="text-sm font-semibold uppercase tracking-[0.3em] text-cyan-400">Final Action</p>
-          <p className="mt-3 text-sm text-slate-300">{allDone ? "All trailers are ready to close." : "Finish inspection and positioning before closing the vessel operation."}</p>
-          <div className="mt-4 flex flex-wrap gap-2">
-            <button type="button" onClick={() => void completeOperation()} disabled={isSaving || !allDone} className="rounded-2xl bg-emerald-500 px-4 py-3 text-sm font-semibold text-slate-950 hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-60">
-              {isSaving ? "Completing..." : "Complete Vessel Operation"}
-            </button>
-          </div>
+                  {trailer.inspectionStatus === "inspected" ? (
+                    <div className="rounded-3xl border border-slate-200 bg-slate-50 p-4">
+                      <p className="text-sm font-semibold uppercase tracking-[0.25em] text-cyan-700">Inspection Result</p>
+                      <div className="mt-4 grid gap-3 text-sm text-slate-700 sm:grid-cols-2 xl:grid-cols-5">
+                        <p>Overall Condition: <span className="font-semibold text-slate-950">{trailer.overallCondition === "attention_required" ? "Attention Required" : "Good"}</span></p>
+                        <p>Front Temp: <span className="font-semibold text-slate-950">{formatTemperatureValue(trailer.frontTemperature, trailer.temperatureUnit)}</span></p>
+                        <p>Rear Temp: <span className="font-semibold text-slate-950">{formatTemperatureValue(trailer.rearTemperature, trailer.temperatureUnit)}</span></p>
+                        <p>Temperature Alert: <span className="font-semibold text-slate-950">{trailer.hasTemperatureAlert ? "Yes" : "No"}</span></p>
+                        <p>Damage: <span className="font-semibold text-slate-950">{trailer.hasDamage ? "Yes" : "No"}</span></p>
+                      </div>
+
+                      {trailer.damageDetails ? (
+                        <div className="mt-4 rounded-2xl border border-rose-200 bg-white p-4 text-sm text-slate-700">
+                          <p className="font-semibold text-slate-950">Damage Detail</p>
+                          <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                            <p>Type: <span className="font-semibold text-slate-950">{trailer.damageDetails.category ?? "-"}</span></p>
+                            <p>Location: <span className="font-semibold text-slate-950">{trailer.damageDetails.damageLocation ?? "-"}</span></p>
+                            <p>Severity: <span className="font-semibold text-slate-950">{trailer.damageDetails.severity ?? "-"}</span></p>
+                            <p className="sm:col-span-2">Description: <span className="font-semibold text-slate-950">{trailer.damageDetails.description || "-"}</span></p>
+                          </div>
+                        </div>
+                      ) : null}
+
+                      {trailer.photos.some((photo) => photo.url) ? (
+                        <div className="mt-4">
+                          <p className="text-sm font-semibold text-slate-950">Inspection Photos</p>
+                          <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                            {trailer.photos.filter((photo) => photo.url).map((photo) => (
+                              <a key={photo.id} href={photo.url ?? undefined} target="_blank" rel="noreferrer" className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+                                <div className="relative aspect-video w-full bg-slate-200">
+                                  {photo.url ? <Image src={photo.url} alt={photo.caption ?? `${trailer.trailerNumber} photo`} fill className="object-cover" /> : null}
+                                </div>
+                                <div className="p-3 text-xs text-slate-600">
+                                  <p className="font-semibold text-slate-900">{photo.caption ?? "Inspection Photo"}</p>
+                                  <p>{formatVesselDateTime(photo.recordedAt)}</p>
+                                </div>
+                              </a>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </div>
+              </article>
+            ))
+          )}
         </section>
       </div>
+
+      <VesselOperationAiReportPreviewModal
+        open={isAiReportPreviewOpen}
+        report={aiReportDraft}
+        isLoading={isAiReportGenerating}
+        notice={reportNotice}
+        onClose={() => setIsAiReportPreviewOpen(false)}
+        onRegenerate={() => void generateAiReport()}
+        onCopy={() => void handleCopyAiReport()}
+        onSubjectChange={(value) => {
+          setAiReportDraft((current) => (current ? { ...current, subject: value } : current));
+        }}
+        onBodyChange={(value) => {
+          setAiReportDraft((current) => (current ? { ...current, body: value } : current));
+        }}
+      />
     </main>
   );
-}
-
-export default function VesselSummaryPage() {
-  return <VesselSummaryPageContent />;
 }

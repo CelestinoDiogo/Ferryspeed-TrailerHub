@@ -10,6 +10,11 @@ import { PrintHeader } from "@/components/print/print-header";
 import { PrintReportLayout } from "@/components/print/print-report-layout";
 import { PrintSummary } from "@/components/print/print-summary";
 import { PrintTable } from "@/components/print/print-table";
+import { getOperationalStageBadgeClassName } from "@/lib/operations/operational-stages";
+import {
+  buildTrailerOperationalPositionFromContext,
+  getTrailerFleetStatus,
+} from "@/lib/operations/trailer-operational-engine";
 import { supabase } from "@/lib/supabase";
 import {
   EXPORT_ACTIVE_STATUS_QUERY_VALUES,
@@ -32,6 +37,7 @@ type TrailerRecord = {
   external_company?: string | null;
   external_reference?: string | null;
   is_local?: boolean | null;
+  operational_status?: string | null;
   active_export_allocation?: {
     id: string;
     status: ExportAllocationStatus;
@@ -77,8 +83,108 @@ type SearchResultGroup = {
       booking_reference?: string | null;
     } | null;
     status: string;
+    operational_stage?: string | null;
+    operational_location?: string | null;
+    vessel?: string | null;
+    issue?: boolean;
+    fleet_status?: string | null;
+    stage_badge_class_name?: string;
+    profile_href?: string | null;
     source: "trailer" | "company";
   }>;
+};
+
+type DeliveryBookingRecord = {
+  id: string;
+  trailer_id: string;
+  delivery_date: string;
+  delivery_time?: string | null;
+  customer?: string | null;
+  consignee?: string | null;
+  delivery_location?: string | null;
+  booking_reference?: string | null;
+  escort_required?: boolean | null;
+  status: string;
+  notes?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  delivered_at?: string | null;
+  waiting_collection_since?: string | null;
+  collection_due_date?: string | null;
+  collected_at?: string | null;
+  demurrage_free_days?: number | null;
+  demurrage_daily_rate?: number | null;
+  demurrage_currency?: string | null;
+  demurrage_notes?: string | null;
+};
+
+type VesselOperationTrailerRecord = {
+  id: string;
+  vessel_operation_id: string;
+  trailer_id?: string | null;
+  trailer_number?: string | null;
+  customer?: string | null;
+  booking_reference?: string | null;
+  load_status?: string | null;
+  load_description?: string | null;
+  temperature_required?: string | null;
+  priority_level?: string | null;
+  priority_reason?: string | null;
+  planned_destination?: string | null;
+  planning_notes?: string | null;
+  status?: string | null;
+  arrived_at?: string | null;
+  arrival_status: string;
+  arrival_confirmed_at?: string | null;
+  arrival_record_id?: string | null;
+  arrival_confirmed_by?: string | null;
+  inspection_started_at?: string | null;
+  inspection_completed_at?: string | null;
+  position_assigned_at?: string | null;
+  assigned_position?: string | null;
+  has_damage?: boolean | null;
+  has_temperature_alert?: boolean | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
+type VesselOperationRecord = {
+  id: string;
+  vessel_name?: string | null;
+  sailing_reference?: string | null;
+  origin_port?: string | null;
+  berth?: string | null;
+  expected_arrival_at?: string | null;
+  actual_arrival_at?: string | null;
+  status: string;
+  list_status?: string | null;
+  list_confirmed_at?: string | null;
+  list_confirmed_by?: string | null;
+  notes?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
+type TrailerEventRecord = {
+  id: string;
+  trailer_id?: string | null;
+  trailer_number?: string | null;
+  event_type?: string | null;
+  event_description?: string | null;
+  old_value?: unknown;
+  new_value?: unknown;
+  created_at?: string | null;
+  created_by?: string | null;
+};
+
+type OperationalSnapshot = {
+  stageLabel: string;
+  stage: string | null;
+  location: string | null;
+  vessel: string | null;
+  hasIssues: boolean;
+  badgeClassName: string;
+  fleetStatus: string;
 };
 
 const formatDate = (value?: string | null) => {
@@ -137,6 +243,10 @@ function DashboardSearchPageContent() {
   const [search, setSearch] = useState("");
   const [trailers, setTrailers] = useState<TrailerRecord[]>([]);
   const [companyTrailers, setCompanyTrailers] = useState<CompanyTrailerRecord[]>([]);
+  const [deliveryBookings, setDeliveryBookings] = useState<DeliveryBookingRecord[]>([]);
+  const [vesselOperationTrailers, setVesselOperationTrailers] = useState<VesselOperationTrailerRecord[]>([]);
+  const [vesselOperations, setVesselOperations] = useState<VesselOperationRecord[]>([]);
+  const [trailerEvents, setTrailerEvents] = useState<TrailerEventRecord[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -204,10 +314,16 @@ function DashboardSearchPageContent() {
 
       try {
         const activeStatuses = [...EXPORT_ACTIVE_STATUS_QUERY_VALUES];
-        const [{ data: trailerData, error: trailerError }, { data: companyData, error: companyError }, { data: exportData, error: exportError }] = await Promise.all([
+        const [
+          { data: trailerData, error: trailerError },
+          { data: companyData, error: companyError },
+          { data: exportData, error: exportError },
+          { data: deliveryData, error: deliveryError },
+          { data: vesselTrailerData, error: vesselTrailerError },
+        ] = await Promise.all([
           supabase
             .from("trailers")
-            .select("id, trailer_number, load_status, customer, consignee, container_number, compound_position, arrival_date, departure_date, trailer_source, external_company, external_reference, is_local")
+            .select("id, trailer_number, load_status, customer, consignee, container_number, compound_position, arrival_date, departure_date, trailer_source, external_company, external_reference, is_local, operational_status")
             .order("arrival_date", { ascending: false }),
           supabase.from("company_trailers").select("id, trailer_number, prefix, numeric_part").order("trailer_number", { ascending: true }),
           supabase
@@ -215,6 +331,15 @@ function DashboardSearchPageContent() {
             .select("id, trailer_id, status, customer, collection_date, haulier, booking_reference, updated_at")
             .in("status", activeStatuses)
             .order("updated_at", { ascending: false }),
+          supabase
+            .from("delivery_bookings")
+            .select("id, trailer_id, delivery_date, delivery_time, customer, consignee, delivery_location, booking_reference, escort_required, status, notes, created_at, updated_at, delivered_at, waiting_collection_since, collection_due_date, collected_at, demurrage_free_days, demurrage_daily_rate, demurrage_currency, demurrage_notes")
+            .not("status", "in", '("collected","cancelled")')
+            .order("updated_at", { ascending: false }),
+          supabase
+            .from("vessel_operation_trailers")
+            .select("id, vessel_operation_id, trailer_id, trailer_number, customer, booking_reference, load_status, load_description, temperature_required, priority_level, priority_reason, planned_destination, planning_notes, status, arrived_at, arrival_status, arrival_confirmed_at, arrival_record_id, arrival_confirmed_by, inspection_started_at, inspection_completed_at, position_assigned_at, assigned_position, has_damage, has_temperature_alert, created_at, updated_at")
+            .order("created_at", { ascending: false }),
         ]);
 
         if (trailerError) {
@@ -229,8 +354,63 @@ function DashboardSearchPageContent() {
           throw exportError;
         }
 
+        if (deliveryError) {
+          throw deliveryError;
+        }
+
+        if (vesselTrailerError) {
+          throw vesselTrailerError;
+        }
+
         if (!isMounted) {
           return;
+        }
+
+        const trailerRows = (trailerData ?? []) as TrailerRecord[];
+        const companyRows = (companyData ?? []) as CompanyTrailerRecord[];
+        const deliveryRows = (deliveryData ?? []) as DeliveryBookingRecord[];
+        const vesselTrailerRows = (vesselTrailerData ?? []) as VesselOperationTrailerRecord[];
+        const trailerIds = trailerRows.map((item) => item.id);
+        const trailerNumbers = Array.from(new Set([
+          ...trailerRows.map((item) => item.trailer_number).filter((value): value is string => Boolean(value?.trim())),
+          ...companyRows.map((item) => item.trailer_number).filter((value): value is string => Boolean(value?.trim())),
+          ...vesselTrailerRows.map((item) => item.trailer_number).filter((value): value is string => Boolean(value?.trim())),
+        ]));
+        const vesselOperationIds = Array.from(new Set(vesselTrailerRows.map((item) => item.vessel_operation_id)));
+
+        const [vesselOperationsResult, trailerEventsByIdResult, trailerEventsByNumberResult] = await Promise.all([
+          vesselOperationIds.length > 0
+            ? supabase
+                .from("vessel_operations")
+                .select("id, vessel_name, sailing_reference, origin_port, berth, expected_arrival_at, actual_arrival_at, status, list_status, list_confirmed_at, list_confirmed_by, notes, created_at, updated_at")
+                .in("id", vesselOperationIds)
+            : Promise.resolve({ data: [], error: null }),
+          trailerIds.length > 0
+            ? supabase
+                .from("trailer_events")
+                .select("id, trailer_id, trailer_number, event_type, event_description, old_value, new_value, created_at, created_by")
+                .in("trailer_id", trailerIds)
+                .order("created_at", { ascending: false })
+            : Promise.resolve({ data: [], error: null }),
+          trailerNumbers.length > 0
+            ? supabase
+                .from("trailer_events")
+                .select("id, trailer_id, trailer_number, event_type, event_description, old_value, new_value, created_at, created_by")
+                .in("trailer_number", trailerNumbers)
+                .order("created_at", { ascending: false })
+            : Promise.resolve({ data: [], error: null }),
+        ]);
+
+        if (vesselOperationsResult.error) {
+          throw vesselOperationsResult.error;
+        }
+
+        if (trailerEventsByIdResult.error) {
+          throw trailerEventsByIdResult.error;
+        }
+
+        if (trailerEventsByNumberResult.error) {
+          throw trailerEventsByNumberResult.error;
         }
 
         const exportByTrailer = new Map<string, TrailerRecord["active_export_allocation"]>();
@@ -256,7 +436,16 @@ function DashboardSearchPageContent() {
         }));
 
         setTrailers(enrichedTrailers);
-        setCompanyTrailers((companyData ?? []) as CompanyTrailerRecord[]);
+        setCompanyTrailers(companyRows);
+        setDeliveryBookings(deliveryRows);
+        setVesselOperationTrailers(vesselTrailerRows);
+        setVesselOperations((vesselOperationsResult.data ?? []) as VesselOperationRecord[]);
+        setTrailerEvents(
+          [
+            ...((trailerEventsByIdResult.data ?? []) as TrailerEventRecord[]),
+            ...((trailerEventsByNumberResult.data ?? []) as TrailerEventRecord[]),
+          ].filter((row, index, rows) => rows.findIndex((candidate) => candidate.id === row.id) === index),
+        );
       } catch (err) {
         if (!isMounted) {
           return;
@@ -277,6 +466,128 @@ function DashboardSearchPageContent() {
       isMounted = false;
     };
   }, []);
+
+  const operationalSnapshots = useMemo(() => {
+    const snapshots = new Map<string, OperationalSnapshot>();
+    const companyByTrailerNumber = new Map(companyTrailers.map((item) => [normalizeText(item.trailer_number), item]));
+    const deliveriesByTrailerId = new Map<string, DeliveryBookingRecord[]>();
+    const exportsByTrailerId = new Map<string, TrailerRecord["active_export_allocation"][]>();
+    const vesselTrailersByTrailerId = new Map<string, VesselOperationTrailerRecord[]>();
+    const vesselTrailersByNumber = new Map<string, VesselOperationTrailerRecord[]>();
+    const trailerEventsByTrailerId = new Map<string, TrailerEventRecord[]>();
+    const trailerEventsByTrailerNumber = new Map<string, TrailerEventRecord[]>();
+
+    deliveryBookings.forEach((item) => {
+      const collection = deliveriesByTrailerId.get(item.trailer_id) ?? [];
+      collection.push(item);
+      deliveriesByTrailerId.set(item.trailer_id, collection);
+    });
+
+    trailers.forEach((item) => {
+      if (!item.active_export_allocation) {
+        return;
+      }
+
+      const collection = exportsByTrailerId.get(item.id) ?? [];
+      collection.push(item.active_export_allocation);
+      exportsByTrailerId.set(item.id, collection);
+    });
+
+    vesselOperationTrailers.forEach((item) => {
+      if (item.trailer_id) {
+        const byId = vesselTrailersByTrailerId.get(item.trailer_id) ?? [];
+        byId.push(item);
+        vesselTrailersByTrailerId.set(item.trailer_id, byId);
+      }
+
+      const normalizedNumber = normalizeText(item.trailer_number);
+      if (normalizedNumber) {
+        const byNumber = vesselTrailersByNumber.get(normalizedNumber) ?? [];
+        byNumber.push(item);
+        vesselTrailersByNumber.set(normalizedNumber, byNumber);
+      }
+    });
+
+    trailerEvents.forEach((item) => {
+      if (item.trailer_id) {
+        const byId = trailerEventsByTrailerId.get(item.trailer_id) ?? [];
+        byId.push(item);
+        trailerEventsByTrailerId.set(item.trailer_id, byId);
+      }
+
+      const normalizedNumber = normalizeText(item.trailer_number);
+      if (normalizedNumber) {
+        const byNumber = trailerEventsByTrailerNumber.get(normalizedNumber) ?? [];
+        byNumber.push(item);
+        trailerEventsByTrailerNumber.set(normalizedNumber, byNumber);
+      }
+    });
+
+    const buildSnapshot = (input: { key: string; trailer: TrailerRecord | null; companyTrailer: CompanyTrailerRecord | null; trailerNumber: string }) => {
+      const normalizedNumber = normalizeText(input.trailerNumber);
+      const derived = buildTrailerOperationalPositionFromContext({
+        trailerNumber: input.trailerNumber,
+        trailer: input.trailer as never,
+        companyTrailer: input.companyTrailer as never,
+        trailerEvents: [
+          ...(input.trailer ? trailerEventsByTrailerId.get(input.trailer.id) ?? [] : []),
+          ...(normalizedNumber ? trailerEventsByTrailerNumber.get(normalizedNumber) ?? [] : []),
+        ] as never,
+        vesselOperationTrailers: [
+          ...(input.trailer ? vesselTrailersByTrailerId.get(input.trailer.id) ?? [] : []),
+          ...(normalizedNumber ? vesselTrailersByNumber.get(normalizedNumber) ?? [] : []),
+        ] as never,
+        vesselOperations: vesselOperations as never,
+        deliveryBookings: input.trailer ? (deliveriesByTrailerId.get(input.trailer.id) ?? []) as never : [],
+        exportAllocations: input.trailer ? ((exportsByTrailerId.get(input.trailer.id) ?? []) as never) : [],
+      });
+
+      snapshots.set(input.key, {
+        stageLabel: derived.stageLabel,
+        stage: derived.operationalStage,
+        location: derived.currentLocation,
+        vessel: derived.vessel,
+        hasIssues: derived.issueIndicator.hasIssues,
+        badgeClassName: derived.operationalStage
+          ? getOperationalStageBadgeClassName(derived.operationalStage)
+          : "border-slate-500/30 bg-slate-500/10 text-slate-200",
+        fleetStatus: getTrailerFleetStatus({
+          trailer: input.trailer as never,
+          companyTrailer: input.companyTrailer as never,
+        }),
+      });
+    };
+
+    trailers.forEach((item) => {
+      const trailerNumber = item.trailer_number?.trim() ?? item.id;
+      buildSnapshot({
+        key: `trailer:${item.id}`,
+        trailer: item,
+        companyTrailer: companyByTrailerNumber.get(normalizeText(item.trailer_number)) ?? null,
+        trailerNumber,
+      });
+    });
+
+    companyTrailers.forEach((item) => {
+      if (!item.trailer_number?.trim()) {
+        return;
+      }
+
+      const matchingTrailer = trailers.find((trailer) => normalizeText(trailer.trailer_number) === normalizeText(item.trailer_number));
+      if (matchingTrailer) {
+        return;
+      }
+
+      buildSnapshot({
+        key: `company:${item.id}`,
+        trailer: null,
+        companyTrailer: item,
+        trailerNumber: item.trailer_number,
+      });
+    });
+
+    return snapshots;
+  }, [companyTrailers, deliveryBookings, trailers, trailerEvents, vesselOperationTrailers, vesselOperations]);
 
   const searchGroups = useMemo<SearchResultGroup[]>(() => {
     const term = search.trim().toLowerCase();
@@ -325,7 +636,9 @@ function DashboardSearchPageContent() {
       ]);
     };
 
-    const toTrailerItem = (item: TrailerRecord, status: string) => ({
+    const toTrailerItem = (item: TrailerRecord, status: string) => {
+      const snapshot = operationalSnapshots.get(`trailer:${item.id}`);
+      return {
       id: item.id,
       trailer_number: item.trailer_number,
       load_status: item.load_status,
@@ -341,8 +654,16 @@ function DashboardSearchPageContent() {
       is_local: item.is_local,
       active_export_allocation: item.active_export_allocation ?? null,
       status,
+      operational_stage: snapshot?.stageLabel ?? status,
+      operational_location: snapshot?.location ?? (item.is_local ? "Local Trailer" : item.compound_position ?? "Compound"),
+      vessel: snapshot?.vessel ?? null,
+      issue: snapshot?.hasIssues ?? false,
+      fleet_status: snapshot?.fleetStatus ?? (item.trailer_source === "outsourced" ? "Outsourced" : "Ferryspeed Fleet"),
+      stage_badge_class_name: snapshot?.badgeClassName ?? "border-slate-500/30 bg-slate-500/10 text-slate-200",
+      profile_href: item.trailer_number ? `/dashboard/trailers/${encodeURIComponent(item.trailer_number)}` : null,
       source: "trailer" as const,
-    });
+      };
+    };
 
     if (!activeFilter && !hasSearchTerm) {
       return [
@@ -495,6 +816,13 @@ function DashboardSearchPageContent() {
         is_local: false,
         active_export_allocation: null,
         status: "Fleet Record",
+        operational_stage: operationalSnapshots.get(`company:${item.id}`)?.stageLabel ?? "Fleet Record",
+        operational_location: operationalSnapshots.get(`company:${item.id}`)?.location ?? "No active movement",
+        vessel: operationalSnapshots.get(`company:${item.id}`)?.vessel ?? null,
+        issue: operationalSnapshots.get(`company:${item.id}`)?.hasIssues ?? false,
+        fleet_status: operationalSnapshots.get(`company:${item.id}`)?.fleetStatus ?? "Ferryspeed Fleet",
+        stage_badge_class_name: operationalSnapshots.get(`company:${item.id}`)?.badgeClassName ?? "border-slate-500/30 bg-slate-500/10 text-slate-200",
+        profile_href: item.trailer_number ? `/dashboard/trailers/${encodeURIComponent(item.trailer_number)}` : null,
         source: "company" as const,
       }));
 
@@ -521,7 +849,7 @@ function DashboardSearchPageContent() {
         items: companyItems,
       },
     ];
-  }, [activeFilter, companyTrailers, search, todayKey, trailers]);
+  }, [activeFilter, companyTrailers, operationalSnapshots, search, todayKey, trailers]);
 
   const hasAnyResults = searchGroups.some((group) => group.items.length > 0);
   const totalResults = searchGroups.reduce((count, group) => count + group.items.length, 0);
@@ -681,9 +1009,9 @@ function DashboardSearchPageContent() {
                           <div>
                             <p className="text-xs font-semibold uppercase tracking-[0.25em] text-slate-500">Trailer number</p>
                             <p className="mt-1 text-lg font-semibold text-white">
-                              {item.trailer_number ? (
+                              {item.profile_href && item.trailer_number ? (
                                 <Link
-                                  href={`/dashboard/trailers/${item.trailer_number}`}
+                                  href={item.profile_href}
                                   className="transition hover:text-cyan-300"
                                 >
                                   {item.trailer_number}
@@ -694,9 +1022,10 @@ function DashboardSearchPageContent() {
                             </p>
                           </div>
                           <div className="flex flex-wrap gap-2">
-                            <span className="rounded-full border border-cyan-400/20 bg-cyan-500/10 px-3 py-1 text-sm text-cyan-200">
-                              {item.status}
+                            <span className={`rounded-full border px-3 py-1 text-sm ${item.stage_badge_class_name ?? "border-cyan-400/20 bg-cyan-500/10 text-cyan-200"}`}>
+                              {item.operational_stage ?? item.status}
                             </span>
+                            {item.issue ? <span className="rounded-full border border-rose-500/30 bg-rose-500/10 px-3 py-1 text-sm text-rose-200">Issue</span> : null}
                             {item.active_export_allocation ? (
                               <span className="rounded-full border border-orange-400/30 bg-orange-500/10 px-3 py-1 text-sm text-orange-200">
                                 {getExportAllocationStatusLabel(item.active_export_allocation.status)}
@@ -711,12 +1040,16 @@ function DashboardSearchPageContent() {
                             <dd className="mt-1">{item.load_status ?? "—"}</dd>
                           </div>
                           <div>
-                            <dt className="text-xs uppercase tracking-[0.25em] text-slate-500">Position</dt>
-                            <dd className="mt-1">{item.position ?? "—"}</dd>
+                            <dt className="text-xs uppercase tracking-[0.25em] text-slate-500">Current Location</dt>
+                            <dd className="mt-1">{item.operational_location ?? item.position ?? "—"}</dd>
                           </div>
                           <div>
                             <dt className="text-xs uppercase tracking-[0.25em] text-slate-500">Customer</dt>
                             <dd className="mt-1">{item.customer ?? "—"}</dd>
+                          </div>
+                          <div>
+                            <dt className="text-xs uppercase tracking-[0.25em] text-slate-500">Vessel</dt>
+                            <dd className="mt-1">{item.vessel ?? "—"}</dd>
                           </div>
                           <div>
                             <dt className="text-xs uppercase tracking-[0.25em] text-slate-500">Consignee</dt>
@@ -739,8 +1072,8 @@ function DashboardSearchPageContent() {
                             <dd className="mt-1">{item.source === "company" ? "Company fleet" : "Trailer record"}</dd>
                           </div>
                           <div>
-                            <dt className="text-xs uppercase tracking-[0.25em] text-slate-500">Ownership</dt>
-                            <dd className="mt-1">{item.trailer_source === "outsourced" ? "Outsourced" : "Ferryspeed Fleet"}</dd>
+                            <dt className="text-xs uppercase tracking-[0.25em] text-slate-500">Fleet Status</dt>
+                            <dd className="mt-1">{item.fleet_status ?? (item.trailer_source === "outsourced" ? "Outsourced" : "Ferryspeed Fleet")}</dd>
                           </div>
                           <div>
                             <dt className="text-xs uppercase tracking-[0.25em] text-slate-500">External Company</dt>

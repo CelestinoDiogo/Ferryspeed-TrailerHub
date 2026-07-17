@@ -1,52 +1,5 @@
 import "server-only";
-import { createHash } from "node:crypto";
-import type { AIReportNarrative, VesselOperationalReportData, VesselOperationReportSnapshot } from "@/lib/reports/types";
-
-export function stringifyRecommendations(recommendations: string[]): string {
-  return recommendations
-    .map((item) => item.trim())
-    .filter(Boolean)
-    .join("\n");
-}
-
-export function parseRecommendations(value?: string | null): string[] {
-  if (!value) {
-    return [];
-  }
-
-  return value
-    .split(/\r?\n/)
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
-
-function stableSerialize(value: unknown): string {
-  if (Array.isArray(value)) {
-    return `[${value.map((item) => stableSerialize(item)).join(",")}]`;
-  }
-
-  if (value && typeof value === "object") {
-    const objectValue = value as Record<string, unknown>;
-    const keys = Object.keys(objectValue).sort();
-    const entries = keys.map((key) => `${JSON.stringify(key)}:${stableSerialize(objectValue[key])}`);
-    return `{${entries.join(",")}}`;
-  }
-
-  return JSON.stringify(value);
-}
-
-export function buildSnapshotHash(data: VesselOperationalReportData): string {
-  const payload = stableSerialize(data);
-  return createHash("sha256").update(payload).digest("hex");
-}
-
-export function buildSnapshot(data: VesselOperationalReportData): VesselOperationReportSnapshot {
-  return {
-    snapshotHash: buildSnapshotHash(data),
-    generatedAt: new Date().toISOString(),
-    data,
-  };
-}
+import type { AIReportNarrative, VesselOperationalReportData } from "@/lib/reports/types";
 
 export function buildDeterministicNarrative(data: VesselOperationalReportData): AIReportNarrative {
   const pending = data.statistics.pendingTrailers;

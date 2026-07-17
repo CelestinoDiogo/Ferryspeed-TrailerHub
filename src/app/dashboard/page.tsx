@@ -3,7 +3,7 @@ import { TrailerDashboard } from "@/components/dashboard/trailer-dashboard";
 
 export default function DashboardPage() {
   return (
-    <Suspense fallback={<div className="min-h-screen bg-fs-main p-6 text-slate-200">Loading dashboard...</div>}>
+    <Suspense fallback={<div className="min-h-[60vh] p-6 text-slate-600">Loading dashboard...</div>}>
       <TrailerDashboard />
     </Suspense>
   );

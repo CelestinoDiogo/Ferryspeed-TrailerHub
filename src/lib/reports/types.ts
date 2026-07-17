@@ -11,19 +11,28 @@ export type VesselOperationalReportData = {
     actualArrivalAt: string | null;
     operationStartedAt: string | null;
     operationCompletedAt: string | null;
+    confirmedAt: string | null;
+    completedAt: string | null;
+    operator: string | null;
     port: string | null;
     berth: string | null;
     status: string;
+    listStatus: string | null;
+    listConfirmedAt: string | null;
+    listConfirmedBy: string | null;
     notes: string | null;
   };
   statistics: {
+    totalTrailers: number;
     expectedTrailers: number;
     arrivedTrailers: number;
     pendingTrailers: number;
+    notDischargedTrailers: number;
     priorityTrailers: number;
     inspectedTrailers: number;
     pendingInspections: number;
     damagedTrailers: number;
+    temperatureAlertTrailers: number;
     temperatureChecks: number;
     temperatureExceptions: number;
     completionPercentage: number;
@@ -36,12 +45,40 @@ export type VesselOperationalReportData = {
     loadStatus: string | null;
     priority: string;
     arrivalStatus: string;
+    arrivalStatusRaw: string | null;
     arrivedAt: string | null;
+    arrivalTime: string | null;
     inspectionStatus: string;
+    inspectionCompletedAt: string | null;
+    receptionStatus: string;
+    compoundPosition: string | null;
     damageStatus: string | null;
+    overallCondition: "good" | "attention_required";
+    hasDamage: boolean;
+    hasTemperatureAlert: boolean;
     temperatureResult: TemperatureResult;
+    frontTemperature: number | null;
+    rearTemperature: number | null;
+    temperatureUnit: string;
     operationalStatus: string;
     notes: string | null;
+    boatCheckNotes: string | null;
+    receptionNotes: string | null;
+    damageDetails: {
+      category: string | null;
+      damageLocation: string | null;
+      severity: string | null;
+      description: string;
+    } | null;
+    photos: Array<{
+      id: string;
+      url: string | null;
+      caption: string | null;
+      trailerNumber: string;
+      recordedAt: string | null;
+      category?: string | null;
+      fileName?: string | null;
+    }>;
   }>;
   damages: Array<{
     id: string;
@@ -56,16 +93,29 @@ export type VesselOperationalReportData = {
     recordedAt: string | null;
     photos: Array<{
       id: string;
-      url: string;
+      url: string | null;
       caption: string | null;
       trailerNumber: string;
       recordedAt: string | null;
+      category?: string | null;
+      fileName?: string | null;
     }>;
+  }>;
+  photos: Array<{
+    id: string;
+    trailerId: string;
+    trailerNumber: string;
+    url: string | null;
+    caption: string | null;
+    recordedAt: string | null;
+    category?: string | null;
+    fileName?: string | null;
   }>;
   temperatures: Array<{
     id: string;
     trailerId: string;
     trailerNumber: string;
+    readingPoint: string | null;
     requiredMin: number | null;
     requiredMax: number | null;
     recordedTemperature: number | null;
@@ -94,30 +144,31 @@ export type AIReportNarrative = {
   conclusion: string;
 };
 
-export type VesselOperationReportSnapshot = {
-  snapshotHash: string;
-  generatedAt: string;
-  data: VesselOperationalReportData;
+export type VesselOperationAiReportSections = {
+  operationOverview: string;
+  trailerDischargeSummary: string;
+  inspectionSummary: string;
+  damageFindings: string;
+  temperatureFindings: string;
+  outstandingItems: string;
+  finalOperationalStatus: string;
 };
 
-export type StoredVesselOperationReport = {
-  id: string;
-  vessel_operation_id: string;
-  report_type: string;
-  report_status: string;
-  report_number: string | null;
-  title: string;
-  executive_summary: string | null;
-  operational_analysis: string | null;
-  recommendations: string | null;
-  conclusion: string | null;
-  structured_snapshot: Json;
-  generated_by_ai: boolean;
-  ai_model: string | null;
-  approved_at: string | null;
-  approved_by: string | null;
-  sent_at: string | null;
-  sent_by: string | null;
-  created_at: string;
-  updated_at: string;
+export type VesselOperationAiReportDraft = {
+  reportId: string | null;
+  subject: string;
+  body: string;
+  sections: VesselOperationAiReportSections;
+  generationMode: "ai" | "template";
+  usedFallback: boolean;
+  aiModel: string | null;
+  generatedAt: string;
+};
+
+export type VesselOperationAiReportResponse = {
+  report: null;
+  reportData?: VesselOperationalReportData | null;
+  reportDraft: VesselOperationAiReportDraft | null;
+  usedFallback: boolean;
+  message: string | null;
 };

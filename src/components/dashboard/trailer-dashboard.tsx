@@ -1,10 +1,10 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
-import { DashboardSection } from "@/components/dashboard/dashboard-section";
-import { KpiCard } from "@/components/dashboard/kpi-card";
+import { AlertTriangle, Anchor, ChevronRight, ClipboardList, Package, Ship, Truck, Wrench } from "lucide-react";
 import { PrintButton } from "@/components/print/print-button";
 import { PrintFilters } from "@/components/print/print-filters";
 import { PrintFooter } from "@/components/print/print-footer";
@@ -405,113 +405,59 @@ export function TrailerDashboard() {
     void loadStats();
   }, [saved]);
 
-  const statsCards: Array<{
-    title: string;
-    value: string;
-    detail: string;
-    accent: string;
-    labelClass: string;
-    href: string;
-  }> = [
-    {
-      title: "Trailers in Compound",
-      value: stats.totalTrailers.toString(),
-      detail: "Currently active",
-      accent: "bg-[var(--fs-green)]",
-      labelClass: "text-[var(--fs-green-light)]",
-      href: "/dashboard/search?filter=compound",
-    },
-    {
-      title: "Available Empty",
-      value: stats.availableEmptyTrailers.toString(),
-      detail: "Compound empty and not allocated",
-      accent: "bg-[var(--fs-emerald)]",
-      labelClass: "text-[var(--fs-emerald)]",
-      href: "/dashboard/search?status=empty",
-    },
-    {
-      title: "Loaded Trailers",
-      value: stats.loadedTrailers.toString(),
-      detail: "Ready for departure",
-      accent: "bg-[var(--fs-orange)]",
-      labelClass: "text-[var(--fs-orange)]",
-      href: "/dashboard/search?status=loaded",
-    },
-    {
-      title: "Local Trailers",
-      value: stats.localTrailers.toString(),
-      detail: "Excluded from compound",
-      accent: "bg-[var(--fs-indigo)]",
-      labelClass: "text-[var(--fs-indigo)]",
-      href: "/dashboard/search?filter=local",
-    },
-    {
-      title: "Allocated",
-      value: stats.allocatedTrailers.toString(),
-      detail: "Assigned for export loading",
-      accent: "bg-[var(--fs-cyan)]",
-      labelClass: "text-[var(--fs-cyan)]",
-      href: "/dashboard/export-operations?filter=allocated",
-    },
-    {
-      title: "At Customer",
-      value: stats.atCustomerTrailers.toString(),
-      detail: "Delivered empty or waiting loading",
-      accent: "bg-[var(--fs-orange)]",
-      labelClass: "text-[var(--fs-orange)]",
-      href: "/dashboard/export-operations?filter=at_customer",
-    },
-    {
-      title: "Waiting Collection",
-      value: waitingCollectionSummary.count.toString(),
-      detail: "Delivery bookings pending pickup",
-      accent: "bg-[var(--fs-purple)]",
-      labelClass: "text-[var(--fs-purple)]",
-      href: "/dashboard/deliveries?filter=waiting",
-    },
-    {
-      title: "Compound Occupancy",
-      value: `${stats.occupancy}%`,
-      detail: "Space utilization",
-      accent: "bg-[var(--fs-green-light)]",
-      labelClass: "text-[var(--fs-green-light)]",
-      href: "/dashboard/compound",
-    },
+  const todayKey = getDateKey(new Date().toISOString());
+  const arrivalsTodayCount = trailers.filter((item) => getDateKey(item.arrival_date) === todayKey).length;
+  const departuresTodayCount = trailers.filter((item) => getDateKey(item.departure_date) === todayKey).length;
+  const deliveriesTodayCount = todayDeliveries.length;
+  const collectionsTodayCount = waitingCollectionSummary.count;
+  const vesselOpsTodayCount = vesselOperations.length;
+
+  const activeCompoundTrailers = trailers.filter((item) => {
+    const departureDate = item.departure_date;
+    const active = departureDate === null || departureDate === undefined || departureDate === "";
+    return active && item.is_local !== true;
+  });
+
+  const awaitingPositionCount = activeCompoundTrailers.filter(
+    (item) => !item.compound_position || item.compound_position.trim() === "",
+  ).length;
+  const maintenanceCount = alerts.filter((item) => item.type === "incomplete_info").length;
+
+  const programmeCards = [
+    { label: "Arrivals", subtitle: "Today", value: arrivalsTodayCount, href: "/dashboard/search?filter=arrivals_today", icon: <Ship className="h-6 w-6" /> },
+    { label: "Departures", subtitle: "Today", value: departuresTodayCount, href: "/dashboard/search?filter=departures_today", icon: <Package className="h-6 w-6" /> },
+    { label: "Deliveries", subtitle: "Today", value: deliveriesTodayCount, href: "/dashboard/deliveries", icon: <Truck className="h-6 w-6" /> },
+    { label: "Collections", subtitle: "Today", value: collectionsTodayCount, href: "/dashboard/deliveries?filter=waiting", icon: <ClipboardList className="h-6 w-6" /> },
+    { label: "Vessel Operations", subtitle: "Today", value: vesselOpsTodayCount, href: "/dashboard/vessel-operations", icon: <Anchor className="h-6 w-6" /> },
   ];
 
-  const recentArrivals = trailers
-    .filter((item) => getDateKey(item.arrival_date) !== null)
-    .sort((a, b) => new Date(b.arrival_date ?? 0).getTime() - new Date(a.arrival_date ?? 0).getTime())
-    .slice(0, 8);
+  const rightAlerts = [
+    ...alerts.slice(0, 4),
+    ...(vesselOperations[0]
+      ? [
+          {
+            id: "next_vessel_info",
+            type: "incomplete_info" as const,
+            severity: "warning" as const,
+            title: `Next Vessel: ${vesselOperations[0].vessel_name ?? "Scheduled"}`,
+            description: vesselOperations[0].expected_arrival_at
+              ? `ETA ${new Date(vesselOperations[0].expected_arrival_at).toLocaleString("en-GB")}`
+              : "Arrival window pending confirmation.",
+          },
+        ]
+      : []),
+  ].slice(0, 5);
 
-  const recentDepartures = trailers
-    .filter((item) => getDateKey(item.departure_date) !== null)
-    .sort((a, b) => new Date(b.departure_date ?? 0).getTime() - new Date(a.departure_date ?? 0).getTime())
-    .slice(0, 8);
-
-  const occupancyDashOffset = 282.7 - ((Math.max(0, Math.min(100, stats.occupancy)) / 100) * 282.7);
   const printedAt = getPrintedDateTime();
 
-  const statusClass = (status?: string | null) => {
-    if (!status) return "fs-status fs-status-scheduled";
-    return `fs-status fs-status-${status.toLowerCase()}`;
-  };
-
   return (
-    <div className="flex flex-col gap-6">
-      <section className="relative overflow-hidden rounded-3xl border border-[var(--fs-border-strong)] bg-[var(--fs-panel)] px-6 py-7 shadow-xl">
-        <div className="relative z-10 max-w-3xl">
-          <div className="inline-flex items-center gap-2 rounded-full border border-[var(--fs-border-strong)] bg-white/5 px-3 py-1 text-xs font-semibold text-[var(--fs-text-muted)]">
-            <span className="h-2 w-2 rounded-full bg-[var(--fs-green-light)]" aria-hidden="true" />
-            <span>Live Operations</span>
-          </div>
-          <p className="mt-5 text-sm font-semibold uppercase tracking-[0.18em] text-cyan-300">Ferryspeed TrailerHub</p>
-          <h1 className="mt-2 text-3xl font-semibold tracking-tight text-[var(--fs-text)] sm:text-4xl">Operational Dashboard</h1>
-          <p className="mt-3 text-base text-[var(--fs-text-muted)]">Live overview of compound and trailer operations.</p>
-          <div className="mt-4">
-            <PrintButton label="Print / Export Summary" disabled={isLoading} />
-          </div>
+    <div className="flex flex-col gap-6 bg-[#F8FAFC] pb-2">
+      <section className="flex flex-wrap items-start justify-between gap-4 border-b border-slate-200 pb-3">
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-slate-500">OPERATIONS CONTROL CENTRE</p>
+          <p className="mt-1 text-sm text-slate-500">Welcome to Ferryspeed TrailerHub</p>
         </div>
+        <PrintButton label="Print / Export Summary" disabled={isLoading} />
       </section>
 
       <PrintReportLayout orientation="portrait">
@@ -570,255 +516,140 @@ export function TrailerDashboard() {
         <PrintFooter />
       </PrintReportLayout>
 
-        {notice ? (
-          <div className="rounded-2xl border border-[var(--fs-border)] bg-[var(--fs-panel)] px-4 py-3 text-sm text-[var(--fs-text)]">
-            {notice}
-          </div>
-        ) : null}
+      {notice ? (
+        <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
+          {notice}
+        </div>
+      ) : null}
 
-        {error ? (
-          <div className="rounded-2xl border border-[color:var(--fs-red)]/45 bg-[color:var(--fs-red)]/12 px-4 py-3 text-sm text-rose-100">
-            {error}
-          </div>
-        ) : null}
+      {error ? (
+        <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-900">
+          {error}
+        </div>
+      ) : null}
 
-      <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-8">
-          {statsCards.map((card) => (
-            <Link key={card.title} href={card.href} className="block rounded-2xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fs-green-light)]">
-              <KpiCard
-                label={card.title}
-                value={isLoading ? "..." : card.value}
-                supportingText={card.detail}
-                accentClass={card.accent}
-                labelClass={card.labelClass}
-              />
-            </Link>
-          ))}
+      <section className="grid gap-6 xl:grid-cols-[1.1fr_1.6fr_1fr]">
+        <div className="space-y-3">
+          <p className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-500">Today&apos;s Programme</p>
+          <div className="space-y-3">
+            {programmeCards.map((card) => (
+              <Link
+                key={card.label}
+                href={card.href}
+                className="group flex items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-[0_12px_30px_rgba(15,23,42,0.05)] transition hover:-translate-y-0.5 hover:border-slate-300"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="inline-flex h-12 w-12 items-center justify-center rounded-xl bg-slate-100 text-emerald-700">
+                    {card.icon}
+                  </div>
+                  <div>
+                    <p className="text-sm font-semibold text-slate-900">{card.label}</p>
+                    <p className="text-xs uppercase tracking-[0.16em] text-slate-500">{card.subtitle}</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-3">
+                  <p className="text-3xl font-semibold tracking-tight text-slate-950">{isLoading ? "..." : card.value}</p>
+                  <ChevronRight className="h-5 w-5 text-slate-400" />
+                </div>
+              </Link>
+            ))}
+          </div>
+        </div>
+
+        <div className="relative flex min-h-[620px] flex-col items-center justify-center overflow-hidden">
+          <div className="mb-4 text-center">
+            <p className="text-xs font-semibold uppercase tracking-[0.32em] text-slate-500">FERRYSPEED</p>
+            <p className="mt-1 text-lg font-semibold uppercase tracking-[0.24em] text-slate-900">GUERNSEY</p>
+            <p className="mt-1 text-xs uppercase tracking-[0.18em] text-slate-500">Enterprise Operations Control Centre</p>
+          </div>
+          <div className="relative h-[70%] min-h-[420px] w-full">
+            <Image
+              src="/branding/ferryspeed map.png"
+              alt="Ferryspeed Guernsey map"
+              fill
+              priority
+              sizes="(max-width: 1280px) 100vw, 60vw"
+              className="object-contain"
+            />
+          </div>
+        </div>
+
+        <div className="space-y-4">
+          <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-[0_12px_30px_rgba(15,23,42,0.05)]">
+            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-500">Yard Status</p>
+            <div className="mt-3 space-y-2.5">
+              <div className="flex items-center justify-between border-b border-slate-100 py-2">
+                <span className="text-sm text-slate-600">Compound Occupancy</span>
+                <span className="text-xl font-semibold text-slate-950">{isLoading ? "..." : `${stats.occupancy}%`}</span>
+              </div>
+              <div className="flex items-center justify-between border-b border-slate-100 py-2">
+                <span className="text-sm text-slate-600">Awaiting Position</span>
+                <span className="text-xl font-semibold text-slate-950">{isLoading ? "..." : awaitingPositionCount}</span>
+              </div>
+              <div className="flex items-center justify-between border-b border-slate-100 py-2">
+                <span className="text-sm text-slate-600">Empty Trailers</span>
+                <span className="text-xl font-semibold text-slate-950">{isLoading ? "..." : stats.availableEmptyTrailers}</span>
+              </div>
+              <div className="flex items-center justify-between border-b border-slate-100 py-2">
+                <span className="text-sm text-slate-600">Loaded Trailers</span>
+                <span className="text-xl font-semibold text-slate-950">{isLoading ? "..." : stats.loadedTrailers}</span>
+              </div>
+              <div className="flex items-center justify-between py-2">
+                <span className="text-sm text-slate-600">Maintenance</span>
+                <span className="text-xl font-semibold text-slate-950">{isLoading ? "..." : maintenanceCount}</span>
+              </div>
+            </div>
+            <div className="mt-3">
+              <div className="mb-2 flex items-center justify-between text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+                <span>Occupancy</span>
+                <span>{stats.occupancy}%</span>
+              </div>
+              <div className="h-3 overflow-hidden rounded-full bg-slate-100">
+                <div className="h-full rounded-full bg-gradient-to-r from-[#17A34A] via-[#1D4ED8] to-[#DC2626]" style={{ width: `${Math.max(0, Math.min(100, stats.occupancy))}%` }} />
+              </div>
+            </div>
+          </section>
+
+          <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-[0_12px_30px_rgba(15,23,42,0.05)]">
+            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-500">Alerts</p>
+            <div className="mt-3 space-y-2">
+              {rightAlerts.length === 0 ? (
+                <p className="text-sm text-slate-500">No operational exceptions at this moment.</p>
+              ) : (
+                rightAlerts.map((alert) => (
+                  <div key={alert.id} className="rounded-xl border border-amber-200 bg-amber-50 p-3">
+                    <div className="flex items-start gap-2">
+                      <AlertTriangle className="mt-0.5 h-4 w-4 text-amber-700" />
+                      <div>
+                        <p className="text-sm font-semibold text-slate-900">{alert.title}</p>
+                        <p className="text-xs text-slate-600">{alert.description}</p>
+                        {alert.href ? <Link href={alert.href} className="mt-1 inline-block text-xs font-semibold text-slate-700 underline">Open</Link> : null}
+                      </div>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </section>
+        </div>
       </section>
 
-      <DashboardSection
-        title="Vessel Operations"
-        subtitle="Live ferry workflow and inspection pipeline."
-        action={<Link href="/dashboard/vessel-operations" className="text-sm text-[var(--fs-green-light)] hover:underline">Open module</Link>}
-      >
-        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-          {vesselOperations.length === 0 ? (
-            <p className="rounded-2xl border border-[var(--fs-border-strong)] bg-[var(--fs-panel-strong)] p-4 text-sm text-[var(--fs-text-muted)] md:col-span-2 xl:col-span-4">No active vessel operations at the moment.</p>
-          ) : (
-            vesselOperations.map((operation) => (
-              <Link key={operation.id} href="/dashboard/vessel-operations" className="rounded-2xl border border-[var(--fs-border-strong)] bg-[var(--fs-panel-strong)] p-4 transition hover:border-white/20 hover:bg-[var(--fs-panel-hover)]">
-                <p className="text-sm font-semibold text-[var(--fs-text)]">{operation.vessel_name ?? "Unnamed vessel"}</p>
-                <p className="mt-1 text-xs text-[var(--fs-text-muted)]">{operation.sailing_reference ?? "No reference"}</p>
-                <p className="mt-2 text-2xl font-bold text-cyan-200">{operation.status ?? "unknown"}</p>
-                <p className="mt-1 text-xs text-[var(--fs-text-muted)]">ETA {operation.expected_arrival_at ? new Date(operation.expected_arrival_at).toLocaleString("en-GB") : "—"}</p>
-              </Link>
-            ))
-          )}
+      <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-[0_12px_30px_rgba(15,23,42,0.05)]">
+        <p className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-500">Quick Access</p>
+        <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+          <Link href="/dashboard/vessel-operations" className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-100">Vessel Operations</Link>
+          <Link href="/dashboard/export-operations" className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-100">Export Operations</Link>
+          <Link href="/dashboard/deliveries" className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-100">Deliveries</Link>
+          <Link href="/dashboard/compound" className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-100">Compound</Link>
+          <Link href="/dashboard/search" className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-100">Search</Link>
+          <Link href="/dashboard/new-arrival" className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-100">Manual Arrival</Link>
         </div>
-      </DashboardSection>
+      </section>
 
-      <DashboardSection
-        title="Operational Alerts"
-        subtitle="Highlighted issues requiring immediate action."
-        action={<span className="rounded-full border border-[var(--fs-border-strong)] bg-white/5 px-2.5 py-1 text-xs text-[var(--fs-text-muted)]">{alerts.length} active</span>}
-      >
-        <div className="space-y-3">
-          {alerts.length === 0 ? (
-            <p className="rounded-2xl border border-emerald-500/25 bg-emerald-500/10 p-4 text-sm text-emerald-100">No operational alerts. All monitored areas are clear.</p>
-          ) : (
-            alerts.map((alert) => (
-              <div key={alert.id} className={`rounded-2xl border p-4 ${alert.severity === "alert" ? "border-rose-400/35 bg-rose-500/14" : "border-amber-400/35 bg-amber-500/14"}`}>
-                <p className="text-sm font-semibold text-[var(--fs-text)]">{alert.title}</p>
-                <p className="mt-1.5 text-sm text-[var(--fs-text-muted)]">{alert.description}</p>
-                {alert.trailerNumber ? <p className="mt-2 text-xs text-[var(--fs-text-muted)]">Trailer: {alert.trailerNumber}</p> : null}
-                {alert.href ? <Link href={alert.href} className="mt-2 inline-block text-xs font-semibold text-cyan-200 underline hover:text-cyan-100">Open</Link> : null}
-              </div>
-            ))
-          )}
-        </div>
-      </DashboardSection>
-
-      <div className="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
-        <DashboardSection title="Compound Occupancy" subtitle="Live operational capacity with fallback-readable values.">
-          <div className="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
-            <div className="relative h-32 w-32 sm:h-36 sm:w-36">
-              <svg viewBox="0 0 100 100" className="h-full w-full -rotate-90" aria-hidden="true">
-                <circle cx="50" cy="50" r="45" stroke="rgba(105,190,157,0.28)" strokeWidth="8" fill="none" />
-                <circle
-                  cx="50"
-                  cy="50"
-                  r="45"
-                  stroke="var(--fs-green-light)"
-                  strokeWidth="8"
-                  fill="none"
-                  strokeDasharray="282.7"
-                  strokeDashoffset={occupancyDashOffset}
-                  strokeLinecap="round"
-                />
-              </svg>
-              <div className="absolute inset-0 flex items-center justify-center text-2xl font-bold tracking-tight text-[var(--fs-text)]">{stats.occupancy}%</div>
-            </div>
-            <div className="grid flex-1 grid-cols-2 gap-2.5 text-sm">
-              <div className="rounded-2xl border border-[var(--fs-border-strong)] bg-[var(--fs-panel-strong)] p-3.5">
-                <p className="text-sm text-[var(--fs-text-muted)]">Occupied</p>
-                <p className="mt-1 text-2xl font-bold text-[var(--fs-text)]">{stats.totalTrailers}</p>
-              </div>
-              <div className="rounded-2xl border border-[var(--fs-border-strong)] bg-[var(--fs-panel-strong)] p-3.5">
-                <p className="text-sm text-[var(--fs-text-muted)]">Total Positions</p>
-                <p className="mt-1 text-2xl font-bold text-[var(--fs-text)]">{COMPOUND_POSITIONS}</p>
-              </div>
-              <div className="col-span-2 rounded-2xl border border-[var(--fs-border-strong)] bg-[var(--fs-panel-strong)] p-3.5">
-                <p className="text-sm text-[var(--fs-text-muted)]">Available Positions</p>
-                <p className="mt-1 text-2xl font-bold text-[var(--fs-green-light)]">{Math.max(0, COMPOUND_POSITIONS - stats.totalTrailers)}</p>
-              </div>
-            </div>
-          </div>
-        </DashboardSection>
-
-        <DashboardSection title="Export Operations" subtitle="Compact overview of current export allocation workload.">
-          <div className="grid gap-3 sm:grid-cols-2">
-            <Link href="/dashboard/export-operations?filter=allocated" className="rounded-2xl border border-[var(--fs-border-strong)] bg-[var(--fs-panel-strong)] p-4 transition hover:border-white/20 hover:bg-[var(--fs-panel-hover)]">
-              <p className="text-sm font-semibold text-[var(--fs-text)]">Allocated</p>
-              <p className="mt-2 text-3xl font-bold text-cyan-200">{exportSummary.allocated}</p>
-            </Link>
-            <Link href="/dashboard/export-operations?filter=at_customer" className="rounded-2xl border border-[var(--fs-border-strong)] bg-[var(--fs-panel-strong)] p-4 transition hover:border-white/20 hover:bg-[var(--fs-panel-hover)]">
-              <p className="text-sm font-semibold text-[var(--fs-text)]">At Customer</p>
-              <p className="mt-2 text-3xl font-bold text-amber-200">{exportSummary.atCustomer}</p>
-            </Link>
-            <Link href="/dashboard/export-operations?filter=collected_loaded" className="rounded-2xl border border-[var(--fs-border-strong)] bg-[var(--fs-panel-strong)] p-4 transition hover:border-white/20 hover:bg-[var(--fs-panel-hover)]">
-              <p className="text-sm font-semibold text-[var(--fs-text)]">Collected Loaded</p>
-              <p className="mt-2 text-3xl font-bold text-orange-200">{exportSummary.collectedLoaded}</p>
-            </Link>
-            <Link href="/dashboard/export-operations?filter=overdue" className="rounded-2xl border border-[var(--fs-border-strong)] bg-[var(--fs-panel-strong)] p-4 transition hover:border-white/20 hover:bg-[var(--fs-panel-hover)]">
-              <p className="text-sm font-semibold text-[var(--fs-text)]">Overdue</p>
-              <p className="mt-2 text-3xl font-bold text-rose-200">{exportSummary.overdue}</p>
-            </Link>
-          </div>
-        </DashboardSection>
+      <div className="sr-only" aria-hidden="true">
+        <p>{events.length}</p>
+        <p>{exportSummary.allocated + exportSummary.atCustomer + exportSummary.collectedLoaded + exportSummary.overdue}</p>
       </div>
-
-      <div className="grid gap-5 xl:grid-cols-2">
-        <DashboardSection title="Waiting Collection" subtitle="Collection aging and pending pickups" action={<Link href="/dashboard/deliveries?filter=waiting" className="text-sm text-[var(--fs-green-light)] hover:underline">View all</Link>}>
-          <div className="grid gap-3 sm:grid-cols-3">
-            <div className="rounded-2xl border border-[var(--fs-border-strong)] bg-[var(--fs-panel-strong)] p-3.5"><p className="text-sm text-[var(--fs-text-muted)]">Total Waiting</p><p className="mt-1 text-2xl font-bold text-[var(--fs-text)]">{waitingCollectionSummary.count}</p></div>
-            <div className="rounded-2xl border border-[var(--fs-border-strong)] bg-[var(--fs-panel-strong)] p-3.5"><p className="text-sm text-[var(--fs-text-muted)]">Oldest Waiting</p><p className="mt-1 text-2xl font-bold text-[var(--fs-text)]">{waitingCollectionSummary.oldestDays}d</p></div>
-            <div className="rounded-2xl border border-[var(--fs-border-strong)] bg-[var(--fs-panel-strong)] p-3.5"><p className="text-sm text-[var(--fs-text-muted)]">Attention Required</p><p className="mt-1 text-2xl font-bold text-rose-200">{waitingCollectionSummary.attentionRequiredCount}</p></div>
-          </div>
-          <div className="mt-4 space-y-2">
-            {waitingCollections.slice(0, 5).map((item) => {
-              const aging = calculateCollectionAging({
-                delivery_date: item.delivery_date,
-                delivered_at: item.delivered_at,
-                waiting_collection_since: item.waiting_collection_since,
-                collection_due_date: item.collection_due_date,
-              });
-              const waitingClass = aging.agingLevel === "red" ? "fs-status-attention" : aging.agingLevel === "amber" ? "fs-status-monitor" : "fs-status-ready";
-              return (
-                <div key={item.id} className="rounded-2xl border border-[var(--fs-border-strong)] bg-[var(--fs-panel-strong)] p-3 transition-colors hover:bg-[var(--fs-panel-hover)]">
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="font-semibold text-[var(--fs-text)]">{item.trailer_number ?? "--"}</p>
-                    <span className={`fs-status ${waitingClass}`}>{aging.agingLabel}</span>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </DashboardSection>
-
-        <DashboardSection
-          title="Recent Arrivals"
-          subtitle="Latest trailer check-ins"
-          action={<Link href="/dashboard/search?filter=arrivals_today" className="text-sm text-[var(--fs-green-light)] hover:underline">View all</Link>}
-        >
-          <div className="space-y-2">
-            {recentArrivals.length === 0 ? <p className="text-sm text-[var(--fs-text-muted)]">No recent arrivals.</p> : recentArrivals.map((row) => (
-              <div key={row.id} className="rounded-2xl border border-[var(--fs-border-strong)] bg-[var(--fs-panel-strong)] px-3.5 py-3 transition-colors hover:bg-[var(--fs-panel-hover)]">
-                <div className="flex items-center justify-between gap-3">
-                  <p className="text-sm font-semibold text-[var(--fs-text)]">{row.trailer_number ?? "--"}</p>
-                  <p className="text-xs text-[var(--fs-text-muted)]">{row.arrival_date ? new Date(row.arrival_date).toLocaleDateString("en-GB") : "No date"}</p>
-                </div>
-                <div className="mt-1 flex items-center justify-between gap-3">
-                  <p className="text-sm text-[var(--fs-text-muted)]">{row.customer ?? "No customer"}</p>
-                  <span className={statusClass(row.load_status)}>{row.load_status ?? "unknown"}</span>
-                </div>
-              </div>
-            ))}
-          </div>
-        </DashboardSection>
-      </div>
-
-      <div className="grid gap-5 xl:grid-cols-2">
-        <DashboardSection
-          title="Recent Departures"
-          subtitle="Latest trailer releases"
-          action={<Link href="/dashboard/search?filter=departures_today" className="text-sm text-[var(--fs-green-light)] hover:underline">View all</Link>}
-        >
-          <div className="space-y-2">
-            {recentDepartures.length === 0 ? <p className="text-sm text-[var(--fs-text-muted)]">No recent departures.</p> : recentDepartures.map((row) => (
-              <div key={row.id} className="rounded-2xl border border-[var(--fs-border-strong)] bg-[var(--fs-panel-strong)] px-3.5 py-3 transition-colors hover:bg-[var(--fs-panel-hover)]">
-                <div className="flex items-center justify-between gap-3">
-                  <p className="text-sm font-semibold text-[var(--fs-text)]">{row.trailer_number ?? "--"}</p>
-                  <p className="text-xs text-[var(--fs-text-muted)]">{row.departure_date ? new Date(row.departure_date).toLocaleDateString("en-GB") : "No date"}</p>
-                </div>
-                <p className="mt-1 text-sm text-[var(--fs-text-muted)]">{row.customer ?? "No customer"}</p>
-              </div>
-            ))}
-          </div>
-        </DashboardSection>
-
-        <DashboardSection title="Latest Activity" subtitle="Real events from trailer operations">
-          <div className="space-y-2">
-            {events.length === 0 ? (
-              <p className="text-sm text-[var(--fs-text-muted)]">No recent activity available.</p>
-            ) : (
-              events.map((event) => (
-                <div key={event.id} className="rounded-2xl border border-[var(--fs-border-strong)] bg-[var(--fs-panel-strong)] px-3.5 py-3 transition-colors hover:bg-[var(--fs-panel-hover)]">
-                  <div className="flex flex-wrap items-start justify-between gap-2">
-                    <div>
-                      <div className="flex flex-wrap items-center gap-2">
-                        <p className="text-sm font-semibold text-[var(--fs-text)]">{event.trailer_number}</p>
-                        <span className="rounded-full border border-[var(--fs-border-strong)] bg-white/5 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--fs-text-muted)]">
-                          {event.event_type === "movement_reversed" ? "Undo" : event.event_type.replace(/_/g, " ")}
-                        </span>
-                      </div>
-                      <p className="mt-1 text-sm text-[var(--fs-text)]">{event.event_type === "movement_reversed" ? "Movement Reversed" : event.event_description ?? "No description"}</p>
-                      {event.event_type !== "movement_reversed" && event.event_description ? (
-                        <p className="mt-1 text-xs text-[var(--fs-text-muted)]">{event.event_type.replace(/_/g, " ")}</p>
-                      ) : null}
-                    </div>
-                    <p className="text-xs text-[var(--fs-text-muted)]">{event.created_at ? new Date(event.created_at).toLocaleString("en-GB") : "Unknown"}</p>
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-        </DashboardSection>
-      </div>
-
-      <DashboardSection
-        title="Planned Deliveries"
-        subtitle="Today bookings and live status"
-        action={<Link href="/dashboard/deliveries" className="text-sm text-[var(--fs-green-light)] hover:underline">View all</Link>}
-      >
-        <div className="space-y-2">
-          {todayDeliveries.length === 0 ? (
-            <p className="text-sm text-[var(--fs-text-muted)]">No deliveries scheduled for today.</p>
-          ) : (
-            todayDeliveries.map((booking) => (
-              <Link key={booking.id} href={`/dashboard/deliveries/${booking.id}`} className="block rounded-2xl border border-[var(--fs-border-strong)] bg-[var(--fs-panel-strong)] px-3.5 py-3 hover:bg-[var(--fs-panel-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fs-green-light)]">
-                <div className="grid gap-2 sm:grid-cols-[5rem_8rem_1fr_auto] sm:items-center sm:gap-3">
-                  <p className="text-sm font-semibold text-[var(--fs-text)]">{booking.delivery_time ? booking.delivery_time.substring(0, 5) : "--:--"}</p>
-                  <p className="text-sm font-semibold text-cyan-200">{booking.trailer_number ?? "--"}</p>
-                  <p className="text-sm text-[var(--fs-text-muted)]">{booking.customer || booking.consignee || booking.delivery_location || "No customer"}</p>
-                  <div className="flex justify-start sm:justify-end">
-                    <span className={statusClass(booking.status)}>{booking.status.replace(/_/g, " ")}</span>
-                  </div>
-                </div>
-              </Link>
-            ))
-          )}
-        </div>
-      </DashboardSection>
     </div>
   );
 }

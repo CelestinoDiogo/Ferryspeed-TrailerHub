@@ -3,10 +3,16 @@
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { ConfirmReceptionModal } from "../components/confirm-reception-modal";
+import { useVesselReception } from "../hooks/use-vessel-reception";
 import { supabase } from "@/lib/supabase";
 import {
-  computeVesselOperationSummary,
+  canConfirmVesselTrailerReception,
   formatVesselDateTime,
+  getVesselArrivalWorkflowLabel,
+  getVesselArrivalWorkflowState,
+  getVesselInspectionProgressLabel,
+  getVesselInspectionProgressState,
   getVesselPriorityClass,
   getVesselPriorityLabel,
   getVesselTrailerStatusClass,
@@ -14,30 +20,83 @@ import {
   sortVesselOperationTrailersForArrivals,
   type VesselOperationRecord,
   type VesselOperationTrailerRecord,
-  type VesselTrailerStatus,
 } from "@/lib/vessel-operations";
 
-type ViewFilter = "expected_queue" | "arrived" | "all";
+type StatusFilter = "all" | "expected" | "arrived" | "inspection_pending" | "ready_for_reception" | "received" | "cancelled";
+type DateFilter = "all" | "today" | "tomorrow" | "custom";
 
-type ArrivalConfirmState = {
-  trailer: VesselOperationTrailerRecord;
-  receivedAt: string;
-  compoundPosition: string;
-  arrivalNotes: string;
-  conditionOnArrival: string;
+type ArrivalKpi = {
+  expected: number;
+  arrived: number;
+  inspectionPending: number;
+  readyForReception: number;
+  received: number;
+  cancelled: number;
 };
 
-const filters: Array<{ key: ViewFilter; label: string }> = [
-  { key: "expected_queue", label: "Expected from Vessel Operations" },
-  { key: "arrived", label: "Arrived" },
+const statusFilters: Array<{ key: StatusFilter; label: string }> = [
   { key: "all", label: "All" },
+  { key: "expected", label: "Expected" },
+  { key: "arrived", label: "Arrived" },
+  { key: "inspection_pending", label: "Inspection Pending" },
+  { key: "ready_for_reception", label: "Ready for Reception" },
+  { key: "received", label: "Received" },
+  { key: "cancelled", label: "Cancelled" },
 ];
 
-const getDateTimeLocalValue = (date?: Date) => {
-  const now = date ?? new Date();
-  const offset = now.getTimezoneOffset();
-  const localDate = new Date(now.getTime() - offset * 60_000);
-  return localDate.toISOString().slice(0, 16);
+const getDateKey = (value?: string | null) => {
+  if (!value) return null;
+
+  try {
+    return new Date(value).toISOString().split("T")[0] ?? null;
+  } catch {
+    return null;
+  }
+};
+
+const resolveOperatorName = async () => {
+  const { data } = await supabase.auth.getUser();
+  const user = data.user;
+  if (!user) {
+    return "TrailerHub User";
+  }
+
+  const metadataName =
+    (typeof user.user_metadata?.full_name === "string" && user.user_metadata.full_name.trim()) ||
+    (typeof user.user_metadata?.name === "string" && user.user_metadata.name.trim());
+
+  return metadataName || user.email || user.id || "TrailerHub User";
+};
+
+const buildArrivalKpis = (trailers: VesselOperationTrailerRecord[]): ArrivalKpi => {
+  const kpis: ArrivalKpi = {
+    expected: 0,
+    arrived: 0,
+    inspectionPending: 0,
+    readyForReception: 0,
+    received: 0,
+    cancelled: 0,
+  };
+
+  for (const trailer of trailers) {
+    const workflowState = getVesselArrivalWorkflowState(trailer);
+
+    if (workflowState === "expected") {
+      kpis.expected += 1;
+    } else if (workflowState === "arrived") {
+      kpis.arrived += 1;
+    } else if (workflowState === "inspection_pending") {
+      kpis.inspectionPending += 1;
+    } else if (workflowState === "ready_for_reception") {
+      kpis.readyForReception += 1;
+    } else if (workflowState === "received") {
+      kpis.received += 1;
+    } else if (workflowState === "cancelled") {
+      kpis.cancelled += 1;
+    }
+  }
+
+  return kpis;
 };
 
 function VesselArrivalsPageContent() {
@@ -46,9 +105,12 @@ function VesselArrivalsPageContent() {
 
   const [operation, setOperation] = useState<VesselOperationRecord | null>(null);
   const [trailers, setTrailers] = useState<VesselOperationTrailerRecord[]>([]);
-  const [activeFilter, setActiveFilter] = useState<ViewFilter>("expected_queue");
-  const [confirmState, setConfirmState] = useState<ArrivalConfirmState | null>(null);
-  const [isConfirming, setIsConfirming] = useState(false);
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [dateFilter, setDateFilter] = useState<DateFilter>("all");
+  const [customDate, setCustomDate] = useState("");
+  const [searchText, setSearchText] = useState("");
+  const [priorityFilter, setPriorityFilter] = useState<"all" | "priority" | "normal">("all");
+  const [actioningTrailerId, setActioningTrailerId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -77,8 +139,13 @@ function VesselArrivalsPageContent() {
           .order("created_at", { ascending: true }),
       ]);
 
-      if (operationResult.error || !operationResult.data) throw operationResult.error ?? new Error("Operation not found.");
-      if (trailersResult.error) throw trailersResult.error;
+      if (operationResult.error || !operationResult.data) {
+        throw operationResult.error ?? new Error("Operation not found.");
+      }
+
+      if (trailersResult.error) {
+        throw trailersResult.error;
+      }
 
       setOperation(operationResult.data as VesselOperationRecord);
       setTrailers(sortVesselOperationTrailersForArrivals((trailersResult.data ?? []) as VesselOperationTrailerRecord[]));
@@ -90,6 +157,15 @@ function VesselArrivalsPageContent() {
     }
   }, [operationId]);
 
+  const reception = useVesselReception({
+    operation,
+    onSuccess: async (message) => {
+      setError(null);
+      setSuccess(message);
+      await loadArrivals();
+    },
+  });
+
   useEffect(() => {
     const timeoutId = window.setTimeout(() => {
       void loadArrivals();
@@ -98,90 +174,234 @@ function VesselArrivalsPageContent() {
     return () => window.clearTimeout(timeoutId);
   }, [loadArrivals]);
 
-  const summary = useMemo(() => computeVesselOperationSummary(trailers), [trailers]);
+  const summary = useMemo(() => buildArrivalKpis(trailers), [trailers]);
 
   const visibleTrailers = useMemo(() => {
-    const expectedQueue =
-      (operation?.list_status ?? "draft") === "confirmed"
-        ? trailers.filter(
-            (item) =>
-              item.arrival_status === "available_for_arrival" &&
-              !item.arrival_record_id,
-          )
-        : [];
+    const todayKey = getDateKey(new Date().toISOString());
+    const tomorrowDate = new Date();
+    tomorrowDate.setDate(tomorrowDate.getDate() + 1);
+    const tomorrowKey = getDateKey(tomorrowDate.toISOString());
+    const search = searchText.trim().toLowerCase();
 
-    if (activeFilter === "expected_queue") {
-      return expectedQueue;
-    }
+    return trailers.filter((item) => {
+      const workflowState = getVesselArrivalWorkflowState(item);
+      const searchHaystack = [
+        item.trailer_number,
+        item.booking_reference,
+        item.customer,
+        item.planning_notes,
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
 
-    if (activeFilter === "arrived") {
-      return trailers.filter((item) => item.arrival_status === "arrived");
-    }
+      if (statusFilter !== "all" && workflowState !== statusFilter) {
+        return false;
+      }
 
-    return trailers;
-  }, [activeFilter, operation?.list_status, trailers]);
+      if (priorityFilter !== "all" && (item.priority_level ?? "normal") !== priorityFilter) {
+        return false;
+      }
 
-  const handleOpenConfirmDialog = (trailer: VesselOperationTrailerRecord) => {
-    setConfirmState({
-      trailer,
-      receivedAt: getDateTimeLocalValue(),
-      compoundPosition: trailer.assigned_position?.trim() ?? "",
-      arrivalNotes: "",
-      conditionOnArrival: "",
+      if (search && !searchHaystack.includes(search)) {
+        return false;
+      }
+
+      const comparisonDate = getDateKey(item.arrival_confirmed_at ?? item.arrived_at ?? operation?.expected_arrival_at ?? null);
+
+      if (dateFilter === "today" && comparisonDate !== todayKey) {
+        return false;
+      }
+
+      if (dateFilter === "tomorrow" && comparisonDate !== tomorrowKey) {
+        return false;
+      }
+
+      if (dateFilter === "custom" && customDate && comparisonDate !== customDate) {
+        return false;
+      }
+
+      return true;
     });
-  };
+  }, [customDate, dateFilter, operation?.expected_arrival_at, priorityFilter, searchText, statusFilter, trailers]);
 
-  const handleConfirmArrival = async () => {
-    if (!operation || !confirmState) return;
-
-    setIsConfirming(true);
-    setError(null);
-    setSuccess(null);
-
-    try {
-      const { trailer } = confirmState;
+  const handleMarkArrived = useCallback(
+    async (trailer: VesselOperationTrailerRecord) => {
+      if (!operation) {
+        return;
+      }
 
       if ((operation.list_status ?? "draft") !== "confirmed") {
-        throw new Error("Vessel list is not confirmed.");
+        setError("List must be confirmed before arrivals.");
+        return;
       }
 
       if (trailer.arrival_status === "arrived") {
-        throw new Error("Trailer arrival has already been confirmed.");
+        setError("Arrival already confirmed.");
+        return;
       }
 
-      if (trailer.arrival_record_id) {
-        throw new Error("Trailer already has a linked arrival record.");
+      if (trailer.arrival_status !== "available_for_arrival") {
+        setError("Trailer is not available for arrival.");
+        return;
       }
 
-      const receivedAtIso = new Date(confirmState.receivedAt).toISOString();
+      setActioningTrailerId(trailer.id);
+      setError(null);
+      setSuccess(null);
 
-      const { data, error: rpcError } = await supabase.rpc("confirm_vessel_trailer_arrival", {
-        p_vessel_operation_trailer_id: trailer.id,
-        p_received_at: receivedAtIso,
-        p_compound_position: confirmState.compoundPosition.trim() || null,
-        p_arrival_notes: confirmState.arrivalNotes.trim() || null,
-        p_condition_on_arrival: confirmState.conditionOnArrival.trim() || null,
-        p_confirmed_by: "TrailerHub User",
-      });
+      try {
+        const nowIso = new Date().toISOString();
+        const operatorName = await resolveOperatorName();
 
-      if (rpcError) {
-        throw rpcError;
+        const { data: updatedTrailer, error: updateError } = await supabase
+          .from("vessel_operation_trailers")
+          .update({
+            arrival_status: "arrived",
+            status: "arrived",
+            arrival_confirmed_at: nowIso,
+            arrived_at: nowIso,
+            arrival_confirmed_by: operatorName,
+            updated_at: nowIso,
+          })
+          .eq("id", trailer.id)
+          .eq("arrival_status", "available_for_arrival")
+          .is("arrival_record_id", null)
+          .select("id, trailer_number")
+          .maybeSingle();
+
+        if (updateError) {
+          throw updateError;
+        }
+
+        if (!updatedTrailer) {
+          setError("Arrival already confirmed.");
+          return;
+        }
+
+        const { error: eventError } = await supabase.from("trailer_events").insert({
+          trailer_id: null,
+          trailer_number: trailer.trailer_number ?? null,
+          event_type: "vessel_trailer_marked_arrived",
+          event_description: "Expected trailer marked as arrived.",
+          old_value: {
+            vessel_operation_trailer_id: trailer.id,
+            arrival_status: trailer.arrival_status,
+          },
+          new_value: {
+            vessel_operation_trailer_id: trailer.id,
+            arrival_status: "arrived",
+            arrived_at: nowIso,
+            arrived_by: operatorName,
+          },
+        });
+
+        if (eventError) {
+          console.error("Unable to save mark arrived event:", eventError);
+        }
+
+        setSuccess(`Arrival confirmed for ${trailer.trailer_number ?? "trailer"}.`);
+        await loadArrivals();
+      } catch (confirmErr) {
+        console.error("Unable to confirm arrival:", confirmErr);
+        setError("Unable to confirm arrival.");
+      } finally {
+        setActioningTrailerId(null);
+      }
+    },
+    [loadArrivals, operation],
+  );
+
+  const handleUndoArrived = useCallback(
+    async (trailer: VesselOperationTrailerRecord) => {
+      if (!operation) {
+        return;
       }
 
-      setSuccess(`Arrival confirmed for ${trailer.trailer_number ?? "trailer"}.`);
-      setConfirmState(null);
-      await loadArrivals();
-
-      if (data) {
-        console.info("Created or linked trailer record id:", data);
+      if ((operation.list_status ?? "draft") !== "confirmed") {
+        setError("List must be confirmed before editing arrival statuses.");
+        return;
       }
-    } catch (confirmErr) {
-      console.error("Unable to confirm arrival:", confirmErr);
-      setError(confirmErr instanceof Error ? confirmErr.message : "Unable to confirm arrival.");
-    } finally {
-      setIsConfirming(false);
-    }
-  };
+
+      const canUndo = trailer.arrival_status === "arrived" && !trailer.arrival_record_id && !trailer.inspection_started_at && !trailer.inspection_completed_at;
+      if (!canUndo) {
+        setError("Arrival undo is only available before inspection and before reception.");
+        return;
+      }
+
+      const confirmed = window.confirm(`Undo Arrived for ${trailer.trailer_number ?? "this trailer"}?`);
+      if (!confirmed) {
+        return;
+      }
+
+      setActioningTrailerId(trailer.id);
+      setError(null);
+      setSuccess(null);
+
+      try {
+        const nowIso = new Date().toISOString();
+        const operatorName = await resolveOperatorName();
+
+        const { data: revertedTrailer, error: updateError } = await supabase
+          .from("vessel_operation_trailers")
+          .update({
+            status: "expected",
+            arrival_status: "available_for_arrival",
+            arrived_at: null,
+            arrival_confirmed_at: null,
+            arrival_confirmed_by: null,
+            inspection_started_at: null,
+            inspection_completed_at: null,
+            updated_at: nowIso,
+          })
+          .eq("id", trailer.id)
+          .eq("arrival_status", "arrived")
+          .is("arrival_record_id", null)
+          .is("inspection_started_at", null)
+          .is("inspection_completed_at", null)
+          .select("id")
+          .maybeSingle();
+
+        if (updateError) {
+          throw updateError;
+        }
+
+        if (!revertedTrailer) {
+          setError("Arrival undo is no longer available for this trailer.");
+          return;
+        }
+
+        const { error: eventError } = await supabase.from("trailer_events").insert({
+          trailer_id: null,
+          trailer_number: trailer.trailer_number ?? null,
+          event_type: "vessel_arrival_undo",
+          event_description: "Arrival status reverted to expected queue.",
+          old_value: {
+            vessel_operation_trailer_id: trailer.id,
+            arrival_status: "arrived",
+          },
+          new_value: {
+            vessel_operation_trailer_id: trailer.id,
+            arrival_status: "available_for_arrival",
+            reverted_by: operatorName,
+          },
+        });
+
+        if (eventError) {
+          console.error("Unable to save arrival undo event:", eventError);
+        }
+
+        setSuccess(`Arrival reverted for ${trailer.trailer_number ?? "trailer"}.`);
+        await loadArrivals();
+      } catch (undoErr) {
+        console.error("Unable to undo arrival:", undoErr);
+        setError("Unable to undo arrival.");
+      } finally {
+        setActioningTrailerId(null);
+      }
+    },
+    [loadArrivals, operation],
+  );
 
   if (isLoading) {
     return (
@@ -214,7 +434,6 @@ function VesselArrivalsPageContent() {
             <div className="flex flex-wrap gap-2">
               <Link href={`/dashboard/vessel-operations/${operation.id}`} className="rounded-2xl border border-white/10 bg-slate-800 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700">Operation</Link>
               <Link href={`/dashboard/vessel-operations/${operation.id}/boat-check`} className="rounded-2xl border border-white/10 bg-slate-800 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700">Boat Check</Link>
-              <Link href={`/dashboard/vessel-operations/${operation.id}/summary`} className="rounded-2xl border border-cyan-500/30 bg-cyan-500/10 px-4 py-2 text-sm font-semibold text-cyan-100 hover:bg-cyan-500/20">Summary</Link>
             </div>
           </div>
         </header>
@@ -223,23 +442,66 @@ function VesselArrivalsPageContent() {
         {success ? <div className="rounded-2xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">{success}</div> : null}
 
         <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
-          <div className="rounded-2xl border border-white/10 bg-slate-900/70 p-4"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">List Status</p><p className="mt-2 text-lg font-semibold text-white capitalize">{operation.list_status ?? "draft"}</p></div>
           <div className="rounded-2xl border border-white/10 bg-slate-900/70 p-4"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Expected</p><p className="mt-2 text-lg font-semibold text-white">{summary.expected}</p></div>
-          <div className="rounded-2xl border border-white/10 bg-slate-900/70 p-4"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Available for Arrival</p><p className="mt-2 text-lg font-semibold text-cyan-200">{summary.availableForArrival}</p></div>
           <div className="rounded-2xl border border-white/10 bg-slate-900/70 p-4"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Arrived</p><p className="mt-2 text-lg font-semibold text-amber-200">{summary.arrived}</p></div>
+          <div className="rounded-2xl border border-white/10 bg-slate-900/70 p-4"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Inspection Pending</p><p className="mt-2 text-lg font-semibold text-cyan-200">{summary.inspectionPending}</p></div>
+          <div className="rounded-2xl border border-white/10 bg-slate-900/70 p-4"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Ready for Reception</p><p className="mt-2 text-lg font-semibold text-emerald-200">{summary.readyForReception}</p></div>
+          <div className="rounded-2xl border border-white/10 bg-slate-900/70 p-4"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Received</p><p className="mt-2 text-lg font-semibold text-emerald-200">{summary.received}</p></div>
           <div className="rounded-2xl border border-white/10 bg-slate-900/70 p-4"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Cancelled</p><p className="mt-2 text-lg font-semibold text-rose-200">{summary.cancelled}</p></div>
-          <div className="rounded-2xl border border-white/10 bg-slate-900/70 p-4"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Not Discharged</p><p className="mt-2 text-lg font-semibold text-fuchsia-200">{summary.notDischarged}</p></div>
         </section>
 
         <section className="rounded-3xl border border-white/10 bg-slate-900/70 p-4 shadow-lg shadow-black/20 backdrop-blur sm:p-5">
-          <div className="flex flex-wrap gap-2">
-            {filters.map((filter) => (
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+            <label className="text-xs uppercase tracking-[0.2em] text-slate-500">
+              Vessel
+              <input value={operation.vessel_name ?? "Unnamed vessel"} disabled className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-3 py-2 text-sm text-slate-300" />
+            </label>
+
+            <label className="text-xs uppercase tracking-[0.2em] text-slate-500">
+              Date
+              <div className="mt-2 grid grid-cols-2 gap-2">
+                <select value={dateFilter} onChange={(event) => setDateFilter(event.target.value as DateFilter)} className="rounded-2xl border border-white/10 bg-slate-950/80 px-3 py-2 text-sm text-slate-100">
+                  <option value="all">All</option>
+                  <option value="today">Today</option>
+                  <option value="tomorrow">Tomorrow</option>
+                  <option value="custom">Custom</option>
+                </select>
+                <input type="date" value={customDate} onChange={(event) => setCustomDate(event.target.value)} disabled={dateFilter !== "custom"} className="rounded-2xl border border-white/10 bg-slate-950/80 px-3 py-2 text-sm text-slate-100 disabled:opacity-50" />
+              </div>
+            </label>
+
+            <label className="text-xs uppercase tracking-[0.2em] text-slate-500">
+              Status
+              <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as StatusFilter)} className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-3 py-2 text-sm text-slate-100">
+                {statusFilters.map((filter) => (
+                  <option key={filter.key} value={filter.key}>{filter.label}</option>
+                ))}
+              </select>
+            </label>
+
+            <label className="text-xs uppercase tracking-[0.2em] text-slate-500">
+              Priority
+              <select value={priorityFilter} onChange={(event) => setPriorityFilter(event.target.value as "all" | "priority" | "normal")} className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-3 py-2 text-sm text-slate-100">
+                <option value="all">All</option>
+                <option value="priority">Priority</option>
+                <option value="normal">Normal</option>
+              </select>
+            </label>
+
+            <label className="text-xs uppercase tracking-[0.2em] text-slate-500">
+              Trailer Search
+              <input value={searchText} onChange={(event) => setSearchText(event.target.value)} placeholder="Trailer / Booking / Customer" className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-3 py-2 text-sm text-slate-100" />
+            </label>
+          </div>
+
+          <div className="mt-4 flex flex-wrap gap-2">
+            {statusFilters.map((filter) => (
               <button
-                key={filter.key}
+                key={`chip-${filter.key}`}
                 type="button"
-                onClick={() => setActiveFilter(filter.key)}
+                onClick={() => setStatusFilter(filter.key)}
                 className={`rounded-2xl px-3 py-2 text-sm font-semibold transition ${
-                  activeFilter === filter.key
+                  statusFilter === filter.key
                     ? "border border-cyan-400/40 bg-cyan-500/15 text-cyan-100"
                     : "border border-white/10 bg-slate-950/80 text-slate-300 hover:bg-slate-800"
                 }`}
@@ -250,9 +512,9 @@ function VesselArrivalsPageContent() {
           </div>
         </section>
 
-        {(operation.list_status ?? "draft") !== "confirmed" && activeFilter === "expected_queue" ? (
+        {(operation.list_status ?? "draft") !== "confirmed" ? (
           <div className="rounded-3xl border border-amber-500/30 bg-amber-500/10 p-5 text-sm text-amber-100">
-            Vessel list is not confirmed. Confirm the list on the Vessel Operation page before trailers appear in the arrival queue.
+            Vessel list is not confirmed. Confirm the list on the Vessel Operation page before trailers appear as available.
           </div>
         ) : null}
 
@@ -261,10 +523,12 @@ function VesselArrivalsPageContent() {
             <div className="rounded-3xl border border-white/10 bg-slate-900/70 p-6 text-sm text-slate-300">No trailers match the current filter.</div>
           ) : (
             visibleTrailers.map((trailer) => {
-              const canConfirmArrival =
-                (operation.list_status ?? "draft") === "confirmed" &&
-                trailer.arrival_status === "available_for_arrival" &&
-                !trailer.arrival_record_id;
+              const workflowState = getVesselArrivalWorkflowState(trailer);
+              const workflowLabel = getVesselArrivalWorkflowLabel(workflowState);
+              const inspectionState = getVesselInspectionProgressState(trailer);
+              const inspectionLabel = getVesselInspectionProgressLabel(inspectionState);
+              const canMarkArrived = (operation.list_status ?? "draft") === "confirmed" && trailer.arrival_status === "available_for_arrival" && !trailer.arrival_record_id;
+              const canUndo = trailer.arrival_status === "arrived" && !trailer.arrival_record_id && !trailer.inspection_started_at && !trailer.inspection_completed_at;
 
               return (
                 <article key={trailer.id} className="rounded-3xl border border-white/10 bg-slate-900/70 p-4 shadow-lg shadow-black/20 backdrop-blur sm:p-5">
@@ -273,28 +537,73 @@ function VesselArrivalsPageContent() {
                       <div className="flex flex-wrap items-center gap-2">
                         <h2 className="text-2xl font-bold text-white">{trailer.trailer_number ?? "-"}</h2>
                         <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${getVesselPriorityClass(trailer.priority_level)}`}>{getVesselPriorityLabel(trailer.priority_level)}</span>
-                        <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${getVesselTrailerStatusClass((trailer.arrival_status ?? trailer.status) as VesselTrailerStatus)}`}>{getVesselTrailerStatusLabel((trailer.arrival_status ?? trailer.status) as VesselTrailerStatus)}</span>
+                        <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${getVesselTrailerStatusClass((trailer.arrival_status === "available_for_arrival" ? "available_for_arrival" : trailer.status) ?? "expected")}`}>
+                          {workflowLabel}
+                        </span>
                       </div>
-                      <p className="text-sm text-slate-300">Vessel: {operation.vessel_name ?? "-"}</p>
-                      <p className="text-sm text-slate-300">Sailing Reference: {operation.sailing_reference ?? "-"}</p>
-                      <p className="text-sm text-slate-300">Expected Arrival: {formatVesselDateTime(operation.expected_arrival_at)}</p>
-                      <p className="text-sm text-slate-300">Customer: {trailer.customer ?? "-"}</p>
-                      <p className="text-sm text-slate-300">Booking Reference: {trailer.booking_reference ?? "-"}</p>
-                      <p className="text-sm text-slate-300">Load Status: {trailer.load_status ?? "-"}</p>
-                      <p className="text-sm text-slate-300">Notes: {trailer.planning_notes ?? "-"}</p>
-                      {trailer.arrival_confirmed_at ? <p className="text-sm text-emerald-200">Actual Arrival: {formatVesselDateTime(trailer.arrival_confirmed_at)}</p> : null}
-                      {trailer.arrival_record_id ? <Link href={`/dashboard/trailers/${trailer.trailer_number ?? trailer.arrival_record_id}`} className="inline-block text-xs text-cyan-200 underline">Open linked trailer record</Link> : null}
+
+                      <p className="text-sm text-slate-300">Vessel: {operation.vessel_name ?? "Unnamed vessel"}</p>
+                      <p className="text-sm text-slate-300">Voyage: {operation.sailing_reference ?? "-"}</p>
+                      <p className="text-sm text-slate-300">ETA: {formatVesselDateTime(operation.expected_arrival_at)}</p>
+                      <p className="text-sm text-slate-300">Current Arrival Status: {workflowLabel}</p>
+                      <p className="text-sm text-slate-300">Inspection Status: {inspectionLabel}</p>
+                      {trailer.customer?.trim() ? <p className="text-sm text-slate-300">Customer: {trailer.customer}</p> : null}
+                      {trailer.booking_reference?.trim() ? <p className="text-sm text-slate-300">Booking Reference: {trailer.booking_reference}</p> : null}
+                      {trailer.planning_notes?.trim() ? <p className="text-sm text-slate-300">Notes: {trailer.planning_notes}</p> : null}
+                      <p className="text-sm text-emerald-200">Arrived Time: {formatVesselDateTime(trailer.arrival_confirmed_at ?? trailer.arrived_at)}</p>
+                      <p className="text-sm text-slate-300">Raw Status: {getVesselTrailerStatusLabel((trailer.status ?? "expected") as VesselOperationTrailerRecord["status"])}</p>
                     </div>
 
-                    <div className="flex flex-col gap-2 lg:min-w-64">
-                      {canConfirmArrival ? (
+                    <div className="flex flex-col gap-2 lg:min-w-56">
+                      {canMarkArrived ? (
                         <button
                           type="button"
-                          onClick={() => handleOpenConfirmDialog(trailer)}
-                          className="rounded-2xl bg-cyan-500 px-5 py-4 text-lg font-semibold text-slate-950 hover:bg-cyan-400"
+                          onClick={() => void handleMarkArrived(trailer)}
+                          disabled={actioningTrailerId === trailer.id}
+                          className="rounded-2xl bg-cyan-500 px-5 py-4 text-lg font-semibold text-slate-950 hover:bg-cyan-400 disabled:opacity-60"
                         >
-                          Confirm Arrival
+                          {actioningTrailerId === trailer.id ? "Updating..." : "Mark Arrived"}
                         </button>
+                      ) : null}
+
+                      {trailer.arrival_status === "arrived" ? (
+                        <Link
+                          href={`/dashboard/vessel-operations/${operation.id}/boat-check/${trailer.id}`}
+                          className="rounded-2xl border border-white/10 bg-slate-800 px-4 py-3 text-center text-sm font-semibold text-white hover:bg-slate-700"
+                        >
+                          Open Boat Check
+                        </Link>
+                      ) : null}
+
+                      {canUndo ? (
+                        <button
+                          type="button"
+                          onClick={() => void handleUndoArrived(trailer)}
+                          disabled={actioningTrailerId === trailer.id}
+                          className="rounded-2xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm font-semibold text-amber-100 hover:bg-amber-500/20 disabled:opacity-60"
+                        >
+                          {actioningTrailerId === trailer.id ? "Reverting..." : "Undo Arrived"}
+                        </button>
+                      ) : null}
+
+                      {canConfirmVesselTrailerReception(trailer, operation) ? (
+                        <button
+                          type="button"
+                          onClick={() => void reception.openReception(trailer)}
+                          disabled={actioningTrailerId === trailer.id}
+                          className="rounded-2xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm font-semibold text-emerald-100 hover:bg-emerald-500/20 disabled:opacity-60"
+                        >
+                          Confirm Reception
+                        </button>
+                      ) : null}
+
+                      {trailer.arrival_record_id ? (
+                        <div className="rounded-2xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-100">
+                          <p className="font-semibold">Received</p>
+                          <p className="mt-1 text-emerald-200">
+                            {trailer.assigned_position ? `Compound Position: ${trailer.assigned_position}` : "Local Trailer"}
+                          </p>
+                        </div>
                       ) : null}
                     </div>
                   </div>
@@ -305,70 +614,18 @@ function VesselArrivalsPageContent() {
         </section>
       </div>
 
-      {confirmState ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" role="dialog" aria-modal="true">
-          <div className="w-full max-w-2xl rounded-3xl border border-white/10 bg-slate-900 p-5 shadow-2xl sm:p-6">
-            <h3 className="text-xl font-semibold text-white">Confirm Arrival</h3>
-            <p className="mt-2 text-sm text-slate-300">Validate receipt and create the real arrival record from vessel data.</p>
-
-            <div className="mt-4 grid gap-2 text-sm text-slate-200 sm:grid-cols-2">
-              <p>Trailer: {confirmState.trailer.trailer_number ?? "-"}</p>
-              <p>Vessel: {operation.vessel_name ?? "-"}</p>
-              <p>Sailing Reference: {operation.sailing_reference ?? "-"}</p>
-              <p>Customer: {confirmState.trailer.customer ?? "-"}</p>
-              <p>Load Status: {confirmState.trailer.load_status ?? "-"}</p>
-              <p>Priority: {getVesselPriorityLabel(confirmState.trailer.priority_level)}</p>
-            </div>
-
-            <div className="mt-4 grid gap-3 sm:grid-cols-2">
-              <label className="text-sm text-slate-200">
-                Actual receipt date/time
-                <input
-                  type="datetime-local"
-                  value={confirmState.receivedAt}
-                  onChange={(event) => setConfirmState((current) => current ? { ...current, receivedAt: event.target.value } : current)}
-                  className="mt-1 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-3 py-2 text-sm outline-none"
-                />
-              </label>
-
-              <label className="text-sm text-slate-200">
-                Compound position
-                <input
-                  value={confirmState.compoundPosition}
-                  onChange={(event) => setConfirmState((current) => current ? { ...current, compoundPosition: event.target.value } : current)}
-                  className="mt-1 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-3 py-2 text-sm outline-none"
-                  placeholder="P01"
-                />
-              </label>
-
-              <label className="text-sm text-slate-200 sm:col-span-2">
-                Arrival notes
-                <textarea
-                  rows={3}
-                  value={confirmState.arrivalNotes}
-                  onChange={(event) => setConfirmState((current) => current ? { ...current, arrivalNotes: event.target.value } : current)}
-                  className="mt-1 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-3 py-2 text-sm outline-none"
-                />
-              </label>
-
-              <label className="text-sm text-slate-200 sm:col-span-2">
-                Condition on arrival
-                <input
-                  value={confirmState.conditionOnArrival}
-                  onChange={(event) => setConfirmState((current) => current ? { ...current, conditionOnArrival: event.target.value } : current)}
-                  className="mt-1 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-3 py-2 text-sm outline-none"
-                  placeholder="Optional"
-                />
-              </label>
-            </div>
-
-            <div className="mt-5 flex flex-wrap justify-end gap-2">
-              <button type="button" onClick={() => setConfirmState(null)} className="rounded-2xl border border-white/10 bg-slate-800 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700">Cancel</button>
-              <button type="button" onClick={() => void handleConfirmArrival()} disabled={isConfirming} className="rounded-2xl bg-cyan-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-cyan-400 disabled:opacity-60">{isConfirming ? "Confirming..." : "Confirm Arrival"}</button>
-            </div>
-          </div>
-        </div>
-      ) : null}
+      <ConfirmReceptionModal
+        error={reception.error}
+        formState={reception.formState}
+        isLoadingOptions={reception.isLoadingOptions}
+        isOpen={reception.isOpen}
+        isSubmitting={reception.isSubmitting}
+        nextAvailablePosition={reception.nextAvailablePosition}
+        onClose={reception.closeReception}
+        onConfirm={reception.submitReception}
+        onFieldChange={reception.updateField}
+        trailer={reception.selectedTrailer}
+      />
     </main>
   );
 }

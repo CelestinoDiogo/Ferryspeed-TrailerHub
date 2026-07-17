@@ -30,7 +30,6 @@ type FormState = {
   bookingReference: string;
   loadType: string;
   collectionDate: string;
-  collectionTime: string;
   expectedReturnAt: string;
   priority: ExportAllocationPriority;
   notes: string;
@@ -44,7 +43,6 @@ const INITIAL_FORM: FormState = {
   bookingReference: "",
   loadType: "",
   collectionDate: "",
-  collectionTime: "",
   expectedReturnAt: "",
   priority: "normal",
   notes: "",
@@ -191,7 +189,7 @@ export default function NewExportAllocationPage() {
         booking_reference: formState.bookingReference.trim() || null,
         load_type: formState.loadType.trim() || null,
         collection_date: formState.collectionDate,
-        collection_time: formState.collectionTime || null,
+        collection_time: null,
         expected_return_at: formState.expectedReturnAt || null,
         priority: formState.priority,
         status: "allocated" as ExportAllocationStatus,
@@ -224,7 +222,6 @@ export default function NewExportAllocationPage() {
           booking_reference: insertPayload.booking_reference,
           load_type: insertPayload.load_type,
           collection_date: insertPayload.collection_date,
-          collection_time: insertPayload.collection_time,
           expected_return_at: insertPayload.expected_return_at,
           priority: insertPayload.priority,
           status: "allocated",
@@ -337,17 +334,6 @@ export default function NewExportAllocationPage() {
                 className="w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm outline-none"
               />
             </div>
-
-            <div>
-              <label className="mb-2 block text-sm font-medium text-slate-200">Collection Time</label>
-              <input
-                type="time"
-                value={formState.collectionTime}
-                onChange={(event) => handleChange("collectionTime", event.target.value)}
-                className="w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm outline-none"
-              />
-            </div>
-
             <div>
               <label className="mb-2 block text-sm font-medium text-slate-200">Expected Return</label>
               <input

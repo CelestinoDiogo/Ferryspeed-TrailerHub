@@ -8,6 +8,7 @@ export type ExportAllocationStatus =
 
 export type LegacyExportAllocationStatus =
   | "collected_by_haulier"
+  | "waiting_loading"
   | "loading"
   | "loaded"
   | "returned"
@@ -32,11 +33,11 @@ export type ExportAllocationRecord = {
   notes?: string | null;
   allocated_at?: string | null;
   delivered_empty_at?: string | null;
-  waiting_loading_at?: string | null;
   collected_loaded_at?: string | null;
   completed_at?: string | null;
   cancelled_at?: string | null;
   collected_by_haulier_at?: string | null;
+  waiting_loading_at?: string | null;
   loading_started_at?: string | null;
   loaded_at?: string | null;
   returned_at?: string | null;
@@ -58,25 +59,30 @@ export type ExportAllocationFilter =
   | "overdue"
   | "all";
 
-export const EXPORT_ACTIVE_STATUSES: ReadonlySet<ExportAllocationStatus> = new Set([
-  "allocated",
-  "delivered_empty",
-  "waiting_loading",
-  "collected_loaded",
-]);
+export const EXPORT_ACTIVE_STATUSES: ReadonlySet<ExportAllocationStatus> =
+  new Set([
+    "allocated",
+    "delivered_empty",
+    "waiting_loading",
+    "collected_loaded",
+  ]);
 
 export const EXPORT_ACTIVE_STATUS_QUERY_VALUES = [
   "allocated",
   "delivered_empty",
-  "waiting_loading",
   "collected_loaded",
   "collected_by_haulier",
+  "waiting_loading",
   "loading",
   "loaded",
 ] as const;
 
-const LEGACY_STATUS_MAP: Record<LegacyExportAllocationStatus, ExportAllocationStatus> = {
+const LEGACY_STATUS_MAP: Record<
+  LegacyExportAllocationStatus,
+  ExportAllocationStatus
+> = {
   collected_by_haulier: "delivered_empty",
+  waiting_loading: "waiting_loading",
   loading: "waiting_loading",
   loaded: "collected_loaded",
   returned: "completed",
@@ -91,7 +97,9 @@ const STATUS_SEQUENCE: ExportAllocationStatus[] = [
   "completed",
 ];
 
-export function normalizeExportAllocationStatus(status?: string | null): ExportAllocationStatus {
+export function normalizeExportAllocationStatus(
+  status?: string | null,
+): ExportAllocationStatus {
   const normalized = (status ?? "").trim().toLowerCase();
 
   switch (normalized) {
@@ -102,27 +110,32 @@ export function normalizeExportAllocationStatus(status?: string | null): ExportA
     case "completed":
     case "cancelled":
       return normalized;
+
     case "collected_by_haulier":
+    case "waiting_loading":
     case "loading":
     case "loaded":
     case "returned":
     case "shipped":
       return LEGACY_STATUS_MAP[normalized];
+
     default:
       return "allocated";
   }
 }
 
-export function normalizeExportAllocationRecord<T extends { status?: string | null }>(
-  record: T,
-): T & { status: ExportAllocationStatus } {
+export function normalizeExportAllocationRecord<
+  T extends { status?: string | null },
+>(record: T): T & { status: ExportAllocationStatus } {
   return {
     ...record,
     status: normalizeExportAllocationStatus(record.status),
   };
 }
 
-export function getExportAllocationStatusLabel(status: ExportAllocationStatus): string {
+export function getExportAllocationStatusLabel(
+  status: ExportAllocationStatus,
+): string {
   switch (status) {
     case "allocated":
       return "Allocated";
@@ -149,6 +162,7 @@ export function getNextExportAllocationStatus(
   }
 
   const index = STATUS_SEQUENCE.indexOf(status);
+
   if (index < 0 || index + 1 >= STATUS_SEQUENCE.length) {
     return null;
   }
@@ -156,27 +170,32 @@ export function getNextExportAllocationStatus(
   return STATUS_SEQUENCE[index + 1];
 }
 
-export function getAdvanceStatusActionLabel(status: ExportAllocationStatus): string | null {
+export function getAdvanceStatusActionLabel(
+  status: ExportAllocationStatus,
+): string | null {
   const next = getNextExportAllocationStatus(status);
+
   if (!next) {
     return null;
   }
 
   switch (next) {
     case "delivered_empty":
-      return "Deliver Empty";
+      return "Confirm Delivered Empty";
     case "waiting_loading":
-      return "Waiting Loading";
+      return "Mark Waiting Loading";
     case "collected_loaded":
-      return "Collect Loaded";
+      return "Confirm Collected Loaded";
     case "completed":
-      return "Complete Allocation";
+      return "Complete Export Cycle";
     default:
       return null;
   }
 }
 
-export function getExportAllocationStatusClasses(status: ExportAllocationStatus): string {
+export function getExportAllocationStatusClasses(
+  status: ExportAllocationStatus,
+): string {
   switch (status) {
     case "allocated":
       return "border-cyan-400/30 bg-cyan-500/10 text-cyan-200";
@@ -195,7 +214,9 @@ export function getExportAllocationStatusClasses(status: ExportAllocationStatus)
   }
 }
 
-export function getExportAllocationPriorityLabel(priority: ExportAllocationPriority): string {
+export function getExportAllocationPriorityLabel(
+  priority: ExportAllocationPriority,
+): string {
   switch (priority) {
     case "low":
       return "Low";
@@ -210,7 +231,9 @@ export function getExportAllocationPriorityLabel(priority: ExportAllocationPrior
   }
 }
 
-export function getExportAllocationPriorityClasses(priority: ExportAllocationPriority): string {
+export function getExportAllocationPriorityClasses(
+  priority: ExportAllocationPriority,
+): string {
   switch (priority) {
     case "low":
       return "border-slate-500/30 bg-slate-500/10 text-slate-200";
@@ -250,7 +273,9 @@ export function getExportAllocationTimestampField(
   }
 }
 
-export function getExportAllocationFilterFromQuery(value?: string | null): ExportAllocationFilter {
+export function getExportAllocationFilterFromQuery(
+  value?: string | null,
+): ExportAllocationFilter {
   switch (value) {
     case "today":
     case "upcoming":
@@ -273,49 +298,60 @@ export type TrailerAvailabilityInput = {
   departure_date?: string | null;
   load_status?: string | null;
   operational_status?: string | null;
+  is_local?: boolean | null;
 };
 
-const normalizeText = (value?: string | null) => (value ?? "").trim().toLowerCase();
+const normalizeText = (value?: string | null) =>
+  (value ?? "").trim().toLowerCase();
 
 export function isTrailerAvailableForExportAllocation(
   trailer: TrailerAvailabilityInput,
   hasActiveAllocation: boolean,
 ): boolean {
-  const isActive = !trailer.departure_date || trailer.departure_date.trim() === "";
-  if (!isActive) {
+  const isActive =
+    !trailer.departure_date || trailer.departure_date.trim() === "";
+
+  if (!isActive || hasActiveAllocation) {
     return false;
   }
 
-  if (hasActiveAllocation) {
+  if (normalizeText(trailer.load_status) !== "empty") {
     return false;
   }
 
-  const loadStatus = normalizeText(trailer.load_status);
-  if (loadStatus !== "empty") {
+  if (normalizeText(trailer.operational_status) === "departed") {
     return false;
   }
 
-  const operationalStatus = normalizeText(trailer.operational_status);
-  if (operationalStatus === "departed") {
+  if (normalizeText(trailer.operational_status) === "maintenance") {
+    return false;
+  }
+
+  if (normalizeText(trailer.operational_status) === "cancelled") {
     return false;
   }
 
   return true;
 }
 
-export function isExportAllocationActive(status: ExportAllocationStatus): boolean {
+export function isExportAllocationActive(
+  status: ExportAllocationStatus,
+): boolean {
   return EXPORT_ACTIVE_STATUSES.has(status);
 }
 
-export function isExportAllocationOverdue(allocation: {
-  expected_return_at?: string | null;
-  status: ExportAllocationStatus;
-}, nowIso?: string): boolean {
-  if (!allocation.expected_return_at) {
-    return false;
-  }
-
-  if (allocation.status === "completed" || allocation.status === "cancelled") {
+export function isExportAllocationOverdue(
+  allocation: {
+    expected_return_at?: string | null;
+    status: ExportAllocationStatus;
+  },
+  nowIso?: string,
+): boolean {
+  if (
+    !allocation.expected_return_at ||
+    allocation.status === "completed" ||
+    allocation.status === "cancelled"
+  ) {
     return false;
   }
 

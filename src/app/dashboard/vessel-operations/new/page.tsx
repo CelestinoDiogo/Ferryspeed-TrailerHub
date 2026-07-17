@@ -8,7 +8,6 @@ import {
   getLocalDateInputValue,
   getLocalDateTimeInputValue,
   logVesselSupabaseError,
-  type VesselOperationStatus,
 } from "@/lib/vessel-operations";
 
 type FormState = {
@@ -20,7 +19,6 @@ type FormState = {
   expectedArrivalTime: string;
   actualArrivalDate: string;
   actualArrivalTime: string;
-  status: VesselOperationStatus;
   notes: string;
 };
 
@@ -33,14 +31,17 @@ const initialState: FormState = {
   expectedArrivalTime: getLocalDateTimeInputValue().slice(11, 16),
   actualArrivalDate: "",
   actualArrivalTime: "",
-  status: "planning",
   notes: "",
 };
 
 const toIsoFromLocal = (date: string, time: string) => {
+  if (!date.trim()) {
+    return null;
+  }
+
   const safeTime = time || "00:00";
   const value = new Date(`${date}T${safeTime}:00`);
-  return Number.isNaN(value.getTime()) ? new Date().toISOString() : value.toISOString();
+  return Number.isNaN(value.getTime()) ? null : value.toISOString();
 };
 
 const toOptionalIsoFromLocal = (date: string, time: string) => {
@@ -73,6 +74,12 @@ export default function NewVesselOperationPage() {
     try {
       const expectedArrivalAt = toIsoFromLocal(formState.expectedArrivalDate, formState.expectedArrivalTime);
       const actualArrivalAt = toOptionalIsoFromLocal(formState.actualArrivalDate, formState.actualArrivalTime);
+
+      if (!expectedArrivalAt) {
+        setError("Expected Arrival Date/Time is invalid.");
+        return;
+      }
+
       const { data, error: insertError } = await supabase
         .from("vessel_operations")
         .insert({
@@ -82,7 +89,10 @@ export default function NewVesselOperationPage() {
           berth: formState.berth.trim() || null,
           expected_arrival_at: expectedArrivalAt,
           actual_arrival_at: actualArrivalAt,
-          status: formState.status,
+          status: "planning",
+          list_status: "draft",
+          list_confirmed_at: null,
+          list_confirmed_by: null,
           notes: formState.notes.trim() || null,
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
@@ -91,6 +101,15 @@ export default function NewVesselOperationPage() {
         .single();
 
       if (insertError || !data) {
+        console.error("Create vessel operation Supabase error details", {
+          error: insertError,
+          message: insertError?.message,
+          details: insertError?.details,
+          hint: insertError?.hint,
+          code: insertError?.code,
+          name: insertError?.name,
+          status: (insertError as { status?: number } | null)?.status,
+        });
         logVesselSupabaseError("Create vessel operation failed", insertError);
         throw insertError ?? new Error("Unable to create vessel operation.");
       }
@@ -191,22 +210,6 @@ export default function NewVesselOperationPage() {
                 onChange={(event) => handleChange("actualArrivalTime", event.target.value)}
                 className="w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm outline-none"
               />
-            </div>
-
-            <div className="md:col-span-2">
-              <label className="mb-2 block text-sm font-semibold text-slate-200">Status</label>
-              <select
-                value={formState.status}
-                onChange={(event) => handleChange("status", event.target.value as VesselOperationStatus)}
-                className="w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm outline-none"
-              >
-                <option value="planning">Planning</option>
-                <option value="arriving">Arriving</option>
-                <option value="discharging">Discharging</option>
-                <option value="inspection">Inspection</option>
-                <option value="completed">Completed</option>
-                <option value="cancelled">Cancelled</option>
-              </select>
             </div>
 
             <div className="md:col-span-2">

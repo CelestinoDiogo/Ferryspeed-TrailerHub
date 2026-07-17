@@ -1,9 +1,15 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import type { Database, Json } from "@/lib/database.types";
+import { TrailerTimeline } from "@/components/trailers/trailer-timeline";
+import { getOperationalStageBadgeClassName } from "@/lib/operations/operational-stages";
+import {
+  loadTrailerOperationalProfile,
+  type TrailerOperationalProfile,
+} from "@/lib/operations/trailer-operational-engine";
 import { supabase } from "@/lib/supabase";
 import {
   buildTrailerRestorePatch,
@@ -228,6 +234,7 @@ export default function TrailerDetailsPage() {
   const [trailer, setTrailer] = useState<Trailer | null>(null);
   const [events, setEvents] = useState<TrailerEvent[]>([]);
   const [activeExportAllocation, setActiveExportAllocation] = useState<ActiveExportAllocation | null>(null);
+  const [operationalProfile, setOperationalProfile] = useState<TrailerOperationalProfile | null>(null);
   const [formState, setFormState] = useState<TrailerForm>({
     trailer_number: null,
     trailer_type: null,
@@ -248,148 +255,99 @@ export default function TrailerDetailsPage() {
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(identifierError);
 
+  const loadTrailer = useCallback(async () => {
+    if (!trailerNumber) {
+      return;
+    }
+
+    setIsLoading(true);
+    setError(null);
+    setSuccessMessage(null);
+
+    try {
+      const profile = await loadTrailerOperationalProfile(supabase, trailerNumber);
+      setOperationalProfile(profile);
+      setTrailer((profile.trailer as Trailer | null) ?? null);
+      setEvents(
+        profile.trailerEventRows.map((row) => ({
+          id: row.id,
+          trailer_id: row.trailer_id ?? null,
+          trailer_number: row.trailer_number ?? null,
+          event_type: row.event_type ?? null,
+          event_description: row.event_description ?? null,
+          old_value: row.old_value ?? undefined,
+          new_value: row.new_value ?? undefined,
+          created_at: row.created_at ?? null,
+        })),
+      );
+
+      const firstActiveExport = profile.exportAllocations.find((row) => !["completed", "cancelled", "returned", "shipped"].includes((row.status ?? "").trim().toLowerCase())) ?? null;
+      setActiveExportAllocation(
+        firstActiveExport
+          ? {
+              id: firstActiveExport.id,
+              status: normalizeExportAllocationStatus(firstActiveExport.status),
+              customer: firstActiveExport.customer ?? null,
+              collection_date: firstActiveExport.collection_date ?? null,
+              haulier: firstActiveExport.haulier ?? null,
+              booking_reference: firstActiveExport.booking_reference ?? null,
+            }
+          : null,
+      );
+
+      if (profile.trailer) {
+        const initialForm: TrailerForm = {
+          trailer_number: profile.trailer.trailer_number ?? null,
+          trailer_type: profile.trailer.trailer_type ?? null,
+          compound_position: profile.trailer.compound_position ?? null,
+          load_status: profile.trailer.load_status ?? null,
+          operational_status: profile.trailer.operational_status ?? null,
+          customer: profile.trailer.customer ?? null,
+          consignee: profile.trailer.consignee ?? null,
+          container_number: profile.trailer.container_number ?? null,
+          load_description: profile.trailer.load_description ?? null,
+          notes: profile.trailer.notes ?? null,
+        };
+
+        setFormState(initialForm);
+        setOriginalForm(initialForm);
+      }
+
+      if (!profile.trailer && profile.vesselOperationTrailers.length === 0 && profile.events.length === 0) {
+        setError("Trailer not found.");
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unable to load trailer details.";
+      setTrailer(null);
+      setEvents([]);
+      setOperationalProfile(null);
+      setActiveExportAllocation(null);
+      setError(message);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [trailerNumber]);
+
   useEffect(() => {
     if (!trailerNumber) {
       return;
     }
 
-    const loadTrailer = async () => {
-      setIsLoading(true);
-      setError(null);
-      setSuccessMessage(null);
-
-      try {
-        const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(trailerNumber);
-
-        let trailerRecord: Trailer | null = null;
-
-        if (isUuid) {
-          const { data, error: trailerError } = await supabase
-            .from("trailers")
-            .select(
-              "id, trailer_number, trailer_type, compound_position, trailer_source, external_company, external_reference, is_local, load_status, operational_status, customer, consignee, container_number, load_description, notes, arrival_date, departure_date"
-            )
-            .eq("id", trailerNumber)
-            .maybeSingle();
-
-          if (trailerError) {
-            throw new Error(getSupabaseErrorMessage(trailerError) || "Unable to load trailer details.");
-          }
-
-          trailerRecord = (data as Trailer | null) ?? null;
-        } else {
-          const value = trailerNumber ?? "";
-          const exactSearch = value;
-          const wildcardSearch = `%${value}%`;
-
-          const { data: exactData, error: exactError } = await supabase
-            .from("trailers")
-            .select(
-              "id, trailer_number, trailer_type, compound_position, trailer_source, external_company, external_reference, is_local, load_status, operational_status, customer, consignee, container_number, load_description, notes, arrival_date, departure_date"
-            )
-            .ilike("trailer_number", exactSearch)
-            .order("departure_date", { ascending: true, nullsFirst: true })
-            .order("arrival_date", { ascending: false })
-            .limit(1);
-
-          if (exactError) {
-            throw new Error(getSupabaseErrorMessage(exactError) || "Unable to load trailer details.");
-          }
-
-          trailerRecord = ((exactData ?? []) as Trailer[])[0] ?? null;
-
-          if (!trailerRecord) {
-            const { data: wildcardData, error: wildcardError } = await supabase
-              .from("trailers")
-              .select(
-                "id, trailer_number, trailer_type, compound_position, trailer_source, external_company, external_reference, is_local, load_status, operational_status, customer, consignee, container_number, load_description, notes, arrival_date, departure_date"
-              )
-              .ilike("trailer_number", wildcardSearch)
-              .order("departure_date", { ascending: true, nullsFirst: true })
-              .order("arrival_date", { ascending: false })
-              .limit(1);
-
-            if (wildcardError) {
-              throw new Error(getSupabaseErrorMessage(wildcardError) || "Unable to load trailer details.");
-            }
-
-            trailerRecord = ((wildcardData ?? []) as Trailer[])[0] ?? null;
-          }
-        }
-
-        if (!trailerRecord) {
-          setTrailer(null);
-          setEvents([]);
-          setActiveExportAllocation(null);
-          setError("Trailer not found.");
-          return;
-        }
-
-        const { data: eventData, error: eventError } = await supabase
-          .from("trailer_events")
-          .select("id, trailer_id, trailer_number, event_type, event_description, old_value, new_value, created_at")
-          .eq("trailer_id", trailerRecord.id)
-          .order("created_at", { ascending: false });
-
-        const { data: exportData, error: exportError } = await supabase
-          .from("export_allocations")
-          .select("id, status, customer, collection_date, haulier, booking_reference")
-          .eq("trailer_id", trailerRecord.id)
-          .in("status", [...EXPORT_ACTIVE_STATUS_QUERY_VALUES])
-          .order("updated_at", { ascending: false })
-          .limit(1)
-          .maybeSingle();
-
-        if (eventError) {
-          throw new Error(getSupabaseErrorMessage(eventError) || "Unable to load trailer history.");
-        }
-
-        if (exportError) {
-          throw new Error(getSupabaseErrorMessage(exportError) || "Unable to load active export allocation.");
-        }
-
-        setTrailer(trailerRecord);
-        setEvents((eventData ?? []) as TrailerEvent[]);
-        setActiveExportAllocation(
-          exportData
-            ? {
-                ...(exportData as ActiveExportAllocation),
-                status: normalizeExportAllocationStatus((exportData as { status?: string | null }).status),
-              }
-            : null,
-        );
-        const initialForm: TrailerForm = {
-          trailer_number: trailerRecord.trailer_number ?? null,
-          trailer_type: trailerRecord.trailer_type ?? null,
-          compound_position: trailerRecord.compound_position ?? null,
-          load_status: trailerRecord.load_status ?? null,
-          operational_status: trailerRecord.operational_status ?? null,
-          customer: trailerRecord.customer ?? null,
-          consignee: trailerRecord.consignee ?? null,
-          container_number: trailerRecord.container_number ?? null,
-          load_description: trailerRecord.load_description ?? null,
-          notes: trailerRecord.notes ?? null,
-        };
-        setFormState(initialForm);
-        setOriginalForm(initialForm);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : "Unable to load trailer details.";
-        setTrailer(null);
-        setEvents([]);
-        setActiveExportAllocation(null);
-        setError(message);
-      } finally {
-        setIsLoading(false);
-      }
-    };
-
     void loadTrailer();
-  }, [trailerNumber]);
+  }, [loadTrailer]);
 
   const currentStatus = useMemo(
     () => normalizeStatus(trailer?.operational_status),
     [trailer?.operational_status]
   );
+
+  const derivedStageBadgeClass = useMemo(() => {
+    if (!operationalProfile?.position.operationalStage) {
+      return "border-slate-500/30 bg-slate-500/10 text-slate-200";
+    }
+
+    return getOperationalStageBadgeClassName(operationalProfile.position.operationalStage);
+  }, [operationalProfile?.position.operationalStage]);
 
   const statusBadgeClass = useMemo(
     () => `${getStatusColor(trailer?.operational_status)} rounded-full px-3 py-1 text-sm font-semibold ring-1 ring-inset`,
@@ -550,12 +508,7 @@ export default function TrailerDetailsPage() {
         throw new Error(getSupabaseErrorMessage(reversalEventError) || "Unable to create reversal event.");
       }
 
-      const refreshedTrailer = await refreshTrailerData(trailer.id);
-      if (refreshedTrailer) {
-        setTrailer(refreshedTrailer);
-      }
-
-      await refreshEvents(trailer.id);
+      await loadTrailer();
       setShowUndoConfirm(false);
       setSuccessMessage(
         reassignedCompoundPosition
@@ -687,25 +640,7 @@ export default function TrailerDetailsPage() {
       console.error("Failed to insert trailer event:", eventError);
     }
 
-    const refreshedTrailer = await refreshTrailerData(trailer.id);
-    if (refreshedTrailer) {
-      setTrailer(refreshedTrailer);
-      const refreshedForm: TrailerForm = {
-        trailer_number: refreshedTrailer.trailer_number ?? null,
-        trailer_type: refreshedTrailer.trailer_type ?? null,
-        compound_position: refreshedTrailer.compound_position ?? null,
-        load_status: refreshedTrailer.load_status ?? null,
-        operational_status: refreshedTrailer.operational_status ?? null,
-        customer: refreshedTrailer.customer ?? null,
-        consignee: refreshedTrailer.consignee ?? null,
-        container_number: refreshedTrailer.container_number ?? null,
-        load_description: refreshedTrailer.load_description ?? null,
-        notes: refreshedTrailer.notes ?? null,
-      };
-      setFormState(refreshedForm);
-      setOriginalForm(refreshedForm);
-      await refreshEvents(trailer.id);
-    }
+    await loadTrailer();
 
     setSuccessMessage(`${action} completed successfully.`);
     setIsSaving(false);
@@ -841,23 +776,7 @@ export default function TrailerDetailsPage() {
       }
 
       setSuccessMessage("Trailer changes saved successfully.");
-      const refreshedTrailer = updatedTrailer as Trailer;
-      setTrailer(refreshedTrailer);
-      const refreshedForm: TrailerForm = {
-        trailer_number: refreshedTrailer.trailer_number ?? null,
-        trailer_type: refreshedTrailer.trailer_type ?? null,
-        compound_position: refreshedTrailer.compound_position ?? null,
-        load_status: refreshedTrailer.load_status ?? null,
-        operational_status: refreshedTrailer.operational_status ?? null,
-        customer: refreshedTrailer.customer ?? null,
-        consignee: refreshedTrailer.consignee ?? null,
-        container_number: refreshedTrailer.container_number ?? null,
-        load_description: refreshedTrailer.load_description ?? null,
-        notes: refreshedTrailer.notes ?? null,
-      };
-      setFormState(refreshedForm);
-      setOriginalForm(refreshedForm);
-      await refreshEvents(trailer.id);
+      await loadTrailer();
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unable to save trailer updates.";
       setError(message);
@@ -899,7 +818,7 @@ export default function TrailerDetailsPage() {
           <section className="rounded-3xl border border-rose-500/30 bg-rose-500/10 p-6 text-rose-200">
             <p>{error}</p>
           </section>
-        ) : !trailer ? (
+        ) : !operationalProfile ? (
           <section className="rounded-3xl border border-amber-500/30 bg-amber-500/10 p-6 text-amber-100">
             <p>Trailer not found. Check the link or return to the dashboard.</p>
           </section>
@@ -911,6 +830,135 @@ export default function TrailerDetailsPage() {
               </section>
             ) : null}
 
+            <section className="grid gap-6 rounded-3xl border border-white/10 bg-slate-900/70 p-6 shadow-inner shadow-black/20 lg:grid-cols-[1.15fr_0.85fr]">
+              <div className="space-y-4">
+                <div>
+                  <p className="text-sm uppercase tracking-[0.24em] text-cyan-400">Trailer identity</p>
+                  <h2 className="mt-2 text-3xl font-semibold text-white">{operationalProfile.identifier}</h2>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${derivedStageBadgeClass}`}>
+                      {operationalProfile.position.stageLabel}
+                    </span>
+                    <span className="rounded-full border border-white/10 bg-slate-950/70 px-3 py-1 text-xs font-semibold text-slate-200">
+                      {operationalProfile.fleetStatus}
+                    </span>
+                    {operationalProfile.position.priority ? (
+                      <span className="rounded-full border border-white/10 bg-slate-950/70 px-3 py-1 text-xs font-semibold text-slate-200 capitalize">
+                        Priority: {operationalProfile.position.priority}
+                      </span>
+                    ) : null}
+                  </div>
+                </div>
+
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="rounded-2xl border border-white/10 bg-slate-950/70 p-4">
+                    <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Trailer Type</p>
+                    <p className="mt-2 text-base font-semibold text-white">{operationalProfile.trailerType ?? "-"}</p>
+                  </div>
+                  <div className="rounded-2xl border border-white/10 bg-slate-950/70 p-4">
+                    <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Current Location</p>
+                    <p className="mt-2 text-base font-semibold text-white">{operationalProfile.position.currentLocation ?? "-"}</p>
+                  </div>
+                  <div className="rounded-2xl border border-white/10 bg-slate-950/70 p-4">
+                    <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Customer</p>
+                    <p className="mt-2 text-base font-semibold text-white">{operationalProfile.position.customer ?? "-"}</p>
+                  </div>
+                  <div className="rounded-2xl border border-white/10 bg-slate-950/70 p-4">
+                    <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Compound Position</p>
+                    <p className="mt-2 text-base font-semibold text-white">{operationalProfile.position.compoundPosition ?? "-"}</p>
+                  </div>
+                  <div className="rounded-2xl border border-white/10 bg-slate-950/70 p-4">
+                    <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Vessel / Voyage</p>
+                    <p className="mt-2 text-base font-semibold text-white">
+                      {operationalProfile.position.vessel ?? operationalProfile.position.voyage
+                        ? `${operationalProfile.position.vessel ?? "-"}${operationalProfile.position.voyage ? ` / ${operationalProfile.position.voyage}` : ""}`
+                        : "-"}
+                    </p>
+                  </div>
+                  <div className="rounded-2xl border border-white/10 bg-slate-950/70 p-4">
+                    <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Current Operation Ref</p>
+                    <p className="mt-2 text-base font-semibold text-white">{operationalProfile.position.currentOperationReference ?? "-"}</p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-3 rounded-3xl border border-white/5 bg-slate-950/70 p-5">
+                <div className="rounded-2xl bg-slate-900/70 p-4">
+                  <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Stage Started</p>
+                  <p className="mt-2 text-base font-semibold text-white">{formatDateTime(operationalProfile.position.stageStartedAt)}</p>
+                </div>
+                <div className="rounded-2xl bg-slate-900/70 p-4">
+                  <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Duration In Stage</p>
+                  <p className="mt-2 text-base font-semibold text-white">{operationalProfile.position.dwell.durationInStageLabel}</p>
+                </div>
+                <div className="rounded-2xl bg-slate-900/70 p-4">
+                  <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Yard Dwell</p>
+                  <p className="mt-2 text-base font-semibold text-white">{operationalProfile.position.dwell.totalYardDwellLabel}</p>
+                </div>
+                <div className="rounded-2xl bg-slate-900/70 p-4">
+                  <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Issues</p>
+                  {operationalProfile.position.issueIndicator.hasIssues ? (
+                    <div className="mt-2 space-y-2 text-sm text-rose-200">
+                      {operationalProfile.position.issueIndicator.reasons.map((reason) => (
+                        <p key={reason}>{reason}</p>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="mt-2 text-sm font-semibold text-emerald-200">No active issues</p>
+                  )}
+                </div>
+                <div className="rounded-2xl bg-slate-900/70 p-4">
+                  <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Next Available Action</p>
+                  {operationalProfile.position.nextRecommendedAction ? (
+                    operationalProfile.position.nextRecommendedAction.href ? (
+                      <Link
+                        href={operationalProfile.position.nextRecommendedAction.href}
+                        className="mt-2 inline-block text-sm font-semibold text-cyan-200 underline hover:text-cyan-100"
+                      >
+                        {operationalProfile.position.nextRecommendedAction.label}
+                      </Link>
+                    ) : (
+                      <p className="mt-2 text-sm font-semibold text-slate-200">{operationalProfile.position.nextRecommendedAction.label}</p>
+                    )
+                  ) : (
+                    <p className="mt-2 text-sm text-slate-300">No direct action available.</p>
+                  )}
+                </div>
+              </div>
+            </section>
+
+            <section className="rounded-3xl border border-white/10 bg-slate-900/70 p-6 shadow-inner shadow-black/10">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <p className="text-sm uppercase tracking-[0.3em] text-cyan-400">Related Records</p>
+                  <h3 className="mt-2 text-2xl font-semibold text-white">Operational links</h3>
+                </div>
+                <p className="text-sm text-slate-400">Precedence: {operationalProfile.position.precedenceReason}</p>
+              </div>
+
+              {operationalProfile.relatedRecords.length === 0 ? (
+                <div className="mt-5 rounded-2xl border border-dashed border-white/10 bg-slate-950/80 p-5 text-sm text-slate-400">
+                  No related operational records were found.
+                </div>
+              ) : (
+                <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                  {operationalProfile.relatedRecords.map((record) => (
+                    <div key={record.id} className="rounded-2xl border border-white/10 bg-slate-950/80 p-4">
+                      <p className="text-xs uppercase tracking-[0.2em] text-slate-500">{record.module}</p>
+                      <p className="mt-2 text-base font-semibold text-white">{record.label}</p>
+                      <p className="mt-1 text-sm text-slate-400">{formatDateTime(record.recordedAt ?? null)}</p>
+                      {record.href ? (
+                        <Link href={record.href} className="mt-3 inline-block text-sm font-semibold text-cyan-200 underline hover:text-cyan-100">
+                          Open Record
+                        </Link>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+
+            {trailer ? (
             <section className="rounded-3xl border border-amber-500/30 bg-amber-500/10 p-6">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div>
@@ -987,11 +1035,12 @@ export default function TrailerDetailsPage() {
                 </div>
               ) : null}
             </section>
+            ) : null}
             <div className="grid gap-6 rounded-3xl border border-white/10 bg-slate-900/70 p-6 shadow-inner shadow-black/20 sm:grid-cols-[1.5fr_1fr]">
               <div className="space-y-3">
                 <p className="text-sm uppercase tracking-[0.24em] text-cyan-400">Trailer overview</p>
                 <h2 className="text-3xl font-semibold text-white">
-                  {trailer.trailer_number ?? "Unknown trailer"}
+                  {operationalProfile.identifier}
                 </h2>
                 <p className="max-w-xl text-sm text-slate-300">
                   Compound position, load and operational status for this trailer.
@@ -1002,15 +1051,15 @@ export default function TrailerDetailsPage() {
                 <div className="rounded-3xl bg-slate-900/70 p-4">
                   <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Location type</p>
                   <p className="mt-2 text-lg font-semibold text-white">
-                    {trailer.is_local ? "Local" : "Compound"}
+                    {trailer?.is_local ? "Local" : operationalProfile.position.operationalStage === "local" ? "Local" : "Compound"}
                   </p>
                 </div>
 
-                {!trailer.is_local ? (
+                {!trailer?.is_local ? (
                   <div className="rounded-3xl bg-slate-900/70 p-4">
                     <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Current position</p>
                     <p className="mt-2 text-lg font-semibold text-white">
-                      {trailer.compound_position ?? "Not assigned"}
+                      {operationalProfile.position.compoundPosition ?? "Not assigned"}
                     </p>
                   </div>
                 ) : null}
@@ -1018,35 +1067,37 @@ export default function TrailerDetailsPage() {
                 <div className="rounded-3xl bg-slate-900/70 p-4">
                   <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Ownership</p>
                   <p className="mt-2 text-lg font-semibold text-white">
-                    {trailer.trailer_source === "outsourced" ? "Outsourced" : "Ferryspeed Fleet"}
+                    {operationalProfile.fleetStatus}
                   </p>
                 </div>
 
                 <div className="rounded-3xl bg-slate-900/70 p-4">
                   <p className="text-xs uppercase tracking-[0.3em] text-slate-400">External Company</p>
                   <p className="mt-2 text-lg font-semibold text-white">
-                    {trailer.trailer_source === "outsourced" ? trailer.external_company ?? "—" : "—"}
+                    {trailer?.trailer_source === "outsourced" ? trailer.external_company ?? "—" : "—"}
                   </p>
                 </div>
 
                 <div className="rounded-3xl bg-slate-900/70 p-4">
                   <p className="text-xs uppercase tracking-[0.3em] text-slate-400">External Reference</p>
                   <p className="mt-2 text-lg font-semibold text-white">
-                    {trailer.trailer_source === "outsourced" ? trailer.external_reference ?? "—" : "—"}
+                    {trailer?.trailer_source === "outsourced" ? trailer.external_reference ?? "—" : "—"}
                   </p>
                 </div>
 
                 <div className="rounded-3xl bg-slate-900/70 p-4">
                   <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Load status</p>
                   <p className="mt-2 text-lg font-semibold text-white">
-                    {trailer.load_status ?? "Unknown"}
+                    {trailer?.load_status ?? "Unknown"}
                   </p>
                 </div>
 
                 <div className="rounded-3xl bg-slate-900/70 p-4">
                   <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Operational status</p>
                   <p className="mt-2">
-                    <span className={statusBadgeClass}>{currentStatus}</span>
+                    <span className={trailer ? statusBadgeClass : `rounded-full px-3 py-1 text-sm font-semibold ring-1 ring-inset ${derivedStageBadgeClass}`}>
+                      {trailer ? currentStatus : operationalProfile.position.stageLabel}
+                    </span>
                   </p>
                 </div>
 
@@ -1073,6 +1124,7 @@ export default function TrailerDetailsPage() {
               </div>
             </div>
 
+            {trailer ? (
             <div className="grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
               <article className="rounded-3xl border border-white/10 bg-slate-900/70 p-6 shadow-inner shadow-black/10">
                 <div className="flex items-center justify-between gap-4">
@@ -1233,59 +1285,11 @@ export default function TrailerDetailsPage() {
                 </div>
               </article>
             </div>
+            ) : null}
 
-            <section className="rounded-3xl border border-white/10 bg-slate-900/70 p-6 shadow-inner shadow-black/10">
-              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                <div>
-                  <p className="text-sm uppercase tracking-[0.3em] text-cyan-400">Movement history</p>
-                  <h3 className="mt-2 text-2xl font-semibold text-white">Chronological timeline</h3>
-                </div>
-                <span className="rounded-full border border-white/10 bg-slate-950/80 px-3 py-1 text-sm text-slate-300">
-                  {events.length} event{events.length === 1 ? "" : "s"}
-                </span>
-              </div>
+            <TrailerTimeline events={operationalProfile.events} />
 
-              {events.length === 0 ? (
-                <div className="mt-6 rounded-2xl border border-dashed border-white/10 bg-slate-950/80 p-5 text-sm text-slate-400">
-                  No history is available for this trailer yet.
-                </div>
-              ) : (
-                <div className="mt-6 space-y-4">
-                  {events.map((event) => (
-                    <div key={event.id} className="flex gap-4 rounded-2xl border border-white/10 bg-slate-950/80 p-4">
-                      <div className="flex flex-col items-center">
-                        <div className="mt-1 h-3 w-3 rounded-full bg-cyan-400" />
-                        <div className="mt-2 h-full w-px bg-slate-700" />
-                      </div>
-
-                      <div className="flex-1">
-                        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                          <div>
-                            <div className="flex flex-wrap items-center gap-2">
-                              <p className="text-sm font-semibold uppercase tracking-[0.25em] text-cyan-300">{event.event_type ?? "Event"}</p>
-                              {event.event_type === "movement_reversed" ? (
-                                <span className="rounded-full border border-amber-400/40 bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.2em] text-amber-200">
-                                  Undo
-                                </span>
-                              ) : null}
-                            </div>
-                            <p className="mt-1 text-base font-semibold text-white">{event.event_description ?? "History entry"}</p>
-                          </div>
-                          <p className="text-sm text-slate-400">{formatDateTime(event.created_at)}</p>
-                        </div>
-
-                        <div className="mt-3 flex flex-wrap gap-2 text-sm text-slate-400">
-                          {event.trailer_number ? <span className="rounded-full border border-white/10 bg-slate-900/70 px-2.5 py-1">Trailer: {event.trailer_number}</span> : null}
-                          {event.old_value !== undefined ? <span className="rounded-full border border-white/10 bg-slate-900/70 px-2.5 py-1">Previous: {formatValue(event.old_value)}</span> : null}
-                          {event.new_value !== undefined ? <span className="rounded-full border border-white/10 bg-slate-900/70 px-2.5 py-1">New: {formatValue(event.new_value)}</span> : null}
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </section>
-
+            {trailer ? (
             <section className="rounded-3xl border border-white/10 bg-slate-900/70 p-6 shadow-inner shadow-black/10">
               <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                 <div>
@@ -1324,6 +1328,7 @@ export default function TrailerDetailsPage() {
                 </Link>
               </div>
             </section>
+            ) : null}
           </section>
         )}
       </div>

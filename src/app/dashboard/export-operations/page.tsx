@@ -604,6 +604,11 @@ function ExportOperationsPageContent() {
       return;
     }
 
+    if (nextStatus === "completed") {
+      router.push(`/dashboard/export-operations/${allocation.id}`);
+      return;
+    }
+
     setActioningId(allocation.id);
     setError(null);
 
@@ -822,7 +827,9 @@ function ExportOperationsPageContent() {
         {!isLoading && filteredCount > 0 ? (
           <section className="space-y-3">
             {filteredAllocations.map((allocation) => {
-              const nextActionLabel = getAdvanceStatusActionLabel(allocation.status);
+              const canQuickAdvance =
+                allocation.status === "allocated" || allocation.status === "delivered_empty" || allocation.status === "waiting_loading";
+              const nextActionLabel = canQuickAdvance ? getAdvanceStatusActionLabel(allocation.status) : null;
               const canCancel = allocation.status !== "completed" && allocation.status !== "cancelled";
               const isActioning = actioningId === allocation.id;
               const overdue = isExportAllocationOverdue(allocation);

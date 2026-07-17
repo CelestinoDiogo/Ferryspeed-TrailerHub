@@ -56,6 +56,7 @@ export type Database = {
           old_value: Json | null;
           new_value: Json | null;
           created_at: string | null;
+          created_by: string | null;
         };
         Insert: Partial<Database["public"]["Tables"]["trailer_events"]["Row"]>;
         Update: Partial<Database["public"]["Tables"]["trailer_events"]["Row"]>;
@@ -181,6 +182,9 @@ export type Database = {
       vessel_inspection_damages: {
         Row: {
           id: string;
+          vessel_trailer_id: string | null;
+          trailer_id: string | null;
+          trailer_number: string | null;
           vessel_operation_id: string | null;
           vessel_operation_trailer_id: string | null;
           damage_type: string | null;
@@ -197,13 +201,14 @@ export type Database = {
       vessel_inspection_temperatures: {
         Row: {
           id: string;
-          vessel_operation_id: string | null;
-          vessel_operation_trailer_id: string | null;
+          vessel_trailer_id: string | null;
+          trailer_id: string | null;
+          trailer_number: string | null;
           temperature_value: number | null;
-          unit: string | null;
+          temperature_unit: string | null;
           reading_point: string | null;
           notes: string | null;
-          out_of_range: boolean | null;
+          is_out_of_range: boolean | null;
           recorded_at: string | null;
           recorded_by: string | null;
         };
@@ -214,6 +219,7 @@ export type Database = {
       vessel_inspection_photos: {
         Row: {
           id: string;
+          vessel_trailer_id: string | null;
           vessel_operation_id: string | null;
           vessel_operation_trailer_id: string | null;
           category: string | null;
@@ -227,39 +233,9 @@ export type Database = {
         Update: Partial<Database["public"]["Tables"]["vessel_inspection_photos"]["Row"]>;
         Relationships: [];
       };
-      vessel_operation_reports: {
-        Row: {
-          id: string;
-          vessel_operation_id: string;
-          report_type: string;
-          report_status: string;
-          report_number: string | null;
-          title: string;
-          executive_summary: string | null;
-          operational_analysis: string | null;
-          recommendations: string | null;
-          conclusion: string | null;
-          structured_snapshot: Json;
-          generated_by_ai: boolean;
-          ai_model: string | null;
-          approved_at: string | null;
-          approved_by: string | null;
-          sent_at: string | null;
-          sent_by: string | null;
-          created_at: string;
-          updated_at: string;
-        };
-        Insert: Partial<Database["public"]["Tables"]["vessel_operation_reports"]["Row"]>;
-        Update: Partial<Database["public"]["Tables"]["vessel_operation_reports"]["Row"]>;
-        Relationships: [];
-      };
     };
     Views: Record<string, never>;
     Functions: {
-      next_vessel_operation_report_number: {
-        Args: Record<string, never>;
-        Returns: string;
-      };
       confirm_vessel_operation_list: {
         Args: { p_vessel_operation_id: string; p_confirmed_by?: string | null };
         Returns: Database["public"]["Tables"]["vessel_operations"]["Row"];

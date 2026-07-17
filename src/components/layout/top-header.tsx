@@ -1,6 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { Bell, CalendarDays, Clock3, Menu, Search, Settings, UserCircle2 } from "lucide-react";
+import { OperationsToolsButton } from "@/components/layout/operations-tools-button";
+import { OperationsToolsDrawer } from "@/components/layout/operations-tools-drawer";
 
 type TopHeaderProps = {
   title: string;
@@ -24,10 +27,12 @@ const jerseyTimeFormatter = new Intl.DateTimeFormat("en-GB", {
   hour12: false,
 });
 
-export function TopHeader({ title, subtitle, onMenuClick }: TopHeaderProps) {
+export function TopHeader({ title, subtitle: _subtitle, onMenuClick }: TopHeaderProps) {
   const [dateText, setDateText] = useState("--");
   const [timeText, setTimeText] = useState("--:--:--");
-  const [titleLeft, titleRight = ""] = title.split(" ");
+  const [toolsOpen, setToolsOpen] = useState(false);
+  const [titleLeft, ...titleRest] = title.split(" ");
+  const titleRight = titleRest.join(" ");
 
   useEffect(() => {
     const update = () => {
@@ -43,39 +48,59 @@ export function TopHeader({ title, subtitle, onMenuClick }: TopHeaderProps) {
   }, []);
 
   return (
-    <header className="sticky top-0 z-30 border-b border-[color:var(--fs-green)]/40 bg-[var(--fs-header)] px-4 py-3 backdrop-blur print:hidden md:px-6">
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
+    <header className="sticky top-0 z-30 border-b border-slate-200/70 bg-[rgba(255,255,255,0.92)] px-4 py-3 backdrop-blur-xl print:hidden md:px-6">
+      <div className="mx-auto flex max-w-[1600px] items-center justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-3">
           <button
             type="button"
             onClick={onMenuClick}
-            className="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-[var(--fs-border)] bg-[var(--fs-panel)] text-[var(--fs-text)] md:hidden"
+            className="inline-flex h-11 w-11 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-900 shadow-sm md:hidden"
             aria-label="Open navigation"
           >
-            <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" aria-hidden="true">
-              <path d="M4 7h16M4 12h16M4 17h16" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-            </svg>
+            <Menu className="h-5 w-5" />
           </button>
-          <div>
-            <p className="text-xs font-semibold tracking-[0.2em]">
-              <span className="text-white">{titleLeft} </span>
-              <span className="text-[var(--fs-green-light)]">{titleRight}</span>
+          <div className="min-w-0">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-slate-500">
+              <span className="text-slate-900">{titleLeft}</span> {titleRight}
             </p>
-            <p className="text-sm text-[var(--fs-text-muted)]">{subtitle}</p>
+            <p className="truncate text-sm text-slate-500">Welcome to Ferryspeed TrailerHub</p>
           </div>
         </div>
 
-        <div className="hidden items-center gap-4 md:flex">
-          <div className="rounded-lg border border-[color:var(--fs-green)]/38 bg-black/45 px-3 py-2 text-right">
-            <p className="text-xs text-[var(--fs-text-muted)]">{dateText}</p>
-            <p className="text-sm font-semibold text-[var(--fs-text)]">{timeText}</p>
+        <div className="hidden items-center gap-3 lg:flex">
+          <OperationsToolsButton onClick={() => setToolsOpen(true)} />
+          <div className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-slate-700 shadow-sm">
+            <CalendarDays className="h-4 w-4" />
+            <span className="text-sm font-medium">{dateText}</span>
           </div>
-          <div className="rounded-lg border border-[color:var(--fs-green)]/38 bg-black/45 px-3 py-2">
-            <p className="text-xs text-[var(--fs-text-muted)]">Operator</p>
-            <p className="text-sm font-semibold text-[var(--fs-text)]">Diogo Ferreira</p>
+          <div className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-slate-700 shadow-sm">
+            <Clock3 className="h-4 w-4" />
+            <span className="text-sm font-medium">{timeText}</span>
+          </div>
+          <button className="inline-flex h-11 w-11 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-700 shadow-sm transition hover:bg-slate-50" aria-label="Search">
+            <Search className="h-5 w-5" />
+          </button>
+          <button className="inline-flex h-11 w-11 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-700 shadow-sm transition hover:bg-slate-50" aria-label="Notifications">
+            <Bell className="h-5 w-5" />
+          </button>
+          <button className="inline-flex h-11 w-11 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-700 shadow-sm transition hover:bg-slate-50" aria-label="Settings">
+            <Settings className="h-5 w-5" />
+          </button>
+          <div className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white px-3 py-2 shadow-sm">
+            <UserCircle2 className="h-6 w-6 text-cyan-600" />
+            <div className="text-left">
+              <p className="text-sm font-semibold text-slate-900">Diogo Ferreira</p>
+              <p className="text-xs text-slate-500">Operations lead</p>
+            </div>
           </div>
         </div>
+
+        <div className="flex items-center gap-2 lg:hidden">
+          <OperationsToolsButton onClick={() => setToolsOpen(true)} />
+        </div>
       </div>
+
+      <OperationsToolsDrawer open={toolsOpen} onClose={() => setToolsOpen(false)} />
     </header>
   );
 }
