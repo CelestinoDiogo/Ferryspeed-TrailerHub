@@ -3,11 +3,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import {
+  buildVesselSupabaseErrorMessage,
   computeVesselOperationSummary,
   logVesselSupabaseError,
   normalizeTemperatureReadingPoint,
   normalizeTrailerNumber,
   sortVesselOperationTrailersForArrivals,
+  type SupabaseErrorLike,
   type VesselInspectionTemperatureRecord,
   type VesselOperationRecord,
   type VesselOperationSummary,
@@ -152,6 +154,29 @@ const sanitizeFileName = (name: string) => name.replace(/[^a-zA-Z0-9._-]+/g, "-"
 const parseNumeric = (value: string) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
+};
+
+const buildConfirmTrailerListOperatorError = (error: unknown) => {
+  const baseMessage =
+    "Unable to confirm trailer list. The database confirmation function is not available or could not complete the operation.";
+
+  if (process.env.NODE_ENV === "production") {
+    return baseMessage;
+  }
+
+  const supabaseError = (error ?? null) as SupabaseErrorLike | null;
+  if (!supabaseError) {
+    return baseMessage;
+  }
+
+  const details = [
+    supabaseError.code ? `code: ${supabaseError.code}` : null,
+    buildVesselSupabaseErrorMessage(supabaseError, ""),
+  ]
+    .filter(Boolean)
+    .join(" | ");
+
+  return details ? `${baseMessage} (${details})` : baseMessage;
 };
 
 const parseTemperatureRange = (value?: string | null) => {
@@ -629,7 +654,7 @@ export function useVesselOperation(operationId: string): UseVesselOperationResul
       await loadOperation();
     } catch (listErr) {
       console.error("Unable to confirm trailer list:", listErr);
-      setError(listErr instanceof Error ? listErr.message : "Unable to confirm trailer list.");
+      setError(buildConfirmTrailerListOperatorError(listErr));
     } finally {
       setIsSaving(false);
     }
