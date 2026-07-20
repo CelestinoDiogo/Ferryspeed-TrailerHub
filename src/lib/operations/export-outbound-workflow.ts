@@ -26,6 +26,7 @@ export type ExportWorkflowAction =
   | "cancel_allocation";
 
 type EventMetadata = Record<string, unknown>;
+type EventPayload = Record<string, unknown>;
 
 const isPlainObject = (value: unknown): value is Record<string, unknown> => {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -35,8 +36,8 @@ const isPlainObject = (value: unknown): value is Record<string, unknown> => {
   return true;
 };
 
-const getEventMetadata = (row: TrailerEventRow): EventMetadata | undefined => {
-  if (!isPlainObject(row.new_value)) {
+const getEventMetadata = (row: TrailerEventRow | null | undefined): EventMetadata | undefined => {
+  if (!row || !isPlainObject(row.new_value)) {
     return undefined;
   }
 
@@ -44,8 +45,8 @@ const getEventMetadata = (row: TrailerEventRow): EventMetadata | undefined => {
   return isPlainObject(metadata) ? metadata : undefined;
 };
 
-const getSourceRecordId = (row: TrailerEventRow) => {
-  if (!isPlainObject(row.new_value)) {
+const getSourceRecordId = (row: TrailerEventRow | null | undefined) => {
+  if (!row || !isPlainObject(row.new_value)) {
     return undefined;
   }
 
@@ -53,16 +54,106 @@ const getSourceRecordId = (row: TrailerEventRow) => {
   return typeof sourceRecordId === "string" && sourceRecordId.trim() ? sourceRecordId : undefined;
 };
 
-const getEventTimestamp = (row: TrailerEventRow) => {
-  if (isPlainObject(row.new_value) && typeof row.new_value.occurred_at === "string" && row.new_value.occurred_at.trim()) {
-    return row.new_value.occurred_at;
+const NON_EMPTY_STRING = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0;
+
+const getPayloadTimestamp = (payload: EventPayload | null | undefined, field: string) => {
+  if (!payload) {
+    return null;
   }
 
-  return row.created_at ?? null;
+  const value = payload[field];
+  return NON_EMPTY_STRING(value) ? value : null;
 };
 
-const getLatestMatchingEvent = (events: TrailerEventRow[], predicate: (row: TrailerEventRow) => boolean) => {
+const EVENT_TIMESTAMP_FIELDS_BY_TYPE: Record<string, string[]> = {
+  delivered_empty: ["delivered_empty_at", "delivered_at", "changed_at", "updated_at"],
+  waiting_loading: ["waiting_loading_at", "loading_started_at", "changed_at", "updated_at"],
+  collected_loaded: ["collected_loaded_at", "loaded_at", "changed_at", "updated_at"],
+  ready_for_shipping: ["ready_for_shipping_at", "changed_at", "updated_at"],
+  loaded_on_vessel: ["loaded_on_vessel_at", "shipped_at", "changed_at", "updated_at"],
+  assigned_to_vessel: ["loaded_on_vessel_at", "shipped_at", "changed_at", "updated_at"],
+  export_completed: ["completed_at", "departed_at", "returned_at", "shipped_at", "changed_at", "updated_at"],
+  departed: ["departed_at", "completed_at", "changed_at", "updated_at"],
+  allocation_cancelled: ["cancelled_at", "changed_at", "updated_at"],
+  export_allocation_cancelled: ["cancelled_at", "changed_at", "updated_at"],
+  export_allocation_status_changed: [
+    "completed_at",
+    "cancelled_at",
+    "collected_loaded_at",
+    "waiting_loading_at",
+    "delivered_empty_at",
+    "allocated_at",
+    "changed_at",
+    "updated_at",
+  ],
+};
+
+const DEFAULT_EVENT_TIMESTAMP_FIELDS = [
+  "occurred_at",
+  "completed_at",
+  "cancelled_at",
+  "delivered_empty_at",
+  "waiting_loading_at",
+  "collected_loaded_at",
+  "loaded_on_vessel_at",
+  "ready_for_shipping_at",
+  "departed_at",
+  "delivered_at",
+  "loaded_at",
+  "returned_at",
+  "shipped_at",
+  "created_at",
+  "updated_at",
+];
+
+export const getEventTimestamp = (row: TrailerEventRow | null | undefined): string | null => {
+  if (!row) {
+    return null;
+  }
+
+  const newValuePayload = isPlainObject(row.new_value) ? row.new_value : null;
+  if (newValuePayload) {
+    const occurredAt = getPayloadTimestamp(newValuePayload, "occurred_at");
+    if (occurredAt) {
+      return occurredAt;
+    }
+
+    const eventType = NON_EMPTY_STRING(row.event_type) ? row.event_type.trim().toLowerCase() : "";
+    const candidateFields = EVENT_TIMESTAMP_FIELDS_BY_TYPE[eventType] ?? DEFAULT_EVENT_TIMESTAMP_FIELDS;
+    for (const field of candidateFields) {
+      const timestamp = getPayloadTimestamp(newValuePayload, field);
+      if (timestamp) {
+        return timestamp;
+      }
+    }
+  }
+
+  const oldValuePayload = isPlainObject(row.old_value) ? row.old_value : null;
+  if (oldValuePayload) {
+    const eventType = NON_EMPTY_STRING(row.event_type) ? row.event_type.trim().toLowerCase() : "";
+    const candidateFields = EVENT_TIMESTAMP_FIELDS_BY_TYPE[eventType] ?? DEFAULT_EVENT_TIMESTAMP_FIELDS;
+    for (const field of candidateFields) {
+      const timestamp = getPayloadTimestamp(oldValuePayload, field);
+      if (timestamp) {
+        return timestamp;
+      }
+    }
+  }
+
+  if ("occurred_at" in row && NON_EMPTY_STRING((row as unknown as Record<string, unknown>).occurred_at)) {
+    return (row as unknown as Record<string, string>).occurred_at;
+  }
+
+  if (NON_EMPTY_STRING(row.created_at)) {
+    return row.created_at;
+  }
+
+  return null;
+};
+
+const getLatestMatchingEvent = (events: Array<TrailerEventRow | null | undefined>, predicate: (row: TrailerEventRow) => boolean) => {
   return [...events]
+    .filter((row): row is TrailerEventRow => Boolean(row && row.id))
     .filter(predicate)
     .sort((left, right) => new Date(right.created_at ?? 0).getTime() - new Date(left.created_at ?? 0).getTime())[0] ?? null;
 };
@@ -88,8 +179,12 @@ export const mapDerivedExportStageToOperationalStage = (stage: ExportDerivedWork
   }
 };
 
-export const getExportWorkflowEventRows = (events: TrailerEventRow[], exportAllocationId: string) =>
-  events.filter((row) => {
+export const getExportWorkflowEventRows = (events: Array<TrailerEventRow | null | undefined>, exportAllocationId: string) =>
+  events.filter((row): row is TrailerEventRow => {
+    if (!row) {
+      return false;
+    }
+
     const sourceRecordId = getSourceRecordId(row);
     if (sourceRecordId === exportAllocationId) {
       return true;
@@ -110,7 +205,7 @@ export const getExportDerivedWorkflowStage = (input: {
     | "waiting_loading_at"
     | "collected_loaded_at"
   >;
-  events: TrailerEventRow[];
+  events: Array<TrailerEventRow | null | undefined>;
   vesselTrailer?: Pick<VesselOperationTrailerRow, "arrival_record_id" | "trailer_id"> | null;
   trailer?: Pick<TrailerRow, "departure_date"> | null;
 }): ExportDerivedWorkflowStage => {
@@ -157,9 +252,9 @@ export const getExportDerivedWorkflowStage = (input: {
 
 export const getExportWorkflowTimestamp = (input: {
   allocation: ExportAllocationRow;
-  events: TrailerEventRow[];
+  events: Array<TrailerEventRow | null | undefined>;
   stage: ExportDerivedWorkflowStage;
-}) => {
+}): string | null => {
   const allocationEvents = getExportWorkflowEventRows(input.events, input.allocation.id);
   const latestByType = (eventType: string) => getLatestMatchingEvent(allocationEvents, (row) => row.event_type === eventType);
 
@@ -167,19 +262,19 @@ export const getExportWorkflowTimestamp = (input: {
     case "allocated":
       return input.allocation.allocated_at ?? input.allocation.created_at ?? null;
     case "delivered_empty":
-      return input.allocation.delivered_empty_at ?? getEventTimestamp(latestByType("delivered_empty") ?? latestByType("export_allocation_status_changed") ?? null as never);
+      return input.allocation.delivered_empty_at ?? getEventTimestamp(latestByType("delivered_empty") ?? latestByType("export_allocation_status_changed"));
     case "waiting_loading":
-      return input.allocation.waiting_loading_at ?? getEventTimestamp(latestByType("waiting_loading") ?? null as never);
+      return input.allocation.waiting_loading_at ?? getEventTimestamp(latestByType("waiting_loading") ?? latestByType("export_allocation_status_changed"));
     case "collected_loaded":
-      return input.allocation.collected_loaded_at ?? getEventTimestamp(latestByType("collected_loaded") ?? null as never);
+      return input.allocation.collected_loaded_at ?? getEventTimestamp(latestByType("collected_loaded") ?? latestByType("export_allocation_status_changed"));
     case "ready_for_shipping":
-      return getEventTimestamp(latestByType("ready_for_shipping") ?? null as never);
+      return getEventTimestamp(latestByType("ready_for_shipping") ?? latestByType("export_allocation_status_changed"));
     case "loaded_on_vessel":
-      return getEventTimestamp(latestByType("loaded_on_vessel") ?? latestByType("assigned_to_vessel") ?? null as never);
+      return getEventTimestamp(latestByType("loaded_on_vessel") ?? latestByType("assigned_to_vessel") ?? latestByType("export_allocation_status_changed"));
     case "completed":
-      return input.allocation.completed_at ?? getEventTimestamp(latestByType("export_completed") ?? latestByType("departed") ?? null as never);
+      return input.allocation.completed_at ?? getEventTimestamp(latestByType("export_completed") ?? latestByType("departed") ?? latestByType("export_allocation_status_changed"));
     case "cancelled":
-      return input.allocation.cancelled_at ?? getEventTimestamp(latestByType("allocation_cancelled") ?? latestByType("export_allocation_cancelled") ?? null as never);
+      return input.allocation.cancelled_at ?? getEventTimestamp(latestByType("allocation_cancelled") ?? latestByType("export_allocation_cancelled") ?? latestByType("export_allocation_status_changed"));
     default:
       return null;
   }

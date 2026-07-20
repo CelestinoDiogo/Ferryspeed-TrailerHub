@@ -215,6 +215,10 @@ function DeliveriesPageContent() {
   const printedAt = getPrintedDateTime();
 
   const handleStatusChange = async (bookingId: string, currentStatus: string, newStatus: string) => {
+    if (statusChanging === bookingId) {
+      return;
+    }
+
     setStatusChanging(bookingId);
     setError(null);
 
@@ -243,7 +247,15 @@ function DeliveriesPageContent() {
         });
 
       if (eventError) {
-        console.error("Event creation failed:", eventError);
+        console.error("Delivery status event creation failed", {
+          bookingId,
+          currentStatus,
+          newStatus,
+          message: eventError.message,
+          details: eventError.details,
+          hint: eventError.hint,
+          code: eventError.code,
+        });
         // Don't fail the status change if event creation fails
       }
 
@@ -253,7 +265,14 @@ function DeliveriesPageContent() {
           b.id === bookingId ? { ...b, status: newStatus } : b
         )
       );
+      setNotice(`Booking moved to ${statusLabel(newStatus)}.`);
     } catch (err) {
+      console.error("Unable to update booking status", {
+        bookingId,
+        currentStatus,
+        newStatus,
+        error: err,
+      });
       const message =
         err instanceof Error ? err.message : "Unable to update booking status.";
       setError(message);
@@ -263,6 +282,10 @@ function DeliveriesPageContent() {
   };
 
   const handleMarkCollected = async (bookingId: string) => {
+    if (markingCollected === bookingId) {
+      return;
+    }
+
     setMarkingCollected(bookingId);
     setError(null);
     try {
@@ -285,6 +308,10 @@ function DeliveriesPageContent() {
       setBookings((prev) => prev.map((b) => b.id === bookingId ? { ...b, status: "collected", collected_at: b.collected_at ?? now } : b));
       setNotice("Trailer marked as collected.");
     } catch (e) {
+      console.error("Unable to mark trailer as collected", {
+        bookingId,
+        error: e,
+      });
       setError(e instanceof Error ? e.message : "Unable to mark collected.");
     } finally {
       setMarkingCollected(null);

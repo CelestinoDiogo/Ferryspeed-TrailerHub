@@ -6,8 +6,11 @@ import {
   buildVesselSupabaseErrorMessage,
   computeVesselOperationSummary,
   logVesselSupabaseError,
+  normalizeExpectedTemperatureUnit,
   normalizeTemperatureReadingPoint,
   normalizeTrailerNumber,
+  resolveExpectedFrontTemperature,
+  resolveExpectedRearTemperature,
   sortVesselOperationTrailersForArrivals,
   type SupabaseErrorLike,
   type VesselInspectionTemperatureRecord,
@@ -23,7 +26,9 @@ export type TrailerFormState = {
   customer: string;
   bookingReference: string;
   loadStatus: string;
-  temperatureRequired: string;
+  expectedFrontTemperature: string;
+  expectedRearTemperature: string;
+  expectedTemperatureUnit: string;
   priorityLevel: VesselPriorityLevel;
   notes: string;
 };
@@ -45,6 +50,9 @@ type InsertTrailerRow = {
   customer?: string | null;
   booking_reference?: string | null;
   load_status?: string | null;
+  expected_front_temperature?: number | null;
+  expected_rear_temperature?: number | null;
+  expected_temperature_unit?: string | null;
   temperature_required?: string | null;
   priority_level: VesselPriorityLevel;
   notes?: string | null;
@@ -101,7 +109,9 @@ const initialTrailerForm: TrailerFormState = {
   customer: "",
   bookingReference: "",
   loadStatus: "",
-  temperatureRequired: "",
+  expectedFrontTemperature: "",
+  expectedRearTemperature: "",
+  expectedTemperatureUnit: "C",
   priorityLevel: "normal",
   notes: "",
 };
@@ -154,6 +164,20 @@ const sanitizeFileName = (name: string) => name.replace(/[^a-zA-Z0-9._-]+/g, "-"
 const parseNumeric = (value: string) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
+};
+
+const parseOptionalTemperatureInput = (value: string) => {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return { value: null, error: null as string | null };
+  }
+
+  const parsed = Number(trimmed);
+  if (!Number.isFinite(parsed)) {
+    return { value: null, error: "Temperature values must be numeric." };
+  }
+
+  return { value: parsed, error: null as string | null };
 };
 
 const buildConfirmTrailerListOperatorError = (error: unknown) => {
@@ -211,6 +235,14 @@ const getTemperatureOutOfRange = (reading: number | null, required?: string | nu
   return reading < range.min || reading > range.max;
 };
 
+const getTemperatureMismatch = (actual: number | null, expected: number | null) => {
+  if (actual === null || expected === null) {
+    return false;
+  }
+
+  return Math.abs(actual - expected) > 0.01;
+};
+
 const resolveOperatorName = async () => {
   const { data } = await supabase.auth.getUser();
   const user = data.user;
@@ -257,7 +289,7 @@ export function useVesselOperation(operationId: string): UseVesselOperationResul
           .single(),
         supabase
           .from("vessel_operation_trailers")
-          .select("id, vessel_operation_id, trailer_id, trailer_number, customer, booking_reference, load_status, load_description, temperature_required, priority_level, priority_reason, planned_destination, planning_notes, status, arrived_at, arrival_status, arrival_confirmed_at, arrival_record_id, arrival_confirmed_by, inspection_started_at, inspection_completed_at, position_assigned_at, assigned_position, has_damage, has_temperature_alert, created_at, updated_at")
+          .select("id, vessel_operation_id, trailer_id, trailer_number, customer, booking_reference, load_status, load_description, temperature_required, expected_front_temperature, expected_rear_temperature, expected_temperature_unit, priority_level, priority_reason, planned_destination, planning_notes, status, arrived_at, arrival_status, arrival_confirmed_at, arrival_record_id, arrival_confirmed_by, inspection_started_at, inspection_completed_at, position_assigned_at, assigned_position, has_damage, has_temperature_alert, created_at, updated_at")
           .eq("vessel_operation_id", operationId)
           .order("created_at", { ascending: true }),
       ]);
@@ -414,6 +446,9 @@ export function useVesselOperation(operationId: string): UseVesselOperationResul
         customer: row.customer ?? null,
         booking_reference: row.booking_reference ?? null,
         load_status: row.load_status ?? null,
+        expected_front_temperature: row.expected_front_temperature ?? null,
+        expected_rear_temperature: row.expected_rear_temperature ?? null,
+        expected_temperature_unit: row.expected_temperature_unit ?? "C",
         temperature_required: row.temperature_required ?? null,
         priority_level: row.priority_level,
         status: "expected" as VesselTrailerStatus,
@@ -464,6 +499,20 @@ export function useVesselOperation(operationId: string): UseVesselOperationResul
       return;
     }
 
+    const parsedFrontExpected = parseOptionalTemperatureInput(formState.expectedFrontTemperature);
+    if (parsedFrontExpected.error) {
+      setError(parsedFrontExpected.error);
+      return;
+    }
+
+    const parsedRearExpected = parseOptionalTemperatureInput(formState.expectedRearTemperature);
+    if (parsedRearExpected.error) {
+      setError(parsedRearExpected.error);
+      return;
+    }
+
+    const expectedTemperatureUnit = normalizeExpectedTemperatureUnit(formState.expectedTemperatureUnit);
+
     setIsSaving(true);
     setError(null);
     setSuccess(null);
@@ -475,7 +524,10 @@ export function useVesselOperation(operationId: string): UseVesselOperationResul
           customer: formState.customer.trim() || null,
           booking_reference: formState.bookingReference.trim() || null,
           load_status: formState.loadStatus.trim() || null,
-          temperature_required: formState.temperatureRequired.trim() || null,
+          expected_front_temperature: parsedFrontExpected.value,
+          expected_rear_temperature: parsedRearExpected.value,
+          expected_temperature_unit: expectedTemperatureUnit,
+          temperature_required: parsedFrontExpected.value !== null ? String(parsedFrontExpected.value) : null,
           priority_level: formState.priorityLevel,
           notes: formState.notes.trim() || null,
         },
@@ -542,6 +594,7 @@ export function useVesselOperation(operationId: string): UseVesselOperationResul
 
       setActioningTrailerId(trailer.id);
       setError(null);
+      setSuccess(null);
 
       try {
         const nextPriorityLevel: VesselPriorityLevel = trailer.priority_level === "priority" ? "normal" : "priority";
@@ -560,6 +613,7 @@ export function useVesselOperation(operationId: string): UseVesselOperationResul
         }
 
         await loadOperation();
+        setSuccess(`Priority updated for ${trailer.trailer_number ?? "trailer"}.`);
       } catch (priorityErr) {
         console.error("Unable to update trailer priority:", priorityErr);
         setError("Unable to update trailer priority.");
@@ -703,11 +757,11 @@ export function useVesselOperation(operationId: string): UseVesselOperationResul
           event_type: "vessel_trailer_marked_arrived",
           event_description: "Expected trailer marked as arrived.",
           old_value: {
-            vessel_operation_trailer_id: trailer.id,
+            vessel_trailer_id: trailer.id,
             arrival_status: trailer.arrival_status,
           },
           new_value: {
-            vessel_operation_trailer_id: trailer.id,
+            vessel_trailer_id: trailer.id,
             arrival_status: "arrived",
             arrived_at: nowIso,
             arrived_by: operatorName,
@@ -745,9 +799,23 @@ export function useVesselOperation(operationId: string): UseVesselOperationResul
       const inspection = inspectionByTrailer[trailer.id] ?? initialInspectionState;
       const frontTemperature = parseNumeric(inspection.frontTemperature);
       const rearTemperature = parseNumeric(inspection.rearTemperature);
+      const expectedFrontTemperature = resolveExpectedFrontTemperature(trailer);
+      const expectedRearTemperature = resolveExpectedRearTemperature(trailer);
+      const expectedTemperatureUnit = normalizeExpectedTemperatureUnit(trailer.expected_temperature_unit);
+      const hasLegacyExpectedRange = Boolean(trailer.temperature_required?.trim()) && expectedFrontTemperature === null;
 
-      if (trailer.temperature_required?.trim() && (frontTemperature === null || rearTemperature === null)) {
-        setError("Front and rear temperature are required.");
+      if (expectedFrontTemperature !== null && frontTemperature === null) {
+        setError("Front temperature is required for this trailer.");
+        return;
+      }
+
+      if (expectedRearTemperature !== null && rearTemperature === null) {
+        setError("Rear temperature is required for this trailer.");
+        return;
+      }
+
+      if (hasLegacyExpectedRange && frontTemperature === null) {
+        setError("Front temperature is required for this trailer.");
         return;
       }
 
@@ -763,8 +831,10 @@ export function useVesselOperation(operationId: string): UseVesselOperationResul
       try {
         const nowIso = new Date().toISOString();
 
-        const frontOut = getTemperatureOutOfRange(frontTemperature, trailer.temperature_required);
-        const rearOut = getTemperatureOutOfRange(rearTemperature, trailer.temperature_required);
+        const frontOut = hasLegacyExpectedRange
+          ? getTemperatureOutOfRange(frontTemperature, trailer.temperature_required)
+          : getTemperatureMismatch(frontTemperature, expectedFrontTemperature);
+        const rearOut = getTemperatureMismatch(rearTemperature, expectedRearTemperature);
 
         const { error: deleteTemperatureError } = await supabase
           .from("vessel_inspection_temperatures")
@@ -782,7 +852,7 @@ export function useVesselOperation(operationId: string): UseVesselOperationResul
             trailer_id: trailer.trailer_id ?? null,
             trailer_number: trailer.trailer_number ?? null,
             temperature_value: frontTemperature,
-            temperature_unit: "C",
+            temperature_unit: expectedTemperatureUnit,
             reading_point: "front",
             notes: inspection.notes.trim() || null,
             is_out_of_range: frontOut,
@@ -794,7 +864,7 @@ export function useVesselOperation(operationId: string): UseVesselOperationResul
             trailer_id: trailer.trailer_id ?? null,
             trailer_number: trailer.trailer_number ?? null,
             temperature_value: rearTemperature,
-            temperature_unit: "C",
+            temperature_unit: expectedTemperatureUnit,
             reading_point: "rear",
             notes: inspection.notes.trim() || null,
             is_out_of_range: rearOut,
@@ -803,7 +873,7 @@ export function useVesselOperation(operationId: string): UseVesselOperationResul
           },
         ];
 
-        const { error: temperatureError } = await supabase.from("vessel_inspection_temperatures").insert(temperaturePayload);
+        const { error: temperatureError } = await supabase.from("vessel_inspection_temperatures").insert(temperaturePayload as never);
         if (temperatureError) {
           throw temperatureError;
         }
@@ -868,8 +938,6 @@ export function useVesselOperation(operationId: string): UseVesselOperationResul
 
             const photoPayload = {
               vessel_trailer_id: trailer.id,
-              vessel_operation_id: operation.id,
-              vessel_operation_trailer_id: trailer.id,
               category: "Boat Check",
               storage_path: storagePath,
               file_name: photo.name,
@@ -985,51 +1053,25 @@ export function useVesselOperation(operationId: string): UseVesselOperationResul
         throw markNotArrivedError;
       }
 
-      const completeWithCompletedAtPayload = {
-        status: "completed",
-        updated_at: nowIso,
-        completed_at: nowIso,
-      } as unknown as never;
-
-      const completeWithoutCompletedAtPayload = {
+      const completePayload = {
         status: "completed",
         updated_at: nowIso,
       };
 
-      const { error: completeWithCompletedAtError } = await supabase
+      const { error: completeError } = await supabase
         .from("vessel_operations")
-        .update(completeWithCompletedAtPayload)
+        .update(completePayload)
         .eq("id", operation.id);
 
-      if (completeWithCompletedAtError) {
-        const columnMissing = (completeWithCompletedAtError.message ?? "").toLowerCase().includes("completed_at") && (completeWithCompletedAtError.message ?? "").toLowerCase().includes("column");
-
-        if (!columnMissing) {
-          console.error("Complete operation update Supabase error", {
-            message: completeWithCompletedAtError.message,
-            details: completeWithCompletedAtError.details,
-            hint: completeWithCompletedAtError.hint,
-            code: completeWithCompletedAtError.code,
-          });
-          logVesselSupabaseError("Complete operation update failed", completeWithCompletedAtError);
-          throw completeWithCompletedAtError;
-        }
-
-        const { error: completeWithoutCompletedAtError } = await supabase
-          .from("vessel_operations")
-          .update(completeWithoutCompletedAtPayload)
-          .eq("id", operation.id);
-
-        if (completeWithoutCompletedAtError) {
-          console.error("Complete operation fallback update Supabase error", {
-            message: completeWithoutCompletedAtError.message,
-            details: completeWithoutCompletedAtError.details,
-            hint: completeWithoutCompletedAtError.hint,
-            code: completeWithoutCompletedAtError.code,
-          });
-          logVesselSupabaseError("Complete operation fallback update failed", completeWithoutCompletedAtError);
-          throw completeWithoutCompletedAtError;
-        }
+      if (completeError) {
+        console.error("Complete operation update Supabase error", {
+          message: completeError.message,
+          details: completeError.details,
+          hint: completeError.hint,
+          code: completeError.code,
+        });
+        logVesselSupabaseError("Complete operation update failed", completeError);
+        throw completeError;
       }
 
       setSuccess("Boat operation completed. This operation is now read-only.");

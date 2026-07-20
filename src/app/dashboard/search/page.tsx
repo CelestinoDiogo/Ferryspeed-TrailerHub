@@ -128,6 +128,9 @@ type VesselOperationTrailerRecord = {
   load_status?: string | null;
   load_description?: string | null;
   temperature_required?: string | null;
+  expected_front_temperature?: number | null;
+  expected_rear_temperature?: number | null;
+  expected_temperature_unit?: string | null;
   priority_level?: string | null;
   priority_reason?: string | null;
   planned_destination?: string | null;
@@ -338,7 +341,7 @@ function DashboardSearchPageContent() {
             .order("updated_at", { ascending: false }),
           supabase
             .from("vessel_operation_trailers")
-            .select("id, vessel_operation_id, trailer_id, trailer_number, customer, booking_reference, load_status, load_description, temperature_required, priority_level, priority_reason, planned_destination, planning_notes, status, arrived_at, arrival_status, arrival_confirmed_at, arrival_record_id, arrival_confirmed_by, inspection_started_at, inspection_completed_at, position_assigned_at, assigned_position, has_damage, has_temperature_alert, created_at, updated_at")
+            .select("id, vessel_operation_id, trailer_id, trailer_number, customer, booking_reference, load_status, load_description, temperature_required, expected_front_temperature, expected_rear_temperature, expected_temperature_unit, priority_level, priority_reason, planned_destination, planning_notes, status, arrived_at, arrival_status, arrival_confirmed_at, arrival_record_id, arrival_confirmed_by, inspection_started_at, inspection_completed_at, position_assigned_at, assigned_position, has_damage, has_temperature_alert, created_at, updated_at")
             .order("created_at", { ascending: false }),
         ]);
 

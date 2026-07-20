@@ -652,8 +652,7 @@ export default function TrailerDetailsPage() {
       return;
     }
 
-    console.log(`Action triggered: ${label}`);
-    window.alert(`Placeholder: ${label}`);
+    setError(`${label} is not available from this screen.`);
   };
 
   const handleFieldChange = (field: keyof TrailerForm, value: string) => {

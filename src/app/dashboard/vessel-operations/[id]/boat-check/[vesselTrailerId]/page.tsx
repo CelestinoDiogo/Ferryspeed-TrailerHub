@@ -6,12 +6,18 @@ import { useParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import {
+  buildVesselSupabaseErrorMessage,
   formatVesselDateTime,
   getVesselInspectionProgressLabel,
   getVesselInspectionProgressState,
   getVesselPriorityClass,
   getVesselPriorityLabel,
   getVesselTrailerStatusClass,
+  logVesselSupabaseError,
+  normalizeExpectedTemperatureUnit,
+  resolveExpectedFrontTemperature,
+  resolveExpectedRearTemperature,
+  type SupabaseErrorLike,
   type VesselInspectionDamageRecord,
   type VesselInspectionPhotoRecord,
   type VesselInspectionTemperatureRecord,
@@ -80,6 +86,14 @@ const isOutOfConfiguredRange = (value: number | null, configuredRange?: string |
   return value < range.min || value > range.max;
 };
 
+const hasExpectedMismatch = (actual: number | null, expected: number | null) => {
+  if (actual === null || expected === null) {
+    return false;
+  }
+
+  return Math.abs(actual - expected) > 0.01;
+};
+
 const sanitizeFileName = (name: string) => name.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
 const buildSelectedPhotoId = (file: File) => `${file.name}:${file.size}:${file.lastModified}`;
 
@@ -87,6 +101,8 @@ const isStorageConfigurationError = (errorMessage: string) => {
   const lower = errorMessage.toLowerCase();
   return lower.includes("bucket") || lower.includes("storage") || lower.includes("not found") || lower.includes("no such");
 };
+
+const asSupabaseErrorLike = (error: unknown) => error as SupabaseErrorLike;
 
 function VesselInspectionPageContent() {
   const params = useParams();
@@ -220,7 +236,7 @@ function VesselInspectionPageContent() {
           .single(),
         supabase
           .from("vessel_operation_trailers")
-          .select("id, vessel_operation_id, trailer_id, trailer_number, customer, booking_reference, load_status, load_description, temperature_required, priority_level, priority_reason, planned_destination, planning_notes, status, arrived_at, arrival_status, arrival_confirmed_at, arrival_confirmed_by, inspection_started_at, inspection_completed_at, has_damage, has_temperature_alert, created_at, updated_at")
+          .select("id, vessel_operation_id, trailer_id, trailer_number, customer, booking_reference, load_status, load_description, temperature_required, expected_front_temperature, expected_rear_temperature, expected_temperature_unit, priority_level, priority_reason, planned_destination, planning_notes, status, arrived_at, arrival_status, arrival_confirmed_at, arrival_confirmed_by, inspection_started_at, inspection_completed_at, has_damage, has_temperature_alert, created_at, updated_at")
           .eq("id", vesselTrailerId)
           .single(),
         supabase
@@ -243,22 +259,27 @@ function VesselInspectionPageContent() {
       ]);
 
       if (operationResult.error || !operationResult.data) {
+        logVesselSupabaseError("Load boat check operation failed", operationResult.error);
         throw operationResult.error ?? new Error("Operation not found.");
       }
 
       if (trailerResult.error || !trailerResult.data) {
+        logVesselSupabaseError("Load boat check trailer failed", trailerResult.error);
         throw trailerResult.error ?? new Error("Trailer not found.");
       }
 
       if (temperaturesResult.error) {
+        logVesselSupabaseError("Load boat check temperatures failed", temperaturesResult.error);
         throw temperaturesResult.error;
       }
 
       if (damagesResult.error) {
+        logVesselSupabaseError("Load boat check damages failed", damagesResult.error);
         throw damagesResult.error;
       }
 
       if (photosResult.error) {
+        logVesselSupabaseError("Load boat check photos failed", photosResult.error);
         throw photosResult.error;
       }
 
@@ -285,6 +306,7 @@ function VesselInspectionPageContent() {
           .eq("arrival_status", "arrived");
 
         if (startError) {
+          logVesselSupabaseError("Mark inspection started failed", startError);
           throw startError;
         }
 
@@ -343,13 +365,13 @@ function VesselInspectionPageContent() {
 
       const matchedReception = (receptionEvents ?? []).find((event) => {
         const payload = (event as { new_value?: unknown }).new_value as Record<string, unknown> | null | undefined;
-        return payload?.vessel_operation_trailer_id === trailerRow.id;
+        return payload?.vessel_trailer_id === trailerRow.id;
       }) as { created_at?: string | null } | undefined;
 
       setReceptionConfirmedAt(matchedReception?.created_at ?? null);
     } catch (loadErr) {
-      console.error("Unable to load inspection:", loadErr);
-      setError("Unable to load inspection.");
+      logVesselSupabaseError("Unable to load inspection", asSupabaseErrorLike(loadErr));
+      setError(buildVesselSupabaseErrorMessage(asSupabaseErrorLike(loadErr), "Unable to load inspection."));
     } finally {
       setIsLoading(false);
     }
@@ -363,7 +385,17 @@ function VesselInspectionPageContent() {
     return () => window.clearTimeout(timeoutId);
   }, [loadInspection]);
 
-  const temperatureRequired = useMemo(() => Boolean(trailer?.temperature_required?.trim()), [trailer?.temperature_required]);
+  const expectedFrontTemperature = useMemo(() => (trailer ? resolveExpectedFrontTemperature(trailer) : null), [trailer]);
+  const expectedRearTemperature = useMemo(() => (trailer ? resolveExpectedRearTemperature(trailer) : null), [trailer]);
+  const expectedTemperatureUnit = useMemo(() => normalizeExpectedTemperatureUnit(trailer?.expected_temperature_unit), [trailer?.expected_temperature_unit]);
+  const isFrontTemperatureRequired = useMemo(() => {
+    if (expectedFrontTemperature !== null) {
+      return true;
+    }
+
+    return Boolean(trailer?.temperature_required?.trim());
+  }, [expectedFrontTemperature, trailer?.temperature_required]);
+  const isRearTemperatureRequired = useMemo(() => expectedRearTemperature !== null, [expectedRearTemperature]);
 
   const hasExistingInspection = useMemo(() => {
     return Boolean(
@@ -480,8 +512,17 @@ function VesselInspectionPageContent() {
       return;
     }
 
+    if (!vesselTrailerId || trailer.id !== vesselTrailerId) {
+      setError("Invalid vessel trailer record. Refresh the page and try again.");
+      return;
+    }
+
     if (operation.status === "completed" || operation.status === "cancelled") {
       setError("Completed operations are read-only.");
+      return;
+    }
+
+    if (isSaving) {
       return;
     }
 
@@ -493,8 +534,13 @@ function VesselInspectionPageContent() {
     const frontValue = parseNumber(frontTemperature);
     const rearValue = parseNumber(rearTemperature);
 
-    if (temperatureRequired && (frontValue === null || rearValue === null)) {
-      setError("Front and rear temperatures are required for this trailer.");
+    if (isFrontTemperatureRequired && frontValue === null) {
+      setError("Actual front temperature is required for this trailer.");
+      return;
+    }
+
+    if (isRearTemperatureRequired && rearValue === null) {
+      setError("Actual rear temperature is required for this trailer.");
       return;
     }
 
@@ -512,22 +558,29 @@ function VesselInspectionPageContent() {
     try {
       const nowIso = new Date().toISOString();
 
-      const frontOutOfRange = frontAlertManual || isOutOfConfiguredRange(frontValue, trailer.temperature_required);
-      const rearOutOfRange = rearAlertManual || isOutOfConfiguredRange(rearValue, trailer.temperature_required);
+      const frontOutOfRange = frontAlertManual || (expectedFrontTemperature !== null
+        ? hasExpectedMismatch(frontValue, expectedFrontTemperature)
+        : isOutOfConfiguredRange(frontValue, trailer.temperature_required));
+      const rearOutOfRange = rearAlertManual || hasExpectedMismatch(rearValue, expectedRearTemperature);
 
-      await supabase
+      const { error: deleteTemperatureError } = await supabase
         .from("vessel_inspection_temperatures")
         .delete()
         .eq("vessel_trailer_id", trailer.id)
         .in("reading_point", ["front", "rear", "Front", "Rear"]);
 
-      const { error: tempInsertError } = await supabase.from("vessel_inspection_temperatures").insert([
+      if (deleteTemperatureError) {
+        logVesselSupabaseError("Delete existing boat check temperatures failed", deleteTemperatureError);
+        throw deleteTemperatureError;
+      }
+
+      const temperaturePayload = [
         {
           vessel_trailer_id: trailer.id,
           trailer_id: trailer.trailer_id ?? null,
           trailer_number: trailer.trailer_number ?? null,
           temperature_value: frontValue,
-          temperature_unit: "C",
+            temperature_unit: expectedTemperatureUnit,
           reading_point: "front",
           notes: inspectionNotes.trim() || null,
           is_out_of_range: frontOutOfRange,
@@ -539,23 +592,31 @@ function VesselInspectionPageContent() {
           trailer_id: trailer.trailer_id ?? null,
           trailer_number: trailer.trailer_number ?? null,
           temperature_value: rearValue,
-          temperature_unit: "C",
+            temperature_unit: expectedTemperatureUnit,
           reading_point: "rear",
           notes: inspectionNotes.trim() || null,
           is_out_of_range: rearOutOfRange,
           recorded_at: nowIso,
           recorded_by: "TrailerHub User",
         },
-      ]);
+      ];
+
+      const { error: tempInsertError } = await supabase.from("vessel_inspection_temperatures").insert(temperaturePayload as never);
 
       if (tempInsertError) {
+        logVesselSupabaseError("Insert boat check temperatures failed", tempInsertError);
         throw tempInsertError;
       }
 
-      await supabase
+      const { error: damageDeleteError } = await supabase
         .from("vessel_inspection_damages")
         .delete()
         .eq("vessel_trailer_id", trailer.id);
+
+      if (damageDeleteError) {
+        logVesselSupabaseError("Delete existing boat check damages failed", damageDeleteError);
+        throw damageDeleteError;
+      }
 
       if (damageChoice === "yes") {
         const { error: damageInsertError } = await supabase.from("vessel_inspection_damages").insert({
@@ -569,6 +630,7 @@ function VesselInspectionPageContent() {
         });
 
         if (damageInsertError) {
+          logVesselSupabaseError("Insert boat check damage failed", damageInsertError);
           throw damageInsertError;
         }
       }
@@ -593,6 +655,7 @@ function VesselInspectionPageContent() {
         .eq("arrival_status", "arrived");
 
       if (trailerUpdateError) {
+        logVesselSupabaseError("Finalize boat check trailer update failed", trailerUpdateError);
         throw trailerUpdateError;
       }
 
@@ -609,8 +672,8 @@ function VesselInspectionPageContent() {
 
       setSuccess("Inspection saved successfully.");
     } catch (saveErr) {
-      console.error("Unable to save inspection:", saveErr);
-      setError("Unable to save inspection.");
+      logVesselSupabaseError("Unable to save inspection", asSupabaseErrorLike(saveErr));
+      setError(buildVesselSupabaseErrorMessage(asSupabaseErrorLike(saveErr), "Unable to save inspection."));
     } finally {
       setIsSaving(false);
     }
@@ -623,11 +686,17 @@ function VesselInspectionPageContent() {
     frontAlertManual,
     frontTemperature,
     inspectionNotes,
+    isSaving,
     operation,
     rearAlertManual,
     rearTemperature,
-    temperatureRequired,
+    expectedFrontTemperature,
+    expectedRearTemperature,
+    expectedTemperatureUnit,
+    isFrontTemperatureRequired,
+    isRearTemperatureRequired,
     trailer,
+    vesselTrailerId,
     clearSelectedPhotos,
     loadInspection,
     uploadSelectedPhotos,
@@ -704,15 +773,16 @@ function VesselInspectionPageContent() {
 
         <section className="rounded-3xl border border-white/10 bg-slate-900/70 p-5 shadow-lg shadow-black/20 backdrop-blur sm:p-6">
           <p className="text-sm font-semibold uppercase tracking-[0.3em] text-cyan-400">Temperatures</p>
-          <p className="mt-2 text-xs text-slate-400">Unit defaults to °C. {temperatureRequired ? "Temperature is required for this trailer." : "Temperature is optional for this trailer."}</p>
+          <p className="mt-2 text-xs text-slate-400">Unit: {expectedTemperatureUnit}. Front expected: {expectedFrontTemperature === null ? "-" : expectedFrontTemperature}. Rear expected: {expectedRearTemperature === null ? "-" : expectedRearTemperature}.</p>
+          <p className="mt-1 text-xs text-slate-400">{isFrontTemperatureRequired ? "Actual front temperature is required." : "Actual front temperature is optional."} {isRearTemperatureRequired ? "Actual rear temperature is required." : "Actual rear temperature is optional."}</p>
 
           <div className="mt-4 grid gap-3 sm:grid-cols-2">
             <label className="text-sm text-slate-200">
-              Front Temperature (°C)
+              Actual Front Temperature ({expectedTemperatureUnit})
               <input type="number" value={frontTemperature} onChange={(event) => setFrontTemperature(event.target.value)} className="mt-1 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm outline-none" />
             </label>
             <label className="text-sm text-slate-200">
-              Rear Temperature (°C)
+              Actual Rear Temperature ({expectedTemperatureUnit})
               <input type="number" value={rearTemperature} onChange={(event) => setRearTemperature(event.target.value)} className="mt-1 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm outline-none" />
             </label>
           </div>

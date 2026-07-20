@@ -156,6 +156,9 @@ export type Database = {
           load_status: string | null;
           load_description: string | null;
           temperature_required: string | null;
+          expected_front_temperature: number | null;
+          expected_rear_temperature: number | null;
+          expected_temperature_unit: string | null;
           priority_level: string | null;
           priority_reason: string | null;
           planned_destination: string | null;
@@ -186,7 +189,6 @@ export type Database = {
           trailer_id: string | null;
           trailer_number: string | null;
           vessel_operation_id: string | null;
-          vessel_operation_trailer_id: string | null;
           damage_type: string | null;
           damage_location: string | null;
           severity: string | null;
@@ -221,7 +223,6 @@ export type Database = {
           id: string;
           vessel_trailer_id: string | null;
           vessel_operation_id: string | null;
-          vessel_operation_trailer_id: string | null;
           category: string | null;
           storage_path: string | null;
           file_name: string | null;

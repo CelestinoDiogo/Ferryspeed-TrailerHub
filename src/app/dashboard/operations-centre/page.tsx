@@ -12,7 +12,13 @@ import {
 } from "@/lib/operational-readiness";
 import { calculateCollectionAging } from "@/lib/collection-aging";
 import { buildPriorityQueue, type OpsBooking, type OpsTrailer } from "@/lib/operations-centre-utils";
-import { isExportAllocationOverdue, normalizeExportAllocationRecord, type ExportAllocationRecord } from "@/lib/export-allocation";
+import {
+  buildActiveExportStatusByTrailerId,
+  isExportAllocationOverdue,
+  isTrailerPresentInCompoundInventory,
+  normalizeExportAllocationRecord,
+  type ExportAllocationRecord,
+} from "@/lib/export-allocation";
 
 type DeliveryRow = OpsBooking;
 
@@ -168,8 +174,15 @@ export default function OperationsCentrePage() {
     return queue.filter((item) => item.priority === "critical" || item.priority === "high");
   }, [bookings, trailers, todayKey]);
 
+  const activeExportStatusByTrailerId = useMemo(
+    () => buildActiveExportStatusByTrailerId(exportAllocations),
+    [exportAllocations],
+  );
+
   const yardStatus: YardStatus = useMemo(() => {
-    const activeTrailers = trailers.filter((t) => !t.departure_date);
+    const activeTrailers = trailers.filter((t) =>
+      isTrailerPresentInCompoundInventory(t, activeExportStatusByTrailerId.get(t.id)),
+    );
     const waitingCollections = collectionsPending.length;
 
     let needPreparation = 0;
@@ -220,7 +233,7 @@ export default function OperationsCentrePage() {
       needPreparation,
       attentionRequired: attentionRequired + collectionAttention,
     };
-  }, [trailers, todayDeliveries, todayKey, collectionsPending]);
+  }, [activeExportStatusByTrailerId, trailers, todayDeliveries, todayKey, collectionsPending]);
 
   const driverPickList = useMemo(
     () => todayDeliveries.filter((b) => b.status !== "collected" && b.status !== "cancelled"),

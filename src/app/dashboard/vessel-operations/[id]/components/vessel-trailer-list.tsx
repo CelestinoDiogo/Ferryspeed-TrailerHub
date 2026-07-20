@@ -4,6 +4,9 @@ import {
   getVesselPriorityLabel,
   getVesselTrailerStatusClass,
   getVesselTrailerStatusLabel,
+  normalizeExpectedTemperatureUnit,
+  resolveExpectedFrontTemperature,
+  resolveExpectedRearTemperature,
   type VesselOperationTrailerRecord,
 } from "@/lib/vessel-operations";
 import type { TrailerInspectionState } from "../hooks/use-vessel-operation";
@@ -42,6 +45,9 @@ export function VesselTrailerList({
       ) : (
         sortedTrailers.map((trailer) => {
           const inspection = getInspectionState(trailer.id);
+          const expectedFront = resolveExpectedFrontTemperature(trailer);
+          const expectedRear = resolveExpectedRearTemperature(trailer);
+          const expectedUnit = normalizeExpectedTemperatureUnit(trailer.expected_temperature_unit);
           const canMarkArrived = operationStatus === "confirmed" && trailer.status === "expected";
           const canInspect = operationStatus === "confirmed" && (trailer.status === "arrived" || trailer.status === "inspected");
 
@@ -63,7 +69,8 @@ export function VesselTrailerList({
                       <p>Customer: {trailer.customer ?? "-"}</p>
                       <p>Booking Ref: {trailer.booking_reference ?? "-"}</p>
                       <p>Load Status: {trailer.load_status ?? "-"}</p>
-                      <p>Temperature Required: {trailer.temperature_required ?? "-"}</p>
+                      <p>Expected Front Temp: {expectedFront === null ? "-" : `${expectedFront} ${expectedUnit}`}</p>
+                      <p>Expected Rear Temp: {expectedRear === null ? "-" : `${expectedRear} ${expectedUnit}`}</p>
                       <p>Arrival: {formatVesselDateTime(trailer.arrival_confirmed_at ?? trailer.arrived_at)}</p>
                       <p>Damage: {trailer.has_damage ? "Yes" : "No"}</p>
                       <p>Temp Alert: {trailer.has_temperature_alert ? "Yes" : "No"}</p>
@@ -138,7 +145,7 @@ export function VesselTrailerList({
                       </label>
 
                       <label className="text-sm text-slate-200">
-                        Front Temperature
+                        Actual Front Temperature ({expectedUnit})
                         <input
                           type="number"
                           value={inspection.frontTemperature}
@@ -149,7 +156,7 @@ export function VesselTrailerList({
                       </label>
 
                       <label className="text-sm text-slate-200">
-                        Rear Temperature
+                        Actual Rear Temperature ({expectedUnit})
                         <input
                           type="number"
                           value={inspection.rearTemperature}

@@ -6,7 +6,6 @@ import {
   canConfirmVesselTrailerReception,
   getFirstAvailableCompoundPosition,
   getVesselReceptionDate,
-  hasCompletedBoatCheck,
   logVesselSupabaseError,
   normalizeCompoundPosition,
   normalizeTrailerNumber,
@@ -191,11 +190,6 @@ export function useVesselReception({ operation, onSuccess }: UseVesselReceptionO
   const [error, setError] = useState<string | null>(null);
 
   const isOpen = Boolean(selectedTrailer);
-  const requiresInspectionWarning = useMemo(
-    () => Boolean(selectedTrailer && !hasCompletedBoatCheck(selectedTrailer)),
-    [selectedTrailer],
-  );
-
   const closeReception = useCallback(() => {
     setSelectedTrailer(null);
     setExistingActiveTrailer(null);
@@ -256,11 +250,6 @@ export function useVesselReception({ operation, onSuccess }: UseVesselReceptionO
 
     if (!canConfirmVesselTrailerReception(selectedTrailer, operation)) {
       setError("Trailer is not available for reception.");
-      return null;
-    }
-
-    if (!hasCompletedBoatCheck(selectedTrailer)) {
-      setError("Boat Check must be completed before reception can be confirmed.");
       return null;
     }
 
@@ -347,19 +336,9 @@ export function useVesselReception({ operation, onSuccess }: UseVesselReceptionO
             : currentTrailer.id,
       };
 
-      console.log("Automatic position:", automaticPosition);
-
       let mainTrailerId = existingTrailer?.id ?? null;
       let mainTrailerNumber = normalizedTrailerNumber;
       let savedTrailer: SavedTrailerRow | null = null;
-
-      console.log("Reception debug:", {
-        existingTrailer,
-        automaticPosition,
-        destination,
-        trailerPayload: mainTrailerPayload,
-        savedTrailer,
-      });
 
       if (existingTrailer) {
         const { data: updatedTrailer, error: updateError } = await supabase
@@ -369,8 +348,9 @@ export function useVesselReception({ operation, onSuccess }: UseVesselReceptionO
           .select()
           .single();
 
-        console.log("Save error:", updateError);
-        console.log("Trailer record:", updatedTrailer);
+        if (updateError) {
+          console.error(updateError);
+        }
 
         if (updateError || !updatedTrailer) {
           throw new Error((updateError ?? new Error("Unable to update main trailer record.")).message);
@@ -389,8 +369,9 @@ export function useVesselReception({ operation, onSuccess }: UseVesselReceptionO
           .select()
           .single();
 
-        console.log("Save error:", insertError);
-        console.log("Trailer record:", insertedTrailer);
+        if (insertError) {
+          console.error(insertError);
+        }
 
         if (insertError || !insertedTrailer) {
           throw new Error((insertError ?? new Error("Unable to create main trailer record.")).message);
@@ -450,7 +431,7 @@ export function useVesselReception({ operation, onSuccess }: UseVesselReceptionO
         event_description: eventDescription,
         new_value: {
           vessel_operation_id: operation.id,
-          vessel_operation_trailer_id: currentTrailer.id,
+          vessel_trailer_id: currentTrailer.id,
           trailer_id: savedTrailer.id,
           arrival_record_id: savedTrailer.id,
           compound_position: destination === "compound" ? finalPosition : null,
@@ -483,7 +464,7 @@ export function useVesselReception({ operation, onSuccess }: UseVesselReceptionO
     } finally {
       setIsSubmitting(false);
     }
-  }, [closeReception, formState, onSuccess, operation, requiresInspectionWarning, selectedTrailer]);
+  }, [closeReception, formState, onSuccess, operation, selectedTrailer]);
 
   return {
     closeReception,
@@ -495,7 +476,6 @@ export function useVesselReception({ operation, onSuccess }: UseVesselReceptionO
     isSubmitting,
     nextAvailablePosition,
     openReception,
-    requiresInspectionWarning,
     selectedTrailer,
     submitReception,
     updateField,

@@ -272,6 +272,7 @@ export default function DeliveryDetailsPage() {
 
       // ── Trailer events ────────────────────────────────────────────────────
       const events: { type: string; desc: string; old: Json; next: Json }[] = [];
+      let eventInsertFailed = false;
 
       if (prevStatus !== newStatus) {
         events.push({
@@ -306,7 +307,18 @@ export default function DeliveryDetailsPage() {
           old_value:         ev.old,
           new_value:         ev.next,
         });
-        if (evErr) console.error("Event insert error:", evErr);
+        if (evErr) {
+          eventInsertFailed = true;
+          console.error("Delivery trailer event insert failed", {
+            bookingId: booking.id,
+            eventType: ev.type,
+            message: evErr.message,
+            details: evErr.details,
+            hint: evErr.hint,
+            code: evErr.code,
+          });
+          setError("Booking was updated, but an audit event could not be recorded. Please notify operations support.");
+        }
       }
 
       // Update local state
@@ -334,9 +346,15 @@ export default function DeliveryDetailsPage() {
       if (prevStatus !== "delivered" && newStatus === "delivered") {
         setShowCollectionChoice(true);
       } else {
-        setNotice("Booking updated successfully.");
+        if (!eventInsertFailed) {
+          setNotice("Booking updated successfully.");
+        }
       }
     } catch (e) {
+      console.error("Unable to update delivery booking", {
+        bookingId: booking.id,
+        error: e,
+      });
       setError(e instanceof Error ? e.message : "Unable to update booking.");
     } finally {
       setIsSaving(false);

@@ -16,9 +16,11 @@ import { supabase } from "@/lib/supabase";
 import { getLocalDateKey } from "@/lib/operational-readiness";
 import {
   EXPORT_ACTIVE_STATUSES,
+  isExportAllocationOffCompoundStatus,
   getAdvanceStatusActionLabel,
   getExportAllocationPriorityClasses,
   getExportAllocationPriorityLabel,
+  getPreviousExportAllocationStatus,
   getExportAllocationStatusClasses,
   getExportAllocationStatusLabel,
   getExportAllocationTimestampField,
@@ -36,6 +38,51 @@ type TrailerLoadSnapshot = {
   load_status?: string | null;
   customer?: string | null;
   load_description?: string | null;
+  compound_position?: string | null;
+};
+
+type CompoundRestoreResult = {
+  restoredPosition: string | null;
+  fallbackUsed: boolean;
+};
+
+const COMPOUND_POSITIONS = Array.from({ length: 50 }, (_, index) => `P${String(index + 1).padStart(2, "0")}`);
+
+const normalizeCompoundPosition = (value?: string | null): string | null => {
+  const trimmed = value?.trim().toUpperCase();
+  if (!trimmed) {
+    return null;
+  }
+
+  const match = trimmed.match(/^(P|A)?0*(\d{1,2})$/);
+  if (!match) {
+    return null;
+  }
+
+  const numericValue = Number(match[2]);
+  if (numericValue < 1 || numericValue > 50) {
+    return null;
+  }
+
+  return `P${numericValue.toString().padStart(2, "0")}`;
+};
+
+const getNextAvailableCompoundPosition = async () => {
+  const { data, error } = await supabase
+    .from("trailers")
+    .select("compound_position, departure_date, is_local")
+    .is("departure_date", null)
+    .neq("is_local", true);
+
+  if (error) {
+    throw new Error(error.message || "Unable to determine available compound position.");
+  }
+
+  const occupied = new Set(
+    ((data ?? []) as Array<{ compound_position?: string | null }>).map((row) => normalizeCompoundPosition(row.compound_position)).filter((value): value is string => Boolean(value)),
+  );
+
+  return COMPOUND_POSITIONS.find((position) => !occupied.has(position)) ?? null;
 };
 
 const formatDate = (value?: string | null) => {
@@ -109,15 +156,6 @@ const formatDateTime = (value?: string | null) => {
   }
 };
 
-const formatTime = (value?: string | null) => {
-  if (!value) return "-";
-  try {
-    return value.slice(0, 5);
-  } catch {
-    return value;
-  }
-};
-
 const STATUS_OPTIONS: Array<{ value: "all" | ExportAllocationStatus | "at_customer" | "overdue"; label: string }> = [
   { value: "all", label: "All Statuses" },
   { value: "allocated", label: "Allocated" },
@@ -187,15 +225,6 @@ const comparePrintAllocations = (left: ExportAllocationRecord, right: ExportAllo
     return leftDate.localeCompare(rightDate);
   }
 
-  const leftTime = left.collection_time?.trim() ?? "";
-  const rightTime = right.collection_time?.trim() ?? "";
-
-  if (leftTime !== rightTime) {
-    if (!leftTime) return 1;
-    if (!rightTime) return -1;
-    return leftTime.localeCompare(rightTime);
-  }
-
   const customerCompare = normalizeText(left.customer).localeCompare(normalizeText(right.customer));
   if (customerCompare !== 0) {
     return customerCompare;
@@ -238,6 +267,7 @@ function ExportOperationsPageContent() {
   const [allocations, setAllocations] = useState<ExportAllocationRecord[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
   const [actioningId, setActioningId] = useState<string | null>(null);
 
   const updateFilters = (updates: { date?: string; customer?: string; status?: string }) => {
@@ -304,12 +334,15 @@ function ExportOperationsPageContent() {
         booking_reference,
         load_type,
         collection_date,
-        collection_time,
         expected_return_at,
         priority,
         status,
         notes,
         allocated_at,
+        delivered_empty_at,
+        waiting_loading_at,
+        collected_loaded_at,
+        completed_at,
         collected_by_haulier_at,
         loading_started_at,
         loaded_at,
@@ -330,12 +363,15 @@ function ExportOperationsPageContent() {
         booking_reference,
         load_type,
         collection_date,
-        collection_time,
         expected_return_at,
         priority,
         status,
         notes,
         allocated_at,
+        delivered_empty_at,
+        waiting_loading_at,
+        collected_loaded_at,
+        completed_at,
         created_at,
         updated_at
       `;
@@ -345,30 +381,15 @@ function ExportOperationsPageContent() {
           .from("export_allocations")
           .select(columns)
           .order("collection_date", { ascending: true })
-          .order("collection_time", { ascending: true, nullsFirst: false })
           .order("created_at", { ascending: false });
 
       let result = await runQuery(queryColumns);
 
       if (result.error) {
-        console.error("Export allocations query failed:", {
-          message: result.error.message,
-          details: result.error.details,
-          hint: result.error.hint,
-          code: result.error.code,
-        });
-
         result = await runQuery(fallbackColumns);
 
         if (result.error) {
-          console.error("Export allocations query failed:", {
-            message: result.error.message,
-            details: result.error.details,
-            hint: result.error.hint,
-            code: result.error.code,
-          });
-
-          throw new Error([result.error.message, result.error.details, result.error.hint].filter(Boolean).join(" — "));
+          throw new Error([result.error.message, result.error.details, result.error.hint].filter(Boolean).join(" - "));
         }
       }
 
@@ -495,6 +516,10 @@ function ExportOperationsPageContent() {
   const printedAt = formatPrintedDateTime();
 
   const updateTrailerWhenLoaded = async (allocation: ExportAllocationRecord) => {
+    if (!allocation.trailer_id) {
+      return;
+    }
+
     const { data: trailerData, error: trailerError } = await supabase
       .from("trailers")
       .select("id, trailer_number, load_status, customer, load_description")
@@ -559,6 +584,7 @@ function ExportOperationsPageContent() {
     allocation: ExportAllocationRecord,
     oldStatus: ExportAllocationStatus,
     newStatus: ExportAllocationStatus,
+    movementMetadata?: Record<string, unknown>,
   ) => {
     const customer = allocation.customer?.trim() ? allocation.customer.trim() : "customer";
     let eventType = "export_allocation_status_changed";
@@ -578,19 +604,25 @@ function ExportOperationsPageContent() {
       eventDescription = "Export allocation cancelled.";
     }
 
+    const oldValuePayload = {
+      export_allocation_id: allocation.id,
+      status: oldStatus,
+      ...(movementMetadata ? { movement: movementMetadata } : {}),
+    } as Database["public"]["Tables"]["trailer_events"]["Insert"]["old_value"];
+
+    const newValuePayload = {
+      export_allocation_id: allocation.id,
+      status: newStatus,
+      ...(movementMetadata ? { movement: movementMetadata } : {}),
+    } as Database["public"]["Tables"]["trailer_events"]["Insert"]["new_value"];
+
     const { error: eventError } = await supabase.from("trailer_events").insert({
       trailer_id: allocation.trailer_id,
       trailer_number: allocation.trailer_number,
       event_type: eventType,
       event_description: eventDescription,
-      old_value: {
-        export_allocation_id: allocation.id,
-        status: oldStatus,
-      },
-      new_value: {
-        export_allocation_id: allocation.id,
-        status: newStatus,
-      },
+      old_value: oldValuePayload,
+      new_value: newValuePayload,
     });
 
     if (eventError) {
@@ -598,21 +630,172 @@ function ExportOperationsPageContent() {
     }
   };
 
+  const moveAllocationToDeliveredEmpty = async (allocation: ExportAllocationRecord) => {
+    if (!allocation.trailer_id) {
+      return { previousPosition: null as string | null, requiresClientEvent: true };
+    }
+
+    const rpcResult = await (supabase as unknown as {
+      rpc: (fn: string, args: Record<string, unknown>) => Promise<{ data: unknown; error: { code?: string; message?: string } | null }>;
+    }).rpc("set_export_allocation_delivered_empty", {
+      p_allocation_id: allocation.id,
+      p_expected_current_status: allocation.status,
+    });
+
+    if (!rpcResult.error) {
+      const rpcRows = Array.isArray(rpcResult.data) ? rpcResult.data : [];
+      const row = (rpcRows[0] as { transitioned?: boolean; previous_compound_position?: string | null } | undefined) ?? null;
+      if (!row?.transitioned) {
+        throw new Error("Allocation status changed by another user. Refresh and try again.");
+      }
+
+      return {
+        previousPosition: normalizeCompoundPosition(row.previous_compound_position),
+        requiresClientEvent: false,
+      };
+    }
+
+    if (rpcResult.error.code !== "42883") {
+      throw new Error(rpcResult.error.message || "Unable to move allocation to Delivered Empty.");
+    }
+
+    const nowIso = new Date().toISOString();
+    const { data: trailerData, error: trailerReadError } = await supabase
+      .from("trailers")
+      .select("id, compound_position")
+      .eq("id", allocation.trailer_id)
+      .single();
+
+    if (trailerReadError || !trailerData) {
+      throw new Error(trailerReadError?.message || "Unable to load trailer compound position.");
+    }
+
+    const previousPosition = normalizeCompoundPosition((trailerData as { compound_position?: string | null }).compound_position);
+    const { error: updateError } = await supabase
+      .from("export_allocations")
+      .update({
+        status: "delivered_empty",
+        delivered_empty_at: nowIso,
+        updated_at: nowIso,
+      })
+      .eq("id", allocation.id)
+      .eq("status", allocation.status);
+
+    if (updateError) {
+      throw new Error(updateError.message || "Unable to advance export allocation status.");
+    }
+
+    const { error: trailerUpdateError } = await supabase
+      .from("trailers")
+      .update({
+        compound_position: null,
+      })
+      .eq("id", allocation.trailer_id);
+
+    if (trailerUpdateError) {
+      await supabase
+        .from("export_allocations")
+        .update({
+          status: allocation.status,
+          delivered_empty_at: allocation.delivered_empty_at ?? null,
+          updated_at: nowIso,
+        })
+        .eq("id", allocation.id)
+        .eq("status", "delivered_empty");
+
+      throw new Error(trailerUpdateError.message || "Unable to clear trailer compound position.");
+    }
+
+    return { previousPosition, requiresClientEvent: true };
+  };
+
+  const restoreTrailerToCompoundAfterUndo = async (
+    allocation: ExportAllocationRecord,
+    previousPosition?: string | null,
+  ): Promise<CompoundRestoreResult> => {
+    if (!allocation.trailer_id) {
+      return { restoredPosition: null, fallbackUsed: false };
+    }
+
+    const preferred = normalizeCompoundPosition(previousPosition);
+    let targetPosition = preferred;
+    let fallbackUsed = false;
+
+    if (targetPosition) {
+      const { data: existingOccupancy, error: occupancyError } = await supabase
+        .from("trailers")
+        .select("id")
+        .is("departure_date", null)
+        .neq("is_local", true)
+        .eq("compound_position", targetPosition)
+        .neq("id", allocation.trailer_id)
+        .limit(1);
+
+      if (occupancyError) {
+        throw new Error(occupancyError.message || "Unable to verify compound position availability.");
+      }
+
+      if ((existingOccupancy ?? []).length > 0) {
+        targetPosition = null;
+      }
+    }
+
+    if (!targetPosition) {
+      targetPosition = await getNextAvailableCompoundPosition();
+      fallbackUsed = Boolean(targetPosition);
+    }
+
+    if (!targetPosition) {
+      throw new Error("No available compound position to restore trailer after undo.");
+    }
+
+    const { error: restoreError } = await supabase
+      .from("trailers")
+      .update({
+        compound_position: targetPosition,
+      })
+      .eq("id", allocation.trailer_id);
+
+    if (restoreError) {
+      throw new Error(restoreError.message || "Unable to restore trailer compound position after undo.");
+    }
+
+    return { restoredPosition: targetPosition, fallbackUsed };
+  };
+
   const handleAdvanceStatus = async (allocation: ExportAllocationRecord) => {
+    if (actioningId) {
+      return;
+    }
+
     const nextStatus = getNextExportAllocationStatus(allocation.status);
     if (!nextStatus) {
       return;
     }
 
-    if (nextStatus === "completed") {
-      router.push(`/dashboard/export-operations/${allocation.id}`);
-      return;
-    }
-
     setActioningId(allocation.id);
     setError(null);
+    setSuccess(null);
 
     try {
+      let movementMetadata: Record<string, unknown> | undefined;
+
+      if (nextStatus === "delivered_empty") {
+        const delivered = await moveAllocationToDeliveredEmpty(allocation);
+        movementMetadata = {
+          reason: "export_departure",
+          previous_compound_position: delivered.previousPosition,
+          new_compound_position: null,
+        };
+
+        if (delivered.requiresClientEvent) {
+          await createStatusChangedEvent(allocation, allocation.status, nextStatus, movementMetadata);
+        }
+        setSuccess("Status updated to Delivered Empty. Trailer removed from compound inventory.");
+        await loadAllocations();
+        return;
+      }
+
       if (nextStatus === "collected_loaded") {
         await updateTrailerWhenLoaded(allocation);
       }
@@ -631,13 +814,15 @@ function ExportOperationsPageContent() {
       const { error: updateError } = await supabase
         .from("export_allocations")
         .update(updatePayload)
-        .eq("id", allocation.id);
+        .eq("id", allocation.id)
+        .eq("status", allocation.status);
 
       if (updateError) {
         throw new Error(updateError.message || "Unable to advance export allocation status.");
       }
 
       await createStatusChangedEvent(allocation, allocation.status, nextStatus);
+      setSuccess(`Status updated to ${getExportAllocationStatusLabel(nextStatus)}.`);
       await loadAllocations();
     } catch (advanceErr) {
       setError(advanceErr instanceof Error ? advanceErr.message : "Unable to advance status.");
@@ -647,15 +832,21 @@ function ExportOperationsPageContent() {
   };
 
   const handleCancel = async (allocation: ExportAllocationRecord) => {
+    if (actioningId) {
+      return;
+    }
+
     if (allocation.status === "completed" || allocation.status === "cancelled") {
       return;
     }
 
     setActioningId(allocation.id);
     setError(null);
+    setSuccess(null);
 
     try {
       const nowIso = new Date().toISOString();
+      const cancelledAfterDeparture = isExportAllocationOffCompoundStatus(allocation.status);
       const { error: cancelError } = await supabase
         .from("export_allocations")
         .update({
@@ -663,16 +854,114 @@ function ExportOperationsPageContent() {
           cancelled_at: nowIso,
           updated_at: nowIso,
         })
-        .eq("id", allocation.id);
+        .eq("id", allocation.id)
+        .eq("status", allocation.status);
 
       if (cancelError) {
         throw new Error(cancelError.message || "Unable to cancel export allocation.");
       }
 
-      await createStatusChangedEvent(allocation, allocation.status, "cancelled");
+      await createStatusChangedEvent(allocation, allocation.status, "cancelled", {
+        requires_manual_compound_return: cancelledAfterDeparture,
+      });
+      setSuccess(
+        cancelledAfterDeparture
+          ? "Allocation cancelled. Trailer remains outside compound until explicitly returned."
+          : "Allocation cancelled.",
+      );
       await loadAllocations();
     } catch (cancelErr) {
       setError(cancelErr instanceof Error ? cancelErr.message : "Unable to cancel allocation.");
+    } finally {
+      setActioningId(null);
+    }
+  };
+
+  const handleUndoLastMovement = async (allocation: ExportAllocationRecord) => {
+    if (actioningId) {
+      return;
+    }
+
+    const previousStatus = getPreviousExportAllocationStatus(allocation.status);
+    if (!previousStatus) {
+      setError("Undo is only available after a status movement.");
+      return;
+    }
+
+    setActioningId(allocation.id);
+    setError(null);
+    setSuccess(null);
+
+    try {
+      const nowIso = new Date().toISOString();
+      const currentStatusTimestampField = getExportAllocationTimestampField(allocation.status);
+      let movementMetadata: Record<string, unknown> | undefined;
+      let fallbackRestoreMessage: string | null = null;
+      const updatePayload: Database["public"]["Tables"]["export_allocations"]["Update"] = {
+        status: previousStatus,
+        updated_at: nowIso,
+      };
+
+      if (currentStatusTimestampField) {
+        updatePayload[currentStatusTimestampField] = null;
+      }
+
+      const { error: undoError } = await supabase
+        .from("export_allocations")
+        .update(updatePayload)
+        .eq("id", allocation.id)
+        .eq("status", allocation.status);
+
+      if (undoError) {
+        throw new Error(undoError.message || "Unable to undo last movement.");
+      }
+
+      if (allocation.status === "delivered_empty" && previousStatus === "allocated") {
+        if (!allocation.trailer_id) {
+          throw new Error("Trailer is missing for undo operation.");
+        }
+
+        const workflowEvent = await supabase
+          .from("trailer_events")
+          .select("old_value, new_value")
+          .eq("trailer_id", allocation.trailer_id)
+          .eq("event_type", "export_allocation_status_changed")
+          .order("created_at", { ascending: false })
+          .limit(30);
+
+        if (workflowEvent.error) {
+          throw new Error(workflowEvent.error.message || "Unable to read export movement history for undo.");
+        }
+
+        const matchingEvent = (workflowEvent.data ?? []).find((row) => {
+          const oldValue = row.old_value as { export_allocation_id?: string; movement?: { previous_compound_position?: string | null } } | null;
+          const newValue = row.new_value as { status?: string } | null;
+          return oldValue?.export_allocation_id === allocation.id && newValue?.status === "delivered_empty";
+        }) as { old_value?: unknown } | undefined;
+
+        const previousPosition = (
+          matchingEvent?.old_value as { movement?: { previous_compound_position?: string | null } } | undefined
+        )?.movement?.previous_compound_position;
+
+        const restoreResult = await restoreTrailerToCompoundAfterUndo(allocation, previousPosition);
+        movementMetadata = {
+          reason: "export_undo_return",
+          previous_compound_position: previousPosition ?? null,
+          restored_compound_position: restoreResult.restoredPosition,
+          fallback_position_used: restoreResult.fallbackUsed,
+        };
+        if (restoreResult.fallbackUsed && restoreResult.restoredPosition) {
+          fallbackRestoreMessage = ` Trailer restored to next free position ${restoreResult.restoredPosition}.`;
+        }
+      }
+
+      await createStatusChangedEvent(allocation, allocation.status, previousStatus, movementMetadata);
+      setSuccess(
+        `Last movement undone. Status is now ${getExportAllocationStatusLabel(previousStatus)}.${fallbackRestoreMessage ?? ""}`,
+      );
+      await loadAllocations();
+    } catch (undoErr) {
+      setError(undoErr instanceof Error ? undoErr.message : "Unable to undo last movement.");
     } finally {
       setActioningId(null);
     }
@@ -713,6 +1002,10 @@ function ExportOperationsPageContent() {
 
         {error ? (
           <div className="alert-screen-only rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">{error}</div>
+        ) : null}
+
+        {success ? (
+          <div className="rounded-2xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">{success}</div>
         ) : null}
 
         <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -828,9 +1121,10 @@ function ExportOperationsPageContent() {
           <section className="space-y-3">
             {filteredAllocations.map((allocation) => {
               const canQuickAdvance =
-                allocation.status === "allocated" || allocation.status === "delivered_empty" || allocation.status === "waiting_loading";
+                allocation.status === "allocated" || allocation.status === "delivered_empty" || allocation.status === "waiting_loading" || allocation.status === "collected_loaded";
               const nextActionLabel = canQuickAdvance ? getAdvanceStatusActionLabel(allocation.status) : null;
               const canCancel = allocation.status !== "completed" && allocation.status !== "cancelled";
+              const canUndo = allocation.status === "delivered_empty" || allocation.status === "waiting_loading" || allocation.status === "collected_loaded";
               const isActioning = actioningId === allocation.id;
               const overdue = isExportAllocationOverdue(allocation);
 
@@ -880,10 +1174,6 @@ function ExportOperationsPageContent() {
                       <dd className="mt-1">{formatDate(allocation.collection_date)}</dd>
                     </div>
                     <div>
-                      <dt className="text-xs uppercase tracking-[0.2em] text-slate-500">Collection Time</dt>
-                      <dd className="mt-1">{formatTime(allocation.collection_time)}</dd>
-                    </div>
-                    <div>
                       <dt className="text-xs uppercase tracking-[0.2em] text-slate-500">Expected Return</dt>
                       <dd className="mt-1">{formatDateTime(allocation.expected_return_at)}</dd>
                     </div>
@@ -919,6 +1209,16 @@ function ExportOperationsPageContent() {
                         className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs font-semibold text-rose-200 hover:bg-rose-500/20 disabled:opacity-60"
                       >
                         {isActioning ? "Cancelling..." : "Cancel Allocation"}
+                      </button>
+                    ) : null}
+                    {canUndo ? (
+                      <button
+                        type="button"
+                        onClick={() => void handleUndoLastMovement(allocation)}
+                        disabled={isActioning}
+                        className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs font-semibold text-amber-200 hover:bg-amber-500/20 disabled:opacity-60"
+                      >
+                        {isActioning ? "Undoing..." : "Undo Last Movement"}
                       </button>
                     ) : null}
                   </div>
@@ -957,7 +1257,6 @@ function ExportOperationsPageContent() {
             rows={printAllocations}
             rowClassName={(allocation) => (allocation.priority === "urgent" ? "print-urgent" : undefined)}
             columns={[
-              { key: "collection_time", header: "Collection Time", render: (allocation) => allocation.collection_time?.trim() ? formatTime(allocation.collection_time) : "—" },
               { key: "trailer_number", header: "Trailer", render: (allocation) => allocation.trailer_number ?? "—" },
               { key: "customer", header: "Customer", render: (allocation) => allocation.customer ?? "—" },
               { key: "collection_address", header: "Collection Address", render: (allocation) => allocation.collection_address ?? "—" },

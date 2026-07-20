@@ -358,11 +358,11 @@ const buildNextAction = (input: {
         : null;
     case "arrived":
     case "inspection":
-      return input.currentVesselOperation && input.currentVesselTrailer
+      return input.currentVesselOperation
         ? {
-            label: "Open Boat Check",
-            href: `/dashboard/vessel-operations/${input.currentVesselOperation.id}/boat-check/${input.currentVesselTrailer.id}`,
-            sourceModule: "inspection",
+            label: "Open Arrivals",
+            href: `/dashboard/vessel-operations/${input.currentVesselOperation.id}/arrivals`,
+            sourceModule: "arrival",
           }
         : null;
     case "received":
@@ -713,13 +713,6 @@ const buildRelatedRecords = (input: {
       recordedAt: row.created_at,
     });
 
-    records.push({
-      id: `${row.id}-inspection`,
-      label: `Boat Check ${input.trailerNumber}`,
-      href: `/dashboard/vessel-operations/${row.vessel_operation_id}/boat-check/${row.id}`,
-      module: "inspection",
-      recordedAt: row.inspection_completed_at ?? row.inspection_started_at,
-    });
   });
 
   input.deliveryBookings.forEach((row) => {
@@ -1069,7 +1062,7 @@ export async function loadTrailerOperationalProfile(
       .order("created_at", { ascending: false }),
     supabase
       .from("vessel_operation_trailers")
-      .select("id, vessel_operation_id, trailer_id, trailer_number, customer, booking_reference, load_status, load_description, temperature_required, priority_level, priority_reason, planned_destination, planning_notes, status, arrived_at, arrival_status, arrival_confirmed_at, arrival_record_id, arrival_confirmed_by, inspection_started_at, inspection_completed_at, position_assigned_at, assigned_position, has_damage, has_temperature_alert, created_at, updated_at")
+      .select("id, vessel_operation_id, trailer_id, trailer_number, customer, booking_reference, load_status, load_description, temperature_required, expected_front_temperature, expected_rear_temperature, expected_temperature_unit, priority_level, priority_reason, planned_destination, planning_notes, status, arrived_at, arrival_status, arrival_confirmed_at, arrival_record_id, arrival_confirmed_by, inspection_started_at, inspection_completed_at, position_assigned_at, assigned_position, has_damage, has_temperature_alert, created_at, updated_at")
       .ilike("trailer_number", resolvedTrailerNumber)
       .order("created_at", { ascending: false }),
   ]);
@@ -1079,7 +1072,9 @@ export async function loadTrailerOperationalProfile(
   const trailerEvents = [
     ...((eventByIdResult.data ?? []) as TrailerEventRow[]),
     ...((eventByNumberResult.data ?? []) as TrailerEventRow[]),
-  ].filter((row, index, rows) => rows.findIndex((candidate) => candidate.id === row.id) === index);
+  ]
+    .filter((row): row is TrailerEventRow => Boolean(row && row.id))
+    .filter((row, index, rows) => rows.findIndex((candidate) => candidate.id === row.id) === index);
   const vesselOperationTrailers = (vesselTrailerResult.data ?? []) as VesselOperationTrailerRow[];
   const vesselOperationIds = Array.from(new Set(vesselOperationTrailers.map((row) => row.vessel_operation_id)));
   const companyTrailer = (companyTrailerResult.data as CompanyTrailerRow | null) ?? null;
@@ -1094,7 +1089,7 @@ export async function loadTrailerOperationalProfile(
     vesselOperationTrailers.length > 0
       ? supabase
           .from("vessel_inspection_damages")
-          .select("id, vessel_trailer_id, trailer_id, trailer_number, vessel_operation_id, vessel_operation_trailer_id, damage_type, damage_location, severity, description, recorded_at, recorded_by")
+          .select("id, vessel_trailer_id, trailer_id, trailer_number, vessel_operation_id, damage_type, damage_location, severity, description, recorded_at, recorded_by")
           .in("vessel_trailer_id", vesselOperationTrailers.map((row) => row.id))
       : Promise.resolve({ data: [], error: null }),
     vesselOperationTrailers.length > 0

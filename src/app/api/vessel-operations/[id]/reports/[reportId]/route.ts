@@ -1,5 +1,12 @@
 import { z } from "zod";
-import { createAuthenticatedRouteSupabaseClient } from "@/lib/supabase-route-client";
+import {
+  createAuthenticatedRouteSupabaseClient,
+  getRouteBearerToken,
+  requireAuthenticatedRouteUser,
+  requireReadableVesselOperation,
+  SupabaseRouteAuthError,
+  SupabaseRouteNotFoundError,
+} from "@/lib/supabase-route-client";
 import { getVesselOperationReport } from "@/lib/vessel-report";
 
 const paramsSchema = z.object({
@@ -16,7 +23,10 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     const parsedParams = paramsSchema.parse(await context.params);
     updateSchema.parse(await request.json());
 
+    const accessToken = getRouteBearerToken(request);
     const supabase = createAuthenticatedRouteSupabaseClient(request);
+    await requireAuthenticatedRouteUser(supabase, accessToken);
+    await requireReadableVesselOperation(supabase, parsedParams.id);
     const reportData = await getVesselOperationReport(supabase, parsedParams.id);
 
     return Response.json({
@@ -29,6 +39,14 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
 
     if (error instanceof z.ZodError) {
       return Response.json({ error: "Invalid request payload.", details: error.flatten() }, { status: 400 });
+    }
+
+    if (error instanceof SupabaseRouteAuthError) {
+      return Response.json({ error: error.message }, { status: error.status });
+    }
+
+    if (error instanceof SupabaseRouteNotFoundError) {
+      return Response.json({ error: error.message }, { status: error.status });
     }
 
     return Response.json({ error: error instanceof Error ? error.message : "Unable to update report." }, { status: 500 });

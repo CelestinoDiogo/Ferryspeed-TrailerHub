@@ -1,7 +1,14 @@
 import { z } from "zod";
 import { generateAIReportNarrative } from "@/lib/reports/generate-ai-report-narrative";
 import { buildDeterministicNarrative } from "@/lib/reports/report-utils";
-import { createAuthenticatedRouteSupabaseClient } from "@/lib/supabase-route-client";
+import {
+  createAuthenticatedRouteSupabaseClient,
+  getRouteBearerToken,
+  requireAuthenticatedRouteUser,
+  requireReadableVesselOperation,
+  SupabaseRouteAuthError,
+  SupabaseRouteNotFoundError,
+} from "@/lib/supabase-route-client";
 import { getVesselOperationReport } from "@/lib/vessel-report";
 
 const paramsSchema = z.object({
@@ -18,7 +25,10 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     const parsedParams = paramsSchema.parse(await context.params);
     requestSchema.parse(await request.json().catch(() => ({})));
 
+    const accessToken = getRouteBearerToken(request);
     const supabase = createAuthenticatedRouteSupabaseClient(request);
+    await requireAuthenticatedRouteUser(supabase, accessToken);
+    await requireReadableVesselOperation(supabase, parsedParams.id);
 
     const liveData = await getVesselOperationReport(supabase, parsedParams.id);
 
@@ -49,6 +59,14 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
 
     if (error instanceof z.ZodError) {
       return Response.json({ error: "Invalid request payload.", details: error.flatten() }, { status: 400 });
+    }
+
+    if (error instanceof SupabaseRouteAuthError) {
+      return Response.json({ error: error.message }, { status: error.status });
+    }
+
+    if (error instanceof SupabaseRouteNotFoundError) {
+      return Response.json({ error: error.message }, { status: error.status });
     }
 
     return Response.json({ error: error instanceof Error ? error.message : "Unable to generate report." }, { status: 500 });

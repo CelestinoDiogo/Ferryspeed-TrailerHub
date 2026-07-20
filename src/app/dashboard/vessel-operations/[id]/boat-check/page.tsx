@@ -7,6 +7,7 @@ import { ConfirmReceptionModal } from "../components/confirm-reception-modal";
 import { useVesselReception } from "../hooks/use-vessel-reception";
 import { supabase } from "@/lib/supabase";
 import {
+  buildVesselSupabaseErrorMessage,
   canConfirmVesselTrailerReception,
   formatTemperatureReading,
   formatVesselDateTime,
@@ -16,6 +17,8 @@ import {
   getVesselPriorityClass,
   getVesselPriorityLabel,
   getVesselTrailerStatusClass,
+  logVesselSupabaseError,
+  type SupabaseErrorLike,
   sortVesselOperationTrailersForArrivals,
   type VesselInspectionTemperatureRecord,
   type VesselOperationRecord,
@@ -34,6 +37,8 @@ type ViewTrailer = VesselOperationTrailerRecord & {
   frontTemperatureReading?: VesselInspectionTemperatureRecord | null;
   rearTemperatureReading?: VesselInspectionTemperatureRecord | null;
 };
+
+const asSupabaseErrorLike = (error: unknown) => error as SupabaseErrorLike;
 
 function VesselBoatCheckPageContent() {
   const params = useParams();
@@ -66,7 +71,7 @@ function VesselBoatCheckPageContent() {
           .single(),
         supabase
           .from("vessel_operation_trailers")
-          .select("id, vessel_operation_id, trailer_id, trailer_number, customer, booking_reference, load_status, load_description, temperature_required, priority_level, priority_reason, planned_destination, planning_notes, status, arrived_at, arrival_status, arrival_confirmed_at, arrival_record_id, arrival_confirmed_by, inspection_started_at, inspection_completed_at, position_assigned_at, assigned_position, has_damage, has_temperature_alert, created_at, updated_at")
+          .select("id, vessel_operation_id, trailer_id, trailer_number, customer, booking_reference, load_status, load_description, temperature_required, expected_front_temperature, expected_rear_temperature, expected_temperature_unit, priority_level, priority_reason, planned_destination, planning_notes, status, arrived_at, arrival_status, arrival_confirmed_at, arrival_record_id, arrival_confirmed_by, inspection_started_at, inspection_completed_at, position_assigned_at, assigned_position, has_damage, has_temperature_alert, created_at, updated_at")
           .eq("vessel_operation_id", operationId)
           .order("created_at", { ascending: true }),
       ]);
@@ -164,6 +169,10 @@ function VesselBoatCheckPageContent() {
 
   const handleStartInspection = useCallback(
     async (trailer: ViewTrailer) => {
+      if (actioningTrailerId === trailer.id) {
+        return;
+      }
+
       setActioningTrailerId(trailer.id);
       setError(null);
 
@@ -181,18 +190,19 @@ function VesselBoatCheckPageContent() {
           .eq("arrival_status", "arrived");
 
         if (updateError) {
+          logVesselSupabaseError("Start boat check inspection failed", updateError);
           throw updateError;
         }
 
         router.push(`/dashboard/vessel-operations/${operationId}/boat-check/${trailer.id}`);
       } catch (startErr) {
-        console.error("Unable to start inspection:", startErr);
-        setError("Unable to start inspection.");
+        logVesselSupabaseError("Unable to start inspection", asSupabaseErrorLike(startErr));
+        setError(buildVesselSupabaseErrorMessage(asSupabaseErrorLike(startErr), "Unable to start inspection."));
       } finally {
         setActioningTrailerId(null);
       }
     },
-    [operationId, router],
+    [actioningTrailerId, operationId, router],
   );
 
   if (isLoading) {

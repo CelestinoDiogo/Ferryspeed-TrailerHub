@@ -18,7 +18,7 @@ export type ExportAllocationPriority = "low" | "normal" | "high" | "urgent";
 
 export type ExportAllocationRecord = {
   id: string;
-  trailer_id: string;
+  trailer_id?: string | null;
   trailer_number?: string | null;
   customer?: string | null;
   collection_address?: string | null;
@@ -26,7 +26,6 @@ export type ExportAllocationRecord = {
   booking_reference?: string | null;
   load_type?: string | null;
   collection_date?: string | null;
-  collection_time?: string | null;
   expected_return_at?: string | null;
   priority: ExportAllocationPriority;
   status: ExportAllocationStatus;
@@ -67,6 +66,14 @@ export const EXPORT_ACTIVE_STATUSES: ReadonlySet<ExportAllocationStatus> =
     "collected_loaded",
   ]);
 
+export const EXPORT_OFF_COMPOUND_STATUSES: ReadonlySet<ExportAllocationStatus> =
+  new Set([
+    "delivered_empty",
+    "waiting_loading",
+    "collected_loaded",
+    "completed",
+  ]);
+
 export const EXPORT_ACTIVE_STATUS_QUERY_VALUES = [
   "allocated",
   "delivered_empty",
@@ -96,6 +103,21 @@ const STATUS_SEQUENCE: ExportAllocationStatus[] = [
   "collected_loaded",
   "completed",
 ];
+
+export function getPreviousExportAllocationStatus(
+  status: ExportAllocationStatus,
+): ExportAllocationStatus | null {
+  if (status === "allocated" || status === "cancelled") {
+    return null;
+  }
+
+  const index = STATUS_SEQUENCE.indexOf(status);
+  if (index <= 0) {
+    return null;
+  }
+
+  return STATUS_SEQUENCE[index - 1] ?? null;
+}
 
 export function normalizeExportAllocationStatus(
   status?: string | null,
@@ -251,6 +273,7 @@ export function getExportAllocationPriorityClasses(
 export function getExportAllocationTimestampField(
   status: ExportAllocationStatus,
 ):
+  | "allocated_at"
   | "delivered_empty_at"
   | "waiting_loading_at"
   | "collected_loaded_at"
@@ -258,6 +281,8 @@ export function getExportAllocationTimestampField(
   | "cancelled_at"
   | null {
   switch (status) {
+    case "allocated":
+      return "allocated_at";
     case "delivered_empty":
       return "delivered_empty_at";
     case "waiting_loading":
@@ -295,10 +320,12 @@ export function getExportAllocationFilterFromQuery(
 }
 
 export type TrailerAvailabilityInput = {
+  id?: string | null;
   departure_date?: string | null;
   load_status?: string | null;
   operational_status?: string | null;
   is_local?: boolean | null;
+  compound_position?: string | null;
 };
 
 const normalizeText = (value?: string | null) =>
@@ -332,6 +359,79 @@ export function isTrailerAvailableForExportAllocation(
   }
 
   return true;
+}
+
+export function isExportAllocationOffCompoundStatus(
+  status?: ExportAllocationStatus | string | null,
+): boolean {
+  return EXPORT_OFF_COMPOUND_STATUSES.has(normalizeExportAllocationStatus(status));
+}
+
+const normalizeCompoundPosition = (value?: string | null) => {
+  const trimmed = (value ?? "").trim().toUpperCase();
+  const match = trimmed.match(/^(P|A)?0*(\d{1,2})$/);
+  if (!match) {
+    return null;
+  }
+
+  const numericValue = Number(match[2]);
+  if (numericValue < 1 || numericValue > 50) {
+    return null;
+  }
+
+  return `P${numericValue.toString().padStart(2, "0")}`;
+};
+
+export function isTrailerPresentInCompoundInventory(
+  trailer: TrailerAvailabilityInput,
+  activeExportStatus?: ExportAllocationStatus | string | null,
+): boolean {
+  const hasCompoundPosition = Boolean(normalizeCompoundPosition(trailer.compound_position));
+
+  if (!isTrailerEligibleForCompoundViews(trailer, activeExportStatus) || !hasCompoundPosition) {
+    return false;
+  }
+
+  return true;
+}
+
+export function isTrailerEligibleForCompoundViews(
+  trailer: TrailerAvailabilityInput,
+  activeExportStatus?: ExportAllocationStatus | string | null,
+): boolean {
+  const isActive = !trailer.departure_date || trailer.departure_date.trim() === "";
+  const inCompoundLane = trailer.is_local !== true;
+
+  if (!isActive || !inCompoundLane) {
+    return false;
+  }
+
+  if (isExportAllocationOffCompoundStatus(activeExportStatus)) {
+    return false;
+  }
+
+  return true;
+}
+
+export function buildActiveExportStatusByTrailerId(
+  allocations: Array<{ trailer_id?: string | null; status?: string | null }>,
+) {
+  const statusByTrailerId = new Map<string, ExportAllocationStatus>();
+
+  for (const allocation of allocations) {
+    if (!allocation.trailer_id) {
+      continue;
+    }
+
+    const normalizedStatus = normalizeExportAllocationStatus(allocation.status);
+    if (!EXPORT_ACTIVE_STATUSES.has(normalizedStatus)) {
+      continue;
+    }
+
+    statusByTrailerId.set(allocation.trailer_id, normalizedStatus);
+  }
+
+  return statusByTrailerId;
 }
 
 export function isExportAllocationActive(

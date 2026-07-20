@@ -16,6 +16,7 @@ import {
   getVesselTrailerStatusClass,
   getVesselTrailerStatusLabel,
   normalizeTrailerNumber,
+  normalizeExpectedTemperatureUnit,
   normalizeVesselText,
   sortVesselOperationTrailersForArrivals,
   type VesselOperationRecord,
@@ -45,6 +46,9 @@ type DraftTrailer = {
   customer: string;
   booking_reference: string;
   load_description: string;
+  expected_front_temperature: string;
+  expected_rear_temperature: string;
+  expected_temperature_unit: string;
   priority_level: VesselPriorityLevel;
   priority_reason: string;
   planned_destination: string;
@@ -59,6 +63,9 @@ const emptyDraft = (): DraftTrailer => ({
   customer: "",
   booking_reference: "",
   load_description: "",
+  expected_front_temperature: "",
+  expected_rear_temperature: "",
+  expected_temperature_unit: "C",
   priority_level: "normal",
   priority_reason: "",
   planned_destination: "Compound",
@@ -68,6 +75,111 @@ const emptyDraft = (): DraftTrailer => ({
 
 const toOperationDateTime = (operation?: VesselOperationRecord | null) =>
   operation?.expected_arrival_at ? formatVesselDateTime(operation.expected_arrival_at) : "—";
+
+const parseOptionalTemperatureInput = (value: string) => {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return { value: null as number | null, error: null as string | null };
+  }
+
+  const parsed = Number(trimmed);
+  if (!Number.isFinite(parsed)) {
+    return { value: null as number | null, error: "Temperature values must be numeric." };
+  }
+
+  return { value: parsed, error: null as string | null };
+};
+
+const parseLegacyFrontExpectedTemperature = (value?: string | null) => {
+  const text = (value ?? "").trim();
+  if (!text) {
+    return "";
+  }
+
+  const direct = Number(text);
+  if (Number.isFinite(direct)) {
+    return String(direct);
+  }
+
+  const match = text.match(/-?\d+(?:\.\d+)?/);
+  return match ? match[0] : "";
+};
+
+type ImportedTrailerRow = {
+  trailer_number: string;
+  expected_front_temperature: string;
+  expected_rear_temperature: string;
+  expected_temperature_unit: string;
+};
+
+const normalizeImportHeader = (value: string) => value.trim().toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+
+const IMPORT_HEADER_ALIASES: Record<string, keyof ImportedTrailerRow> = {
+  "trailer": "trailer_number",
+  "trailer number": "trailer_number",
+  "expected front temperature": "expected_front_temperature",
+  "front temperature": "expected_front_temperature",
+  "expected rear temperature": "expected_rear_temperature",
+  "rear temperature": "expected_rear_temperature",
+  "temperature unit": "expected_temperature_unit",
+};
+
+const parseImportedRows = (rawText: string) => {
+  const lines = rawText.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  if (lines.length === 0) {
+    return [] as ImportedTrailerRow[];
+  }
+
+  const looksDelimited = lines[0].includes(",") || lines[0].includes("\t");
+  if (!looksDelimited) {
+    return lines.map((line) => ({
+      trailer_number: normalizeTrailerNumber(line),
+      expected_front_temperature: "",
+      expected_rear_temperature: "",
+      expected_temperature_unit: "C",
+    })).filter((row) => Boolean(row.trailer_number));
+  }
+
+  const delimiter = lines[0].includes("\t") ? "\t" : ",";
+  const cells = lines.map((line) => line.split(delimiter).map((cell) => cell.trim()));
+  const header = cells[0];
+  const headerMap = new Map<number, keyof ImportedTrailerRow>();
+
+  header.forEach((headerCell, index) => {
+    const normalizedHeader = normalizeImportHeader(headerCell);
+    const mapped = IMPORT_HEADER_ALIASES[normalizedHeader];
+    if (mapped) {
+      headerMap.set(index, mapped);
+    }
+  });
+
+  const hasTrailerColumn = Array.from(headerMap.values()).includes("trailer_number");
+  if (!hasTrailerColumn) {
+    return [] as ImportedTrailerRow[];
+  }
+
+  return cells.slice(1).map((row) => {
+    const imported: ImportedTrailerRow = {
+      trailer_number: "",
+      expected_front_temperature: "",
+      expected_rear_temperature: "",
+      expected_temperature_unit: "C",
+    };
+
+    row.forEach((value, index) => {
+      const key = headerMap.get(index);
+      if (!key) {
+        return;
+      }
+
+      imported[key] = value;
+    });
+
+    imported.trailer_number = normalizeTrailerNumber(imported.trailer_number);
+    imported.expected_temperature_unit = normalizeExpectedTemperatureUnit(imported.expected_temperature_unit || "C");
+    return imported;
+  }).filter((row) => Boolean(row.trailer_number));
+};
 
 function VesselPlanningPageContent() {
   const params = useParams();
@@ -108,7 +220,7 @@ function VesselPlanningPageContent() {
             .single(),
           supabase
             .from("vessel_operation_trailers")
-            .select("id, vessel_operation_id, trailer_id, trailer_number, customer, booking_reference, load_status, load_description, temperature_required, priority_level, priority_reason, planned_destination, planning_notes, status, arrived_at, arrival_confirmed_by, inspection_started_at, inspection_completed_at, position_assigned_at, assigned_position, has_damage, has_temperature_alert, created_at, updated_at")
+            .select("id, vessel_operation_id, trailer_id, trailer_number, customer, booking_reference, load_status, load_description, temperature_required, expected_front_temperature, expected_rear_temperature, expected_temperature_unit, priority_level, priority_reason, planned_destination, planning_notes, status, arrived_at, arrival_confirmed_by, inspection_started_at, inspection_completed_at, position_assigned_at, assigned_position, has_damage, has_temperature_alert, created_at, updated_at")
             .eq("vessel_operation_id", operationId)
             .order("created_at", { ascending: true }),
           supabase
@@ -131,6 +243,15 @@ function VesselPlanningPageContent() {
           customer: row.customer ?? "",
           booking_reference: row.booking_reference ?? "",
           load_description: row.load_description ?? "",
+          expected_front_temperature:
+            typeof row.expected_front_temperature === "number"
+              ? String(row.expected_front_temperature)
+              : parseLegacyFrontExpectedTemperature(row.temperature_required),
+          expected_rear_temperature:
+            typeof row.expected_rear_temperature === "number"
+              ? String(row.expected_rear_temperature)
+              : "",
+          expected_temperature_unit: normalizeExpectedTemperatureUnit(row.expected_temperature_unit),
           priority_level: row.priority_level,
           priority_reason: row.priority_reason ?? "",
           planned_destination: row.planned_destination ?? "Compound",
@@ -206,27 +327,29 @@ function VesselPlanningPageContent() {
   };
 
   const importTrailers = () => {
-    const rows = importText
-      .split(/\r?\n/)
-      .map((line) => normalizeTrailerNumber(line))
-      .filter(Boolean);
+    const rows = parseImportedRows(importText);
 
     if (rows.length === 0) {
+      setError("No valid trailer rows found. Add trailer numbers or include a header with Trailer Number.");
       return;
     }
 
     const existing = new Set(trailers.map((item) => normalizeTrailerNumber(item.trailer_number)));
-    const imported = rows.filter((row, index) => rows.indexOf(row) === index && !existing.has(row));
+    const uniqueImported = rows.filter((row, index) => rows.findIndex((candidate) => candidate.trailer_number === row.trailer_number) === index);
+    const imported = uniqueImported.filter((row) => !existing.has(row.trailer_number));
 
     if (imported.length === 0) {
       setError("No new trailer numbers to import.");
       return;
     }
 
-    const nextItems = imported.map((trailerNumber) => ({
+    const nextItems = imported.map((row) => ({
       ...emptyDraft(),
       clientId: crypto.randomUUID(),
-      trailer_number: trailerNumber,
+      trailer_number: row.trailer_number,
+      expected_front_temperature: row.expected_front_temperature,
+      expected_rear_temperature: row.expected_rear_temperature,
+      expected_temperature_unit: normalizeExpectedTemperatureUnit(row.expected_temperature_unit),
       status: "expected" as VesselTrailerStatus,
     }));
 
@@ -252,6 +375,19 @@ function VesselPlanningPageContent() {
         setError(`Duplicate trailer number found: ${normalized}`);
         return;
       }
+
+      const parsedFront = parseOptionalTemperatureInput(trailer.expected_front_temperature);
+      if (parsedFront.error) {
+        setError(`${normalized}: expected front temperature must be numeric.`);
+        return;
+      }
+
+      const parsedRear = parseOptionalTemperatureInput(trailer.expected_rear_temperature);
+      if (parsedRear.error) {
+        setError(`${normalized}: expected rear temperature must be numeric.`);
+        return;
+      }
+
       normalizedNumbers.add(normalized);
     }
 
@@ -264,13 +400,22 @@ function VesselPlanningPageContent() {
       const { error: deleteError } = await supabase.from("vessel_operation_trailers").delete().eq("vessel_operation_id", operation.id);
       if (deleteError) throw deleteError;
 
-      const rowsToInsert = trailers.map((trailer) => ({
+      const rowsToInsert = trailers.map((trailer) => {
+        const parsedFront = parseOptionalTemperatureInput(trailer.expected_front_temperature);
+        const parsedRear = parseOptionalTemperatureInput(trailer.expected_rear_temperature);
+        const unit = normalizeExpectedTemperatureUnit(trailer.expected_temperature_unit || "C");
+
+        return {
         vessel_operation_id: operation.id,
         trailer_id: trailer.trailer_id ?? null,
         trailer_number: normalizeTrailerNumber(trailer.trailer_number),
         customer: trailer.customer.trim() || null,
         booking_reference: trailer.booking_reference.trim() || null,
         load_description: trailer.load_description.trim() || null,
+        expected_front_temperature: parsedFront.value,
+        expected_rear_temperature: parsedRear.value,
+        expected_temperature_unit: unit,
+        temperature_required: parsedFront.value !== null ? String(parsedFront.value) : null,
         priority_level: trailer.priority_level,
         priority_reason: trailer.priority_reason.trim() || null,
         planned_destination: trailer.planned_destination.trim() || "Compound",
@@ -279,7 +424,7 @@ function VesselPlanningPageContent() {
         arrival_status: "expected",
         created_at: nowIso,
         updated_at: nowIso,
-      }));
+      }});
 
       const { error: insertError } = await supabase.from("vessel_operation_trailers").insert(rowsToInsert);
       if (insertError) throw insertError;
@@ -307,7 +452,7 @@ function VesselPlanningPageContent() {
       router.refresh();
       const { data: reloadedTrailers } = await supabase
         .from("vessel_operation_trailers")
-        .select("id, vessel_operation_id, trailer_id, trailer_number, customer, booking_reference, load_status, load_description, temperature_required, priority_level, priority_reason, planned_destination, planning_notes, status, arrived_at, arrival_confirmed_by, inspection_started_at, inspection_completed_at, position_assigned_at, assigned_position, has_damage, has_temperature_alert, created_at, updated_at")
+        .select("id, vessel_operation_id, trailer_id, trailer_number, customer, booking_reference, load_status, load_description, temperature_required, expected_front_temperature, expected_rear_temperature, expected_temperature_unit, priority_level, priority_reason, planned_destination, planning_notes, status, arrived_at, arrival_confirmed_by, inspection_started_at, inspection_completed_at, position_assigned_at, assigned_position, has_damage, has_temperature_alert, created_at, updated_at")
         .eq("vessel_operation_id", operation.id)
         .order("created_at", { ascending: true });
 
@@ -320,6 +465,15 @@ function VesselPlanningPageContent() {
             customer: row.customer ?? "",
             booking_reference: row.booking_reference ?? "",
             load_description: row.load_description ?? "",
+            expected_front_temperature:
+              typeof row.expected_front_temperature === "number"
+                ? String(row.expected_front_temperature)
+                : parseLegacyFrontExpectedTemperature(row.temperature_required),
+            expected_rear_temperature:
+              typeof row.expected_rear_temperature === "number"
+                ? String(row.expected_rear_temperature)
+                : "",
+            expected_temperature_unit: normalizeExpectedTemperatureUnit(row.expected_temperature_unit),
             priority_level: row.priority_level,
             priority_reason: row.priority_reason ?? "",
             planned_destination: row.planned_destination ?? "Compound",
@@ -465,6 +619,41 @@ function VesselPlanningPageContent() {
                 </div>
 
                 <div>
+                  <label className="mb-2 block text-sm font-medium text-slate-200">Expected Front Temperature</label>
+                  <input
+                    value={newDraft.expected_front_temperature}
+                    onChange={(event) => updateNewDraft("expected_front_temperature", event.target.value)}
+                    className="w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm outline-none"
+                    placeholder="Optional"
+                    disabled={!isEditable}
+                  />
+                </div>
+
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-slate-200">Expected Rear Temperature</label>
+                  <input
+                    value={newDraft.expected_rear_temperature}
+                    onChange={(event) => updateNewDraft("expected_rear_temperature", event.target.value)}
+                    className="w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm outline-none"
+                    placeholder="Optional"
+                    disabled={!isEditable}
+                  />
+                </div>
+
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-slate-200">Temperature Unit</label>
+                  <select
+                    value={newDraft.expected_temperature_unit}
+                    onChange={(event) => updateNewDraft("expected_temperature_unit", event.target.value)}
+                    className="w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm outline-none"
+                    disabled={!isEditable}
+                  >
+                    <option value="C">Celsius (C)</option>
+                    <option value="F">Fahrenheit (F)</option>
+                  </select>
+                </div>
+
+                <div>
                   <label className="mb-2 block text-sm font-medium text-slate-200">Priority</label>
                   <select value={newDraft.priority_level} onChange={(event) => updateNewDraft("priority_level", event.target.value as VesselPriorityLevel)} className="w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm outline-none" disabled={!isEditable}>
                     <option value="priority">Priority</option>
@@ -512,7 +701,7 @@ function VesselPlanningPageContent() {
                 value={importText}
                 onChange={(event) => setImportText(event.target.value)}
                 rows={8}
-                placeholder={"PRO810\nPFC102\nPFC103\nABC123"}
+                placeholder={"PRO810\nPFC102\n\nOr CSV header:\nTrailer Number,Expected Front Temperature,Expected Rear Temperature,Temperature Unit"}
                 className="w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm outline-none"
                 disabled={!isEditable}
               />
@@ -600,6 +789,12 @@ function VesselPlanningPageContent() {
                       <input value={trailer.customer} onChange={(event) => updateDraft("customer", event.target.value, trailer.clientId)} className="rounded-2xl border border-white/10 bg-slate-900 px-4 py-3 text-sm outline-none" disabled={!isEditable} placeholder="Customer" />
                       <input value={trailer.booking_reference} onChange={(event) => updateDraft("booking_reference", event.target.value, trailer.clientId)} className="rounded-2xl border border-white/10 bg-slate-900 px-4 py-3 text-sm outline-none" disabled={!isEditable} placeholder="Booking Reference" />
                       <input value={trailer.load_description} onChange={(event) => updateDraft("load_description", event.target.value, trailer.clientId)} className="rounded-2xl border border-white/10 bg-slate-900 px-4 py-3 text-sm outline-none" disabled={!isEditable} placeholder="Load Description" />
+                      <input value={trailer.expected_front_temperature} onChange={(event) => updateDraft("expected_front_temperature", event.target.value, trailer.clientId)} className="rounded-2xl border border-white/10 bg-slate-900 px-4 py-3 text-sm outline-none" disabled={!isEditable} placeholder="Expected Front Temp" />
+                      <input value={trailer.expected_rear_temperature} onChange={(event) => updateDraft("expected_rear_temperature", event.target.value, trailer.clientId)} className="rounded-2xl border border-white/10 bg-slate-900 px-4 py-3 text-sm outline-none" disabled={!isEditable} placeholder="Expected Rear Temp" />
+                      <select value={trailer.expected_temperature_unit} onChange={(event) => updateDraft("expected_temperature_unit", event.target.value, trailer.clientId)} className="rounded-2xl border border-white/10 bg-slate-900 px-4 py-3 text-sm outline-none" disabled={!isEditable}>
+                        <option value="C">Celsius (C)</option>
+                        <option value="F">Fahrenheit (F)</option>
+                      </select>
                       <select value={trailer.priority_level} onChange={(event) => updateDraft("priority_level", event.target.value as VesselPriorityLevel, trailer.clientId)} className="rounded-2xl border border-white/10 bg-slate-900 px-4 py-3 text-sm outline-none" disabled={!isEditable}>
                         <option value="priority">Priority</option>
                         <option value="normal">Normal</option>

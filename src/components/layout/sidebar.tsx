@@ -19,7 +19,6 @@ import {
   ScanSearch,
   Settings,
   Ship,
-  ShieldCheck,
   Truck,
   Upload,
   Warehouse,
@@ -55,7 +54,6 @@ const groupedItems: MenuGroup[] = [
     title: "OPERATIONS",
     items: [
       { label: "Vessel Operations", href: "/dashboard/vessel-operations", icon: Ship },
-      { label: "Boat Check", href: "/dashboard/boat-check", icon: ShieldCheck },
       { label: "Arrivals", href: "/dashboard/search?filter=arrivals_today", icon: MapPin },
       { label: "Export Operations", href: "/dashboard/export-operations", icon: Upload },
       { label: "Deliveries", href: "/dashboard/deliveries", icon: Truck },
@@ -67,6 +65,7 @@ const groupedItems: MenuGroup[] = [
     title: "YARD",
     items: [
       { label: "Compound", href: "/dashboard/compound", icon: Warehouse },
+      { label: "Waiting for Compound", href: "/dashboard/compound/waiting", icon: ClipboardList },
       { label: "Local Trailers", href: "/dashboard/local-trailers", icon: Truck },
       { label: "Trailer Search", href: "/dashboard/search", icon: ScanSearch },
       { label: "Maintenance", href: "/dashboard/maintenance", icon: LifeBuoy },

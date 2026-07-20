@@ -25,7 +25,12 @@ export function AddVesselTrailerForm({
         <input value={formState.customer} onChange={(event) => onFieldChange("customer", event.target.value)} className="rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm outline-none" placeholder="Customer" disabled={!editable} />
         <input value={formState.bookingReference} onChange={(event) => onFieldChange("bookingReference", event.target.value)} className="rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm outline-none" placeholder="Booking Reference" disabled={!editable} />
         <input value={formState.loadStatus} onChange={(event) => onFieldChange("loadStatus", event.target.value)} className="rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm outline-none" placeholder="Load Status" disabled={!editable} />
-        <input value={formState.temperatureRequired} onChange={(event) => onFieldChange("temperatureRequired", event.target.value)} className="rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm outline-none" placeholder="Temperature Required" disabled={!editable} />
+        <input value={formState.expectedFrontTemperature} onChange={(event) => onFieldChange("expectedFrontTemperature", event.target.value)} className="rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm outline-none" placeholder="Expected Front Temperature" disabled={!editable} />
+        <input value={formState.expectedRearTemperature} onChange={(event) => onFieldChange("expectedRearTemperature", event.target.value)} className="rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm outline-none" placeholder="Expected Rear Temperature" disabled={!editable} />
+        <select value={formState.expectedTemperatureUnit} onChange={(event) => onFieldChange("expectedTemperatureUnit", event.target.value)} className="rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm outline-none" disabled={!editable}>
+          <option value="C">Celsius (C)</option>
+          <option value="F">Fahrenheit (F)</option>
+        </select>
         <select value={formState.priorityLevel} onChange={(event) => onFieldChange("priorityLevel", event.target.value as VesselPriorityLevel)} className="rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm outline-none" disabled={!editable}>
           <option value="normal">No Priority</option>
           <option value="priority">Priority</option>

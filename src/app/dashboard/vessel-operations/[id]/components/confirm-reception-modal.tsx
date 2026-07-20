@@ -3,6 +3,9 @@
 import {
   formatVesselDateTime,
   hasCompletedBoatCheck,
+  normalizeExpectedTemperatureUnit,
+  resolveExpectedFrontTemperature,
+  resolveExpectedRearTemperature,
   type VesselOperationTrailerRecord,
 } from "@/lib/vessel-operations";
 import type { ReceptionFormState } from "../hooks/use-vessel-reception";
@@ -37,6 +40,9 @@ export function ConfirmReceptionModal({
   }
 
   const inspected = hasCompletedBoatCheck(trailer);
+  const expectedFront = resolveExpectedFrontTemperature(trailer);
+  const expectedRear = resolveExpectedRearTemperature(trailer);
+  const expectedUnit = normalizeExpectedTemperatureUnit(trailer.expected_temperature_unit);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 px-4 py-6" role="dialog" aria-modal="true">
@@ -46,6 +52,8 @@ export function ConfirmReceptionModal({
             <p className="text-sm font-semibold uppercase tracking-[0.3em] text-cyan-400">Confirm Reception</p>
             <h2 className="mt-2 text-2xl font-semibold text-white">{trailer.trailer_number ?? "Trailer"}</h2>
             <p className="mt-2 text-sm text-slate-300">Arrival confirmed {formatVesselDateTime(trailer.arrival_confirmed_at ?? trailer.arrived_at)}</p>
+            <p className="mt-1 text-sm text-slate-300">Expected Front: {expectedFront === null ? "-" : `${expectedFront} ${expectedUnit}`}</p>
+            <p className="mt-1 text-sm text-slate-300">Expected Rear: {expectedRear === null ? "-" : `${expectedRear} ${expectedUnit}`}</p>
           </div>
           <button type="button" onClick={onClose} className="rounded-2xl border border-white/10 bg-slate-800 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-700">
             Cancel
@@ -56,7 +64,7 @@ export function ConfirmReceptionModal({
 
         {!inspected ? (
           <div className="mt-4 rounded-2xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
-            Boat Check is not complete. Reception cannot be confirmed until inspection is completed.
+            Inspection is pending. Reception can be confirmed now and inspection can be completed later.
           </div>
         ) : null}
 
@@ -146,7 +154,7 @@ export function ConfirmReceptionModal({
             type="button"
             onClick={() => void onConfirm()}
             className="rounded-2xl bg-emerald-500 px-4 py-3 text-sm font-semibold text-slate-950 hover:bg-emerald-400 disabled:opacity-60"
-            disabled={!inspected || isLoadingOptions || isSubmitting || (formState.destination === "compound" && !nextAvailablePosition)}
+            disabled={isLoadingOptions || isSubmitting || (formState.destination === "compound" && !nextAvailablePosition)}
           >
             {isSubmitting ? "Confirming..." : "Confirm Reception"}
           </button>

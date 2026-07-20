@@ -16,6 +16,11 @@ import {
   getDateKey,
   type ReadinessLevel,
 } from "@/lib/operational-readiness";
+import {
+  EXPORT_ACTIVE_STATUS_QUERY_VALUES,
+  buildActiveExportStatusByTrailerId,
+  isTrailerEligibleForCompoundViews,
+} from "@/lib/export-allocation";
 
 // ============================================================================
 // Types
@@ -211,6 +216,7 @@ export default function CompoundPage() {
         const [
           { data: trailersData, error: trailersError },
           { data: bookingsData, error: bookingsError },
+          { data: exportAllocationsData, error: exportAllocationsError },
         ] = await Promise.all([
           supabase
             .from("trailers")
@@ -227,6 +233,10 @@ export default function CompoundPage() {
             )
             .not("status", "in", '("collected","cancelled")')
             .gte("delivery_date", todayKey),
+          supabase
+            .from("export_allocations")
+            .select("trailer_id, status, updated_at")
+            .in("status", [...EXPORT_ACTIVE_STATUS_QUERY_VALUES]),
         ]);
 
         if (trailersError) {
@@ -237,8 +247,19 @@ export default function CompoundPage() {
           console.error("[Compound] Bookings error:", bookingsError);
           // Non-fatal — we can still show trailer positions
         }
+        if (exportAllocationsError) {
+          throw exportAllocationsError;
+        }
 
-        setTrailers((trailersData ?? []) as TrailerRecord[]);
+        const statusByTrailerId = buildActiveExportStatusByTrailerId(
+          ((exportAllocationsData ?? []) as Array<{ trailer_id?: string | null; status?: string | null; updated_at?: string | null }>),
+        );
+
+        const visibleTrailers = ((trailersData ?? []) as TrailerRecord[]).filter((trailer) =>
+          isTrailerEligibleForCompoundViews(trailer, statusByTrailerId.get(trailer.id)),
+        );
+
+        setTrailers(visibleTrailers);
         setBookings((bookingsData ?? []) as DeliveryBooking[]);
       } catch (err) {
         const message = err instanceof Error ? err.message : "Unable to load compound data.";
@@ -412,7 +433,15 @@ export default function CompoundPage() {
                 Live operational map — position, readiness and delivery status at a glance.
               </p>
             </div>
-            <PrintButton label="Print / Export" disabled={isLoading || filteredPositions.length === 0} />
+            <div className="flex flex-wrap gap-2">
+              <Link
+                href="/dashboard/compound/waiting"
+                className="rounded-2xl border border-cyan-500/40 bg-cyan-500/10 px-4 py-2 text-sm font-semibold text-cyan-200 hover:bg-cyan-500/20"
+              >
+                Waiting Queue
+              </Link>
+              <PrintButton label="Print / Export" disabled={isLoading || filteredPositions.length === 0} />
+            </div>
           </div>
         </header>
 

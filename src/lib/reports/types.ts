@@ -57,6 +57,8 @@ export type VesselOperationalReportData = {
     hasDamage: boolean;
     hasTemperatureAlert: boolean;
     temperatureResult: TemperatureResult;
+    expectedFrontTemperature: number | null;
+    expectedRearTemperature: number | null;
     frontTemperature: number | null;
     rearTemperature: number | null;
     temperatureUnit: string;
@@ -116,6 +118,7 @@ export type VesselOperationalReportData = {
     trailerId: string;
     trailerNumber: string;
     readingPoint: string | null;
+    expectedTemperature: number | null;
     requiredMin: number | null;
     requiredMax: number | null;
     recordedTemperature: number | null;
@@ -157,18 +160,36 @@ export type VesselOperationAiReportSections = {
 export type VesselOperationAiReportDraft = {
   reportId: string | null;
   subject: string;
+  recipients: string[];
+  cc: string[];
   body: string;
+  generatedContent: string;
+  editedContent: string;
   sections: VesselOperationAiReportSections;
   generationMode: "ai" | "template";
   usedFallback: boolean;
   aiModel: string | null;
   generatedAt: string;
+  generatedBy: string | null;
+  status: "draft";
+};
+
+export type VesselOperationAiReportHistoryItem = {
+  reportId: string;
+  generatedAt: string;
+  generatedBy: string | null;
+  subject: string;
+  recipients: string[];
+  cc: string[];
+  generationMode: "ai" | "template";
+  status: "draft";
 };
 
 export type VesselOperationAiReportResponse = {
   report: null;
   reportData?: VesselOperationalReportData | null;
   reportDraft: VesselOperationAiReportDraft | null;
+  draftHistory?: VesselOperationAiReportHistoryItem[];
   usedFallback: boolean;
   message: string | null;
 };

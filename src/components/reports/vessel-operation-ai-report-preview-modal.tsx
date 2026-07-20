@@ -6,11 +6,16 @@ type VesselOperationAiReportPreviewModalProps = {
   open: boolean;
   report: VesselOperationAiReportDraft | null;
   isLoading: boolean;
+  isSaving: boolean;
   notice: string | null;
+  printHref: string;
   onClose: () => void;
   onRegenerate: () => void;
   onCopy: () => void;
+  onSaveDraft: () => void;
   onSubjectChange: (value: string) => void;
+  onRecipientsChange: (value: string) => void;
+  onCcChange: (value: string) => void;
   onBodyChange: (value: string) => void;
 };
 
@@ -18,11 +23,16 @@ export function VesselOperationAiReportPreviewModal({
   open,
   report,
   isLoading,
+  isSaving,
   notice,
+  printHref,
   onClose,
   onRegenerate,
   onCopy,
+  onSaveDraft,
   onSubjectChange,
+  onRecipientsChange,
+  onCcChange,
   onBodyChange,
 }: VesselOperationAiReportPreviewModalProps) {
   if (!open || !report) {
@@ -57,6 +67,22 @@ export function VesselOperationAiReportPreviewModal({
               </button>
               <button
                 type="button"
+                onClick={onSaveDraft}
+                disabled={isSaving || isLoading}
+                className="rounded-2xl bg-cyan-700 px-4 py-2 text-sm font-semibold text-white hover:bg-cyan-600 disabled:opacity-60"
+              >
+                {isSaving ? "Saving..." : "Save Draft"}
+              </button>
+              <a
+                href={printHref}
+                target="_blank"
+                rel="noreferrer"
+                className="rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-900 hover:bg-slate-50"
+              >
+                Print
+              </a>
+              <button
+                type="button"
                 onClick={onClose}
                 className="rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-900 hover:bg-slate-50"
               >
@@ -87,9 +113,27 @@ export function VesselOperationAiReportPreviewModal({
               />
             </label>
 
+            <label className="mt-4 block text-sm font-semibold text-slate-900">
+              Recipients (comma separated)
+              <input
+                value={report.recipients.join(", ")}
+                onChange={(event) => onRecipientsChange(event.target.value)}
+                className="mt-2 w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-950 outline-none ring-0 transition focus:border-cyan-500"
+              />
+            </label>
+
+            <label className="mt-4 block text-sm font-semibold text-slate-900">
+              CC (comma separated)
+              <input
+                value={report.cc.join(", ")}
+                onChange={(event) => onCcChange(event.target.value)}
+                className="mt-2 w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-950 outline-none ring-0 transition focus:border-cyan-500"
+              />
+            </label>
+
             <div className="mt-5 rounded-3xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
               <p className="font-semibold text-slate-950">Preview Notes</p>
-              <p className="mt-2">The body remains editable in this panel. The report is generated from live vessel operation data and can be copied for review or later email drafting.</p>
+              <p className="mt-2">The body remains editable in this panel. Saving stores this as a draft only. No automatic email is sent.</p>
             </div>
           </div>
 

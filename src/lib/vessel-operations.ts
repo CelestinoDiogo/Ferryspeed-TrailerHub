@@ -49,6 +49,9 @@ export type VesselOperationTrailerRecord = {
   load_status?: string | null;
   load_description?: string | null;
   temperature_required?: string | null;
+  expected_front_temperature?: number | null;
+  expected_rear_temperature?: number | null;
+  expected_temperature_unit?: string | null;
   priority_level: VesselPriorityLevel;
   priority_reason?: string | null;
   planned_destination?: string | null;
@@ -74,6 +77,8 @@ export type SupabaseErrorLike = {
   details?: string | null;
   hint?: string | null;
   code?: string | null;
+  name?: string | null;
+  status?: number | null;
 };
 
 export type VesselInspectionDamageRecord = {
@@ -142,7 +147,7 @@ export type VesselOperationSummary = {
 export type VesselReceptionDestination = "compound" | "local" | "hold";
 export type VesselReceptionLoadStatus = "Empty" | "Loaded";
 
-export type VesselArrivalWorkflowState = "expected" | "arrived" | "inspection_pending" | "ready_for_reception" | "received" | "cancelled";
+export type VesselArrivalWorkflowState = "expected" | "arrived" | "inspection_pending" | "inspected" | "received" | "cancelled";
 
 export type VesselInspectionProgressState = "not_started" | "in_progress" | "completed" | "issues_found";
 
@@ -236,6 +241,51 @@ export const formatVesselDateTime = (value?: string | null) => {
 };
 
 export const normalizeTemperatureReadingPoint = (value?: string | null) => (value ?? "").trim().toLowerCase();
+
+export const normalizeExpectedTemperatureUnit = (value?: string | null) => {
+  const normalized = (value ?? "").trim().toUpperCase();
+  if (!normalized) {
+    return "C";
+  }
+
+  return normalized;
+};
+
+const parseLegacyFrontExpectedTemperature = (value?: string | null) => {
+  const text = (value ?? "").trim();
+  if (!text) {
+    return null;
+  }
+
+  const direct = Number(text);
+  if (Number.isFinite(direct)) {
+    return direct;
+  }
+
+  const match = text.match(/-?\d+(?:\.\d+)?/);
+  if (!match) {
+    return null;
+  }
+
+  const parsed = Number(match[0]);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+export const resolveExpectedFrontTemperature = (trailer: Pick<VesselOperationTrailerRecord, "expected_front_temperature" | "temperature_required">) => {
+  if (typeof trailer.expected_front_temperature === "number" && Number.isFinite(trailer.expected_front_temperature)) {
+    return trailer.expected_front_temperature;
+  }
+
+  return parseLegacyFrontExpectedTemperature(trailer.temperature_required);
+};
+
+export const resolveExpectedRearTemperature = (trailer: Pick<VesselOperationTrailerRecord, "expected_rear_temperature">) => {
+  if (typeof trailer.expected_rear_temperature === "number" && Number.isFinite(trailer.expected_rear_temperature)) {
+    return trailer.expected_rear_temperature;
+  }
+
+  return null;
+};
 
 export const getTrailerTemperaturePair = (rows: VesselInspectionTemperatureRecord[]): VesselTrailerTemperaturePair => {
   const front = rows.find((row) => normalizeTemperatureReadingPoint(row.reading_point) === "front") ?? null;
@@ -343,12 +393,7 @@ export const getVesselArrivalWorkflowState = (
     return "expected";
   }
 
-  const inspectionState = getVesselInspectionProgressState(trailer);
-  if (inspectionState === "not_started" || inspectionState === "in_progress") {
-    return "inspection_pending";
-  }
-
-  return "ready_for_reception";
+  return hasCompletedBoatCheck(trailer) ? "inspected" : "inspection_pending";
 };
 
 export const getVesselArrivalWorkflowLabel = (state: VesselArrivalWorkflowState) => {
@@ -359,8 +404,8 @@ export const getVesselArrivalWorkflowLabel = (state: VesselArrivalWorkflowState)
       return "Arrived";
     case "inspection_pending":
       return "Inspection Pending";
-    case "ready_for_reception":
-      return "Ready for Reception";
+    case "inspected":
+      return "Inspected";
     case "received":
       return "Received";
     case "cancelled":
@@ -383,10 +428,6 @@ export const canConfirmVesselTrailerReception = (
   }
 
   if (trailer.status === "not_arrived") {
-    return false;
-  }
-
-  if (!hasCompletedBoatCheck(trailer)) {
     return false;
   }
 
@@ -565,7 +606,15 @@ export const logVesselSupabaseError = (label: string, error?: SupabaseErrorLike 
     return;
   }
 
-  console.error(label, error);
+  console.error(label, {
+    error,
+    message: error.message,
+    details: error.details,
+    hint: error.hint,
+    code: error.code,
+    name: error.name,
+    status: error.status,
+  });
 };
 
 export const buildVesselSupabaseErrorMessage = (error?: SupabaseErrorLike | null, fallback = "Unable to complete vessel operation request.") => {

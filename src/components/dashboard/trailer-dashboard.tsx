@@ -17,8 +17,11 @@ import {
   calculateCollectionAging,
 } from "@/lib/collection-aging";
 import {
+  buildActiveExportStatusByTrailerId,
   isExportAllocationActive,
   isExportAllocationOverdue,
+  isTrailerEligibleForCompoundViews,
+  isTrailerPresentInCompoundInventory,
   normalizeExportAllocationRecord,
   type ExportAllocationRecord,
 } from "@/lib/export-allocation";
@@ -218,32 +221,42 @@ export function TrailerDashboard() {
         const exportAllocations = ((exportAllocationsData ?? []) as ExportAllocationRecord[]).map((row) =>
           normalizeExportAllocationRecord(row),
         );
+        const activeExportAllocations = exportAllocations.filter((item) => isExportAllocationActive(item.status));
+        const activeExportStatusByTrailerId = buildActiveExportStatusByTrailerId(activeExportAllocations);
+        const visibleTrailers = trailers.filter((trailer) =>
+          trailer.is_local === true || isTrailerEligibleForCompoundViews(trailer, activeExportStatusByTrailerId.get(trailer.id)),
+        );
         setVesselOperations((vesselData ?? []) as VesselOperationCard[]);
-        setTrailers(trailers);
+        setTrailers(visibleTrailers);
 
-        const activeTrailers = trailers.filter((item) => {
+        const activeTrailers = visibleTrailers.filter((item) => {
           const departureDate = item.departure_date;
           return departureDate === null || departureDate === undefined || departureDate === "";
         });
 
         const localTrailers = activeTrailers.filter((item) => item.is_local === true);
         const compoundTrailers = activeTrailers.filter((item) => item.is_local !== true);
+        const compoundInventoryTrailers = compoundTrailers.filter((item) =>
+          isTrailerPresentInCompoundInventory(item, activeExportStatusByTrailerId.get(item.id)),
+        );
 
         const normalizedLoadStatus = (value?: string | null) => value?.trim().toLowerCase();
 
-        const activeExportAllocations = exportAllocations.filter((item) => isExportAllocationActive(item.status));
+        const trailersWithActiveExportAllocation = new Set<string>(
+          activeExportAllocations
+            .map((item) => item.trailer_id)
+            .filter((value): value is string => Boolean(value)),
+        );
 
-        const trailersWithActiveExportAllocation = new Set<string>(activeExportAllocations.map((item) => item.trailer_id));
-
-        const availableEmptyTrailers = compoundTrailers.filter(
+        const availableEmptyTrailers = compoundInventoryTrailers.filter(
           (item) => normalizedLoadStatus(item.load_status) === "empty" && !trailersWithActiveExportAllocation.has(item.id)
         ).length;
 
-        const loadedTrailers = compoundTrailers.filter(
+        const loadedTrailers = compoundInventoryTrailers.filter(
           (item) => normalizedLoadStatus(item.load_status) === "loaded"
         ).length;
 
-        const activeCount = compoundTrailers.length;
+        const activeCount = compoundInventoryTrailers.length;
         const occupancy = Math.min(
           100,
           Math.round((activeCount / COMPOUND_POSITIONS) * 100)

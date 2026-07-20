@@ -3,6 +3,13 @@
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { PrintButton } from "@/components/print/print-button";
+import { PrintFilters } from "@/components/print/print-filters";
+import { PrintFooter } from "@/components/print/print-footer";
+import { PrintHeader } from "@/components/print/print-header";
+import { PrintReportLayout } from "@/components/print/print-report-layout";
+import { PrintSummary } from "@/components/print/print-summary";
+import { PrintTable } from "@/components/print/print-table";
 import { ConfirmReceptionModal } from "../components/confirm-reception-modal";
 import { useVesselReception } from "../hooks/use-vessel-reception";
 import { supabase } from "@/lib/supabase";
@@ -22,14 +29,14 @@ import {
   type VesselOperationTrailerRecord,
 } from "@/lib/vessel-operations";
 
-type StatusFilter = "all" | "expected" | "arrived" | "inspection_pending" | "ready_for_reception" | "received" | "cancelled";
+type StatusFilter = "all" | "expected" | "arrived" | "inspection_pending" | "inspected" | "received" | "cancelled";
 type DateFilter = "all" | "today" | "tomorrow" | "custom";
 
 type ArrivalKpi = {
   expected: number;
   arrived: number;
   inspectionPending: number;
-  readyForReception: number;
+  inspected: number;
   received: number;
   cancelled: number;
 };
@@ -39,7 +46,7 @@ const statusFilters: Array<{ key: StatusFilter; label: string }> = [
   { key: "expected", label: "Expected" },
   { key: "arrived", label: "Arrived" },
   { key: "inspection_pending", label: "Inspection Pending" },
-  { key: "ready_for_reception", label: "Ready for Reception" },
+  { key: "inspected", label: "Inspected" },
   { key: "received", label: "Received" },
   { key: "cancelled", label: "Cancelled" },
 ];
@@ -73,7 +80,7 @@ const buildArrivalKpis = (trailers: VesselOperationTrailerRecord[]): ArrivalKpi 
     expected: 0,
     arrived: 0,
     inspectionPending: 0,
-    readyForReception: 0,
+    inspected: 0,
     received: 0,
     cancelled: 0,
   };
@@ -83,12 +90,14 @@ const buildArrivalKpis = (trailers: VesselOperationTrailerRecord[]): ArrivalKpi 
 
     if (workflowState === "expected") {
       kpis.expected += 1;
-    } else if (workflowState === "arrived") {
+    } else if (workflowState === "inspection_pending" || workflowState === "inspected") {
       kpis.arrived += 1;
-    } else if (workflowState === "inspection_pending") {
-      kpis.inspectionPending += 1;
-    } else if (workflowState === "ready_for_reception") {
-      kpis.readyForReception += 1;
+      if (workflowState === "inspection_pending") {
+        kpis.inspectionPending += 1;
+      }
+      if (workflowState === "inspected") {
+        kpis.inspected += 1;
+      }
     } else if (workflowState === "received") {
       kpis.received += 1;
     } else if (workflowState === "cancelled") {
@@ -98,6 +107,15 @@ const buildArrivalKpis = (trailers: VesselOperationTrailerRecord[]): ArrivalKpi 
 
   return kpis;
 };
+
+const getPrintedDateTime = () =>
+  new Date().toLocaleString("en-GB", {
+    day: "2-digit",
+    month: "long",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 
 function VesselArrivalsPageContent() {
   const params = useParams();
@@ -134,7 +152,7 @@ function VesselArrivalsPageContent() {
           .single(),
         supabase
           .from("vessel_operation_trailers")
-          .select("id, vessel_operation_id, trailer_id, trailer_number, customer, booking_reference, load_status, load_description, temperature_required, priority_level, priority_reason, planned_destination, planning_notes, status, arrived_at, arrival_status, arrival_confirmed_at, arrival_record_id, arrival_confirmed_by, inspection_started_at, inspection_completed_at, position_assigned_at, assigned_position, has_damage, has_temperature_alert, created_at, updated_at")
+          .select("id, vessel_operation_id, trailer_id, trailer_number, customer, booking_reference, load_status, load_description, temperature_required, expected_front_temperature, expected_rear_temperature, expected_temperature_unit, priority_level, priority_reason, planned_destination, planning_notes, status, arrived_at, arrival_status, arrival_confirmed_at, arrival_record_id, arrival_confirmed_by, inspection_started_at, inspection_completed_at, position_assigned_at, assigned_position, has_damage, has_temperature_alert, created_at, updated_at")
           .eq("vessel_operation_id", operationId)
           .order("created_at", { ascending: true }),
       ]);
@@ -175,6 +193,7 @@ function VesselArrivalsPageContent() {
   }, [loadArrivals]);
 
   const summary = useMemo(() => buildArrivalKpis(trailers), [trailers]);
+  const printedAt = getPrintedDateTime();
 
   const visibleTrailers = useMemo(() => {
     const todayKey = getDateKey(new Date().toISOString());
@@ -185,6 +204,9 @@ function VesselArrivalsPageContent() {
 
     return trailers.filter((item) => {
       const workflowState = getVesselArrivalWorkflowState(item);
+      const inspectionState = getVesselInspectionProgressState(item);
+      const inspectionPending = workflowState === "inspection_pending" || (workflowState === "received" && inspectionState !== "completed" && inspectionState !== "issues_found");
+      const inspected = workflowState === "inspected" || inspectionState === "completed" || inspectionState === "issues_found";
       const searchHaystack = [
         item.trailer_number,
         item.booking_reference,
@@ -195,8 +217,30 @@ function VesselArrivalsPageContent() {
         .join(" ")
         .toLowerCase();
 
-      if (statusFilter !== "all" && workflowState !== statusFilter) {
-        return false;
+      if (statusFilter !== "all") {
+        if (statusFilter === "arrived" && !(workflowState === "inspection_pending" || workflowState === "inspected")) {
+          return false;
+        }
+
+        if (statusFilter === "inspection_pending" && !inspectionPending) {
+          return false;
+        }
+
+        if (statusFilter === "inspected" && !inspected) {
+          return false;
+        }
+
+        if (statusFilter === "expected" && workflowState !== "expected") {
+          return false;
+        }
+
+        if (statusFilter === "received" && workflowState !== "received") {
+          return false;
+        }
+
+        if (statusFilter === "cancelled" && workflowState !== "cancelled") {
+          return false;
+        }
       }
 
       if (priorityFilter !== "all" && (item.priority_level ?? "normal") !== priorityFilter) {
@@ -285,11 +329,11 @@ function VesselArrivalsPageContent() {
           event_type: "vessel_trailer_marked_arrived",
           event_description: "Expected trailer marked as arrived.",
           old_value: {
-            vessel_operation_trailer_id: trailer.id,
+            vessel_trailer_id: trailer.id,
             arrival_status: trailer.arrival_status,
           },
           new_value: {
-            vessel_operation_trailer_id: trailer.id,
+            vessel_trailer_id: trailer.id,
             arrival_status: "arrived",
             arrived_at: nowIso,
             arrived_by: operatorName,
@@ -377,11 +421,11 @@ function VesselArrivalsPageContent() {
           event_type: "vessel_arrival_undo",
           event_description: "Arrival status reverted to expected queue.",
           old_value: {
-            vessel_operation_trailer_id: trailer.id,
+            vessel_trailer_id: trailer.id,
             arrival_status: "arrived",
           },
           new_value: {
-            vessel_operation_trailer_id: trailer.id,
+            vessel_trailer_id: trailer.id,
             arrival_status: "available_for_arrival",
             reverted_by: operatorName,
           },
@@ -432,11 +476,54 @@ function VesselArrivalsPageContent() {
               </p>
             </div>
             <div className="flex flex-wrap gap-2">
+              <PrintButton label="Print / Export" disabled={visibleTrailers.length === 0} />
               <Link href={`/dashboard/vessel-operations/${operation.id}`} className="rounded-2xl border border-white/10 bg-slate-800 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700">Operation</Link>
-              <Link href={`/dashboard/vessel-operations/${operation.id}/boat-check`} className="rounded-2xl border border-white/10 bg-slate-800 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700">Boat Check</Link>
             </div>
           </div>
         </header>
+
+        {visibleTrailers.length > 0 ? (
+          <PrintReportLayout orientation="landscape">
+            <PrintHeader title="Vessel Arrivals" printedAt={printedAt} totalRecords={visibleTrailers.length}>
+              <PrintFilters
+                items={[
+                  { label: "Vessel", value: operation.vessel_name ?? "Unnamed vessel" },
+                  { label: "Voyage", value: operation.sailing_reference ?? "-" },
+                  { label: "Status", value: statusFilters.find((candidate) => candidate.key === statusFilter)?.label ?? "All" },
+                  { label: "Date Filter", value: dateFilter === "custom" ? (customDate || "Custom") : dateFilter },
+                  { label: "Priority", value: priorityFilter },
+                  { label: "Search", value: searchText.trim() || "Current filtered trailers" },
+                ]}
+              />
+            </PrintHeader>
+
+            <PrintSummary
+              items={[
+                { label: "Expected", value: summary.expected },
+                { label: "Arrived", value: summary.arrived },
+                { label: "Inspection Pending", value: summary.inspectionPending },
+                { label: "Inspected", value: summary.inspected },
+                { label: "Received", value: summary.received },
+              ]}
+            />
+
+            <PrintTable
+              rows={visibleTrailers}
+              columns={[
+                { key: "trailer_number", header: "Trailer", render: (trailer) => trailer.trailer_number ?? "-" },
+                { key: "customer", header: "Customer", render: (trailer) => trailer.customer ?? "-" },
+                { key: "booking_reference", header: "Booking", render: (trailer) => trailer.booking_reference ?? "-" },
+                { key: "priority_level", header: "Priority", render: (trailer) => getVesselPriorityLabel(trailer.priority_level) },
+                { key: "arrival", header: "Arrival", render: (trailer) => getVesselArrivalWorkflowLabel(getVesselArrivalWorkflowState(trailer)) },
+                { key: "inspection", header: "Inspection", render: (trailer) => getVesselInspectionProgressLabel(getVesselInspectionProgressState(trailer)) },
+                { key: "position", header: "Position", render: (trailer) => trailer.assigned_position ?? "-" },
+                { key: "arrived_at", header: "Arrived At", render: (trailer) => formatVesselDateTime(trailer.arrival_confirmed_at ?? trailer.arrived_at) },
+              ]}
+            />
+
+            <PrintFooter />
+          </PrintReportLayout>
+        ) : null}
 
         {error ? <div className="rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">{error}</div> : null}
         {success ? <div className="rounded-2xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">{success}</div> : null}
@@ -445,7 +532,7 @@ function VesselArrivalsPageContent() {
           <div className="rounded-2xl border border-white/10 bg-slate-900/70 p-4"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Expected</p><p className="mt-2 text-lg font-semibold text-white">{summary.expected}</p></div>
           <div className="rounded-2xl border border-white/10 bg-slate-900/70 p-4"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Arrived</p><p className="mt-2 text-lg font-semibold text-amber-200">{summary.arrived}</p></div>
           <div className="rounded-2xl border border-white/10 bg-slate-900/70 p-4"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Inspection Pending</p><p className="mt-2 text-lg font-semibold text-cyan-200">{summary.inspectionPending}</p></div>
-          <div className="rounded-2xl border border-white/10 bg-slate-900/70 p-4"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Ready for Reception</p><p className="mt-2 text-lg font-semibold text-emerald-200">{summary.readyForReception}</p></div>
+          <div className="rounded-2xl border border-white/10 bg-slate-900/70 p-4"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Inspected</p><p className="mt-2 text-lg font-semibold text-emerald-200">{summary.inspected}</p></div>
           <div className="rounded-2xl border border-white/10 bg-slate-900/70 p-4"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Received</p><p className="mt-2 text-lg font-semibold text-emerald-200">{summary.received}</p></div>
           <div className="rounded-2xl border border-white/10 bg-slate-900/70 p-4"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Cancelled</p><p className="mt-2 text-lg font-semibold text-rose-200">{summary.cancelled}</p></div>
         </section>
@@ -526,7 +613,8 @@ function VesselArrivalsPageContent() {
               const workflowState = getVesselArrivalWorkflowState(trailer);
               const workflowLabel = getVesselArrivalWorkflowLabel(workflowState);
               const inspectionState = getVesselInspectionProgressState(trailer);
-              const inspectionLabel = getVesselInspectionProgressLabel(inspectionState);
+              const inspectionLabel = inspectionState === "completed" || inspectionState === "issues_found" ? "Inspected" : "Inspection Pending";
+              const arrivalLabel = trailer.arrival_status === "arrived" ? "Arrived" : getVesselArrivalWorkflowLabel(workflowState);
               const canMarkArrived = (operation.list_status ?? "draft") === "confirmed" && trailer.arrival_status === "available_for_arrival" && !trailer.arrival_record_id;
               const canUndo = trailer.arrival_status === "arrived" && !trailer.arrival_record_id && !trailer.inspection_started_at && !trailer.inspection_completed_at;
 
@@ -538,14 +626,14 @@ function VesselArrivalsPageContent() {
                         <h2 className="text-2xl font-bold text-white">{trailer.trailer_number ?? "-"}</h2>
                         <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${getVesselPriorityClass(trailer.priority_level)}`}>{getVesselPriorityLabel(trailer.priority_level)}</span>
                         <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${getVesselTrailerStatusClass((trailer.arrival_status === "available_for_arrival" ? "available_for_arrival" : trailer.status) ?? "expected")}`}>
-                          {workflowLabel}
+                          {arrivalLabel}
                         </span>
                       </div>
 
                       <p className="text-sm text-slate-300">Vessel: {operation.vessel_name ?? "Unnamed vessel"}</p>
                       <p className="text-sm text-slate-300">Voyage: {operation.sailing_reference ?? "-"}</p>
                       <p className="text-sm text-slate-300">ETA: {formatVesselDateTime(operation.expected_arrival_at)}</p>
-                      <p className="text-sm text-slate-300">Current Arrival Status: {workflowLabel}</p>
+                      <p className="text-sm text-slate-300">Current Arrival Status: {arrivalLabel}</p>
                       <p className="text-sm text-slate-300">Inspection Status: {inspectionLabel}</p>
                       {trailer.customer?.trim() ? <p className="text-sm text-slate-300">Customer: {trailer.customer}</p> : null}
                       {trailer.booking_reference?.trim() ? <p className="text-sm text-slate-300">Booking Reference: {trailer.booking_reference}</p> : null}
@@ -564,15 +652,6 @@ function VesselArrivalsPageContent() {
                         >
                           {actioningTrailerId === trailer.id ? "Updating..." : "Mark Arrived"}
                         </button>
-                      ) : null}
-
-                      {trailer.arrival_status === "arrived" ? (
-                        <Link
-                          href={`/dashboard/vessel-operations/${operation.id}/boat-check/${trailer.id}`}
-                          className="rounded-2xl border border-white/10 bg-slate-800 px-4 py-3 text-center text-sm font-semibold text-white hover:bg-slate-700"
-                        >
-                          Open Boat Check
-                        </Link>
                       ) : null}
 
                       {canUndo ? (

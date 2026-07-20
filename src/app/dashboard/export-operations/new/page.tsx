@@ -11,6 +11,8 @@ import {
   type ExportAllocationStatus,
 } from "@/lib/export-allocation";
 
+type AllocationSource = "existing" | "outsourced";
+
 type TrailerOption = {
   id: string;
   trailer_number?: string | null;
@@ -23,7 +25,9 @@ type TrailerOption = {
 };
 
 type FormState = {
+  source: AllocationSource;
   trailerId: string;
+  trailerNumber: string;
   customer: string;
   collectionAddress: string;
   haulier: string;
@@ -36,7 +40,9 @@ type FormState = {
 };
 
 const INITIAL_FORM: FormState = {
+  source: "existing",
   trailerId: "",
+  trailerNumber: "",
   customer: "",
   collectionAddress: "",
   haulier: "",
@@ -49,6 +55,7 @@ const INITIAL_FORM: FormState = {
 };
 
 const normalizeLoadStatus = (value?: string | null) => (value ?? "").trim().toLowerCase();
+const normalizeTrailerNumber = (value?: string | null) => (value ?? "").trim().replace(/\s+/g, " ").toUpperCase();
 
 const formatTrailerOption = (trailer: TrailerOption) => {
   const ownership = trailer.trailer_source === "outsourced" ? "Outsourced" : "Ferryspeed";
@@ -163,8 +170,21 @@ export default function NewExportAllocationPage() {
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
 
-    if (!formState.trailerId || !formState.customer.trim() || !formState.collectionDate) {
-      setError("Trailer, Customer and Collection Date are required.");
+    const requiresExistingTrailer = formState.source === "existing";
+    const normalizedManualTrailerNumber = normalizeTrailerNumber(formState.trailerNumber);
+
+    if (!formState.customer.trim() || !formState.collectionDate) {
+      setError("Customer and Collection Date are required.");
+      return;
+    }
+
+    if (requiresExistingTrailer && !formState.trailerId) {
+      setError("Trailer is required.");
+      return;
+    }
+
+    if (!requiresExistingTrailer && !normalizedManualTrailerNumber) {
+      setError("Trailer Number is required for outsourced allocations.");
       return;
     }
 
@@ -172,25 +192,95 @@ export default function NewExportAllocationPage() {
     setError(null);
 
     try {
-      const trailer = await validateTrailerAvailability(formState.trailerId);
-      if (!trailer) {
-        setError("This trailer is no longer available for allocation.");
-        setIsSaving(false);
-        return;
+      let trailer: TrailerOption | null = null;
+
+      if (requiresExistingTrailer) {
+        trailer = await validateTrailerAvailability(formState.trailerId);
+        if (!trailer) {
+          setError("This trailer is no longer available for allocation.");
+          setIsSaving(false);
+          return;
+        }
+      } else {
+        const normalizedNumber = normalizeTrailerNumber(formState.trailerNumber);
+        const { data: matchingTrailerRows, error: matchingTrailerError } = await supabase
+          .from("trailers")
+          .select("id, trailer_number, load_status, departure_date, compound_position, trailer_source, is_local, operational_status")
+          .is("departure_date", null)
+          .ilike("trailer_number", normalizedNumber);
+
+        if (matchingTrailerError) {
+          throw new Error(matchingTrailerError.message || "Unable to validate outsourced trailer number.");
+        }
+
+        const matches = ((matchingTrailerRows ?? []) as TrailerOption[]).filter(
+          (row) => normalizeTrailerNumber(row.trailer_number) === normalizedNumber,
+        );
+
+        const existingTrailer = matches[0] ?? null;
+
+        if (existingTrailer) {
+          const { data: activeForTrailer, error: activeForTrailerError } = await supabase
+            .from("export_allocations")
+            .select("id")
+            .eq("trailer_id", existingTrailer.id)
+            .in("status", [...EXPORT_ACTIVE_STATUS_QUERY_VALUES])
+            .limit(1);
+
+          if (activeForTrailerError) {
+            throw new Error(activeForTrailerError.message || "Unable to validate active export allocations for outsourced trailer.");
+          }
+
+          if ((activeForTrailer ?? []).length > 0) {
+            setError("This outsourced trailer already has an active export allocation.");
+            setIsSaving(false);
+            return;
+          }
+
+          const isEmpty = normalizeLoadStatus(existingTrailer.load_status) === "empty" || !normalizeLoadStatus(existingTrailer.load_status);
+          if (!isEmpty) {
+            setError("Outsourced trailer must be Empty before it can be allocated.");
+            setIsSaving(false);
+            return;
+          }
+
+          trailer = {
+            ...existingTrailer,
+            trailer_number: normalizeTrailerNumber(existingTrailer.trailer_number) || normalizedNumber,
+          };
+        } else {
+          const { data: createdTrailer, error: createTrailerError } = await supabase
+            .from("trailers")
+            .insert({
+              trailer_number: normalizedNumber,
+              trailer_source: "outsourced",
+              load_status: "Empty",
+              customer: formState.customer.trim() || null,
+              is_local: false,
+              operational_status: "In Compound",
+            })
+            .select("id, trailer_number, load_status, departure_date, compound_position, trailer_source, is_local, operational_status")
+            .single();
+
+          if (createTrailerError || !createdTrailer) {
+            throw new Error(createTrailerError?.message || "Unable to create outsourced trailer.");
+          }
+
+          trailer = createdTrailer as TrailerOption;
+        }
       }
 
       const nowIso = new Date().toISOString();
       const insertPayload = {
         trailer_id: trailer.id,
-        trailer_number: trailer.trailer_number,
+        trailer_number: normalizeTrailerNumber(trailer.trailer_number),
         customer: formState.customer.trim(),
         collection_address: formState.collectionAddress.trim() || null,
         haulier: formState.haulier.trim() || null,
         booking_reference: formState.bookingReference.trim() || null,
         load_type: formState.loadType.trim() || null,
         collection_date: formState.collectionDate,
-        collection_time: null,
-        expected_return_at: formState.expectedReturnAt || null,
+        expected_return_at: formState.expectedReturnAt ? new Date(formState.expectedReturnAt).toISOString() : null,
         priority: formState.priority,
         status: "allocated" as ExportAllocationStatus,
         notes: formState.notes.trim() || null,
@@ -210,7 +300,7 @@ export default function NewExportAllocationPage() {
 
       const { error: eventError } = await supabase.from("trailer_events").insert({
         trailer_id: trailer.id,
-        trailer_number: trailer.trailer_number,
+        trailer_number: normalizeTrailerNumber(trailer.trailer_number),
         event_type: "export_allocation_created",
         event_description: `Trailer allocated to ${formState.customer.trim()}.`,
         old_value: null,
@@ -225,6 +315,7 @@ export default function NewExportAllocationPage() {
           expected_return_at: insertPayload.expected_return_at,
           priority: insertPayload.priority,
           status: "allocated",
+          source: formState.source,
         },
       });
 
@@ -258,21 +349,50 @@ export default function NewExportAllocationPage() {
         <form onSubmit={handleSubmit} className="rounded-3xl border border-white/10 bg-slate-900/70 p-4 shadow-2xl shadow-black/20 backdrop-blur sm:p-6">
           <div className="grid gap-4 md:grid-cols-2">
             <div className="md:col-span-2">
-              <label className="mb-2 block text-sm font-medium text-slate-200">Trailer *</label>
+              <label className="mb-2 block text-sm font-medium text-slate-200">Source</label>
               <select
-                value={formState.trailerId}
-                onChange={(event) => handleChange("trailerId", event.target.value)}
-                disabled={isLoading || isSaving}
+                value={formState.source}
+                onChange={(event) => handleChange("source", event.target.value as AllocationSource)}
+                disabled={isSaving}
                 className="w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm outline-none"
               >
-                <option value="">Select available trailer</option>
-                {availableTrailers.map((trailer) => (
-                  <option key={trailer.id} value={trailer.id}>
-                    {formatTrailerOption(trailer)}
-                  </option>
-                ))}
+                <option value="existing">Existing Trailer</option>
+                <option value="outsourced">Outsourced Trailer (Manual)</option>
               </select>
-              {selectedTrailer ? <p className="mt-2 text-xs text-cyan-200">Selected: {formatTrailerOption(selectedTrailer)}</p> : null}
+            </div>
+
+            <div className="md:col-span-2">
+              {formState.source === "existing" ? (
+                <>
+                  <label className="mb-2 block text-sm font-medium text-slate-200">Trailer *</label>
+                  <select
+                    value={formState.trailerId}
+                    onChange={(event) => handleChange("trailerId", event.target.value)}
+                    disabled={isLoading || isSaving}
+                    className="w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm outline-none"
+                  >
+                    <option value="">Select available trailer</option>
+                    {availableTrailers.map((trailer) => (
+                      <option key={trailer.id} value={trailer.id}>
+                        {formatTrailerOption(trailer)}
+                      </option>
+                    ))}
+                  </select>
+                  {selectedTrailer ? <p className="mt-2 text-xs text-cyan-200">Selected: {formatTrailerOption(selectedTrailer)}</p> : null}
+                </>
+              ) : (
+                <>
+                  <label className="mb-2 block text-sm font-medium text-slate-200">Trailer Number *</label>
+                  <input
+                    value={formState.trailerNumber}
+                    onChange={(event) => handleChange("trailerNumber", event.target.value.toUpperCase())}
+                    className="w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm outline-none"
+                    placeholder="e.g. OUT-1234"
+                    disabled={isSaving}
+                  />
+                  <p className="mt-2 text-xs text-slate-400">Manual outsourced allocations do not require selecting a company trailer.</p>
+                </>
+              )}
             </div>
 
             <div>
@@ -339,7 +459,7 @@ export default function NewExportAllocationPage() {
               <input
                 type="datetime-local"
                 value={formState.expectedReturnAt}
-                onChange={(event) => handleChange("expectedReturnAt", event.target.value ? new Date(event.target.value).toISOString() : "")}
+                onChange={(event) => handleChange("expectedReturnAt", event.target.value)}
                 className="w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm outline-none"
               />
             </div>

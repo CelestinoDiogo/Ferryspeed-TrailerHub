@@ -84,7 +84,6 @@ export default function DeparturePage() {
 
   const handleSelectTrailer = (trailerId: string) => {
     setSelectedTrailerId(trailerId);
-    console.log("Selected trailer id", trailerId);
   };
 
   const confirmDeparture = async () => {
@@ -126,8 +125,6 @@ export default function DeparturePage() {
         .update(updatePayload)
         .eq("id", selectedTrailerId)
         .select();
-
-      console.log("Departure update result", { data, error });
 
       if (error) {
         const message = error.message || "Unable to confirm departure.";

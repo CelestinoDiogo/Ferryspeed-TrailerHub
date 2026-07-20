@@ -57,8 +57,8 @@ export function VesselOperationSummary({ operation, summary, completionSummary, 
           </div>
           <div className="rounded-2xl border border-white/10 bg-slate-900/70 p-4 sm:col-span-2 xl:col-span-8">
             <div className="flex flex-wrap gap-2">
-              <Link href={`/dashboard/vessel-operations/${operation.id}/boat-check`} className="rounded-2xl border border-white/10 bg-slate-800 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700">
-                View Boat Check
+              <Link href={`/dashboard/vessel-operations/${operation.id}/summary`} className="rounded-2xl border border-cyan-400/40 bg-cyan-500/15 px-4 py-2 text-sm font-semibold text-cyan-100 hover:bg-cyan-500/25">
+                AI Report
               </Link>
               <Link href={`/dashboard/vessel-operations/${operation.id}/print`} className="rounded-2xl border border-white/10 bg-slate-800 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700">
                 Print Report

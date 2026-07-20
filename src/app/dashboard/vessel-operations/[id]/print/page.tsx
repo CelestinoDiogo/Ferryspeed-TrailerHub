@@ -4,17 +4,12 @@ import Image from "next/image";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
-import { z } from "zod";
 import { PrintButton } from "@/components/print/print-button";
+import { loadVesselOperationSummaryAndPrintReportData } from "@/lib/reports/report-data";
 import { supabase } from "@/lib/supabase";
-import { getVesselOperationReport } from "@/lib/vessel-report";
 import { formatVesselDateTime } from "@/lib/vessel-operations";
 import type { VesselOperationalReportData } from "@/lib/reports/types";
 import { VesselPrintStyles } from "./print-styles";
-
-const paramsSchema = z.object({
-  id: z.string().uuid(),
-});
 
 const formatStatusLabel = (value?: string | null) => {
   if (!value) {
@@ -28,10 +23,17 @@ const formatTemperature = (value: number | null, unit: string) => {
   return value === null ? "-" : `${value} ${unit}`;
 };
 
+const getInspectionStatusLabel = (trailer: VesselOperationalReportData["trailers"][number]) => {
+  if (trailer.arrivalStatusRaw === "arrived" && trailer.inspectionStatus !== "inspected") {
+    return "Inspection Pending";
+  }
+
+  return formatStatusLabel(trailer.inspectionStatus);
+};
+
 const loadPrintReport = async (operationId: string) => {
   try {
-    const parsedParams = paramsSchema.parse({ id: operationId });
-    const reportData = await getVesselOperationReport(supabase, parsedParams.id);
+    const reportData = await loadVesselOperationSummaryAndPrintReportData(supabase, operationId);
     return { reportData, error: null } as const;
   } catch (error) {
     console.error("Vessel operation print report failed:", error);
@@ -120,6 +122,7 @@ export default function VesselOperationPrintPage() {
   const damagedTrailers = reportData.trailers.filter((trailer) => trailer.hasDamage);
   const temperatureAlertTrailers = reportData.trailers.filter((trailer) => trailer.hasTemperatureAlert);
   const operationNotes = reportData.operation.notes?.trim() ?? "";
+  const hasNoTrailers = reportData.trailers.length === 0;
 
   return (
     <main className="min-h-screen bg-slate-100 px-4 py-6 text-slate-900 sm:px-6 lg:px-8">
@@ -173,14 +176,21 @@ export default function VesselOperationPrintPage() {
             </header>
 
             <section className="avoid-print-break mt-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-7">
-              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Total Trailers</p><p className="mt-2 text-2xl font-bold text-slate-950">{reportData.statistics.totalTrailers}</p></div>
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Expected</p><p className="mt-2 text-2xl font-bold text-slate-950">{reportData.statistics.expectedTrailers}</p></div>
               <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Arrived</p><p className="mt-2 text-2xl font-bold text-amber-700">{reportData.statistics.arrivedTrailers}</p></div>
-              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Not Discharged</p><p className="mt-2 text-2xl font-bold text-fuchsia-700">{reportData.statistics.notDischargedTrailers}</p></div>
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Pending</p><p className="mt-2 text-2xl font-bold text-fuchsia-700">{reportData.statistics.pendingTrailers}</p></div>
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Priority</p><p className="mt-2 text-2xl font-bold text-rose-700">{reportData.statistics.priorityTrailers}</p></div>
               <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Inspected</p><p className="mt-2 text-2xl font-bold text-emerald-700">{reportData.statistics.inspectedTrailers}</p></div>
-              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Pending Inspection</p><p className="mt-2 text-2xl font-bold text-cyan-700">{reportData.statistics.pendingInspections}</p></div>
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Inspection Pending</p><p className="mt-2 text-2xl font-bold text-cyan-700">{reportData.statistics.pendingInspections}</p></div>
               <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Damages</p><p className="mt-2 text-2xl font-bold text-rose-700">{reportData.statistics.damagedTrailers}</p></div>
               <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Temperature Alerts</p><p className="mt-2 text-2xl font-bold text-orange-700">{reportData.statistics.temperatureAlertTrailers}</p></div>
             </section>
+
+            {hasNoTrailers ? (
+              <section className="avoid-print-break mt-8 rounded-3xl border border-slate-200 bg-slate-50 p-5 text-sm text-slate-700">
+                No trailer records found for this vessel operation yet.
+              </section>
+            ) : null}
 
             <section className="avoid-print-break mt-8">
               <h2 className="text-lg font-semibold text-slate-950">Trailer Report</h2>
@@ -191,12 +201,16 @@ export default function VesselOperationPrintPage() {
                       <th className="border border-slate-200 px-3 py-2 text-left">Trailer</th>
                       <th className="border border-slate-200 px-3 py-2 text-left">Priority</th>
                       <th className="border border-slate-200 px-3 py-2 text-left">Arrival Status</th>
+                      <th className="border border-slate-200 px-3 py-2 text-left">Reception Status</th>
                       <th className="border border-slate-200 px-3 py-2 text-left">Arrival Time</th>
                       <th className="border border-slate-200 px-3 py-2 text-left">Inspection Status</th>
+                      <th className="border border-slate-200 px-3 py-2 text-left">Expected Front Temp</th>
+                      <th className="border border-slate-200 px-3 py-2 text-left">Expected Rear Temp</th>
                       <th className="border border-slate-200 px-3 py-2 text-left">Front Temperature</th>
                       <th className="border border-slate-200 px-3 py-2 text-left">Rear Temperature</th>
                       <th className="border border-slate-200 px-3 py-2 text-left">Damage</th>
                       <th className="border border-slate-200 px-3 py-2 text-left">Temperature Alert</th>
+                      <th className="border border-slate-200 px-3 py-2 text-left">Photos</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -211,12 +225,16 @@ export default function VesselOperationPrintPage() {
                         </td>
                         <td className="border border-slate-200 px-3 py-3">{formatStatusLabel(trailer.priority)}</td>
                         <td className="border border-slate-200 px-3 py-3">{trailer.arrivalStatus}</td>
+                        <td className="border border-slate-200 px-3 py-3">{trailer.receptionStatus}</td>
                         <td className="border border-slate-200 px-3 py-3">{formatVesselDateTime(trailer.arrivedAt)}</td>
-                        <td className="border border-slate-200 px-3 py-3">{formatStatusLabel(trailer.inspectionStatus)}</td>
+                        <td className="border border-slate-200 px-3 py-3">{getInspectionStatusLabel(trailer)}</td>
+                        <td className="border border-slate-200 px-3 py-3">{formatTemperature(trailer.expectedFrontTemperature, trailer.temperatureUnit)}</td>
+                        <td className="border border-slate-200 px-3 py-3">{formatTemperature(trailer.expectedRearTemperature, trailer.temperatureUnit)}</td>
                         <td className="border border-slate-200 px-3 py-3">{formatTemperature(trailer.frontTemperature, trailer.temperatureUnit)}</td>
                         <td className="border border-slate-200 px-3 py-3">{formatTemperature(trailer.rearTemperature, trailer.temperatureUnit)}</td>
                         <td className="border border-slate-200 px-3 py-3">{trailer.hasDamage ? "Yes" : "No"}</td>
                         <td className="border border-slate-200 px-3 py-3">{trailer.hasTemperatureAlert ? "Yes" : "No"}</td>
+                        <td className="border border-slate-200 px-3 py-3">{trailer.photos.length}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -269,6 +287,8 @@ export default function VesselOperationPrintPage() {
                       <div key={trailer.id} className="detail-print-card rounded-3xl border border-orange-200 bg-orange-50 p-4">
                         <p className="text-base font-semibold text-slate-950">{trailer.trailerNumber}</p>
                         <div className="mt-3 grid gap-2 text-sm text-slate-700 sm:grid-cols-2">
+                          <p>Expected Front: <span className="font-semibold text-slate-950">{formatTemperature(trailer.expectedFrontTemperature, trailer.temperatureUnit)}</span></p>
+                          <p>Expected Rear: <span className="font-semibold text-slate-950">{formatTemperature(trailer.expectedRearTemperature, trailer.temperatureUnit)}</span></p>
                           <p>Front Temperature: <span className="font-semibold text-slate-950">{formatTemperature(trailer.frontTemperature, trailer.temperatureUnit)}</span></p>
                           <p>Rear Temperature: <span className="font-semibold text-slate-950">{formatTemperature(trailer.rearTemperature, trailer.temperatureUnit)}</span></p>
                           <p>Alert Source: <span className="font-semibold text-slate-950">{alertSource}</span></p>

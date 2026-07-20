@@ -216,15 +216,22 @@ export function buildVesselOperationAiReportBody(sections: VesselOperationAiRepo
 
 export function buildDeterministicVesselOperationAiReportDraft(data: VesselOperationalReportData): VesselOperationAiReportDraft {
   const sections = buildDeterministicVesselOperationAiReportSections(data);
+  const body = buildVesselOperationAiReportBody(sections);
 
   return {
     reportId: null,
     subject: buildVesselOperationAiReportSubject(data),
-    body: buildVesselOperationAiReportBody(sections),
+    recipients: [],
+    cc: [],
+    body,
+    generatedContent: body,
+    editedContent: body,
     sections,
     generationMode: "template",
     usedFallback: true,
     aiModel: null,
     generatedAt: new Date().toISOString(),
+    generatedBy: null,
+    status: "draft",
   };
 }

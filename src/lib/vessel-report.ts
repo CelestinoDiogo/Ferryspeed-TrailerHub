@@ -50,7 +50,48 @@ const parseTemperatureLimits = (value?: string | null): TemperatureLimits => {
   return { min: sorted[0], max: sorted[1] };
 };
 
-const getTemperatureResult = (row: TemperatureRow, limits: TemperatureLimits): TemperatureResult => {
+const parseLegacyFrontExpectedTemperature = (value?: string | null) => {
+  if (!value) {
+    return null;
+  }
+
+  const direct = Number(value);
+  if (Number.isFinite(direct)) {
+    return direct;
+  }
+
+  const match = value.match(/-?\d+(?:\.\d+)?/);
+  if (!match) {
+    return null;
+  }
+
+  const parsed = Number(match[0]);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const getExpectedTemperatureForReading = (trailer: TrailerRow, readingPoint?: string | null) => {
+  const point = (readingPoint ?? "").trim().toLowerCase();
+
+  if (point === "front") {
+    if (typeof trailer.expected_front_temperature === "number" && Number.isFinite(trailer.expected_front_temperature)) {
+      return trailer.expected_front_temperature;
+    }
+
+    return parseLegacyFrontExpectedTemperature(trailer.temperature_required);
+  }
+
+  if (point === "rear") {
+    if (typeof trailer.expected_rear_temperature === "number" && Number.isFinite(trailer.expected_rear_temperature)) {
+      return trailer.expected_rear_temperature;
+    }
+
+    return null;
+  }
+
+  return null;
+};
+
+const getTemperatureResult = (row: TemperatureRow, limits: TemperatureLimits, expectedTemperature: number | null): TemperatureResult => {
   const value = row.temperature_value;
 
   if (value === null || value === undefined) {
@@ -59,6 +100,10 @@ const getTemperatureResult = (row: TemperatureRow, limits: TemperatureLimits): T
 
   if (row.is_out_of_range === true) {
     return "fail";
+  }
+
+  if (expectedTemperature !== null) {
+    return Math.abs(value - expectedTemperature) <= 0.01 ? "pass" : "fail";
   }
 
   if (limits.min !== null && value < limits.min) {
@@ -114,7 +159,7 @@ export async function getVesselOperationReport(
       .single(),
     supabase
       .from("vessel_operation_trailers")
-      .select("id, vessel_operation_id, trailer_id, trailer_number, customer, booking_reference, load_status, temperature_required, priority_level, planning_notes, status, arrived_at, arrival_status, arrival_confirmed_at, arrival_record_id, arrival_confirmed_by, inspection_started_at, inspection_completed_at, position_assigned_at, assigned_position, has_damage, has_temperature_alert")
+      .select("id, vessel_operation_id, trailer_id, trailer_number, customer, booking_reference, load_status, temperature_required, expected_front_temperature, expected_rear_temperature, expected_temperature_unit, priority_level, planning_notes, status, arrived_at, arrival_status, arrival_confirmed_at, arrival_record_id, arrival_confirmed_by, inspection_started_at, inspection_completed_at, position_assigned_at, assigned_position, has_damage, has_temperature_alert")
       .eq("vessel_operation_id", vesselOperationId)
       .order("created_at", { ascending: true }),
   ]);
@@ -235,6 +280,7 @@ export async function getVesselOperationReport(
 
   const temperatureRows = trailers.flatMap((trailer) => {
     const limits = parseTemperatureLimits(trailer.temperature_required);
+    const expectedUnit = (trailer.expected_temperature_unit ?? "C").trim() || "C";
     const trailerTemperatures = temperaturesByTrailer.get(trailer.id) ?? [];
 
     if (trailerTemperatures.length === 0) {
@@ -243,10 +289,11 @@ export async function getVesselOperationReport(
         trailerId: trailer.id,
         trailerNumber: normalizeTrailerNumber(trailer.trailer_number) || "UNKNOWN",
         readingPoint: null,
+        expectedTemperature: null,
         requiredMin: limits.min,
         requiredMax: limits.max,
         recordedTemperature: null,
-        unit: "C",
+        unit: expectedUnit,
         result: "not_assessed" as TemperatureResult,
         recordedAt: null,
         notes: null,
@@ -254,6 +301,7 @@ export async function getVesselOperationReport(
     }
 
     return trailerTemperatures.map((temperature) => ({
+      expectedTemperature: getExpectedTemperatureForReading(trailer, temperature.reading_point),
       id: temperature.id,
       trailerId: trailer.id,
       trailerNumber: normalizeTrailerNumber(trailer.trailer_number) || "UNKNOWN",
@@ -261,8 +309,8 @@ export async function getVesselOperationReport(
       requiredMin: limits.min,
       requiredMax: limits.max,
       recordedTemperature: temperature.temperature_value,
-      unit: temperature.temperature_unit || "C",
-      result: getTemperatureResult(temperature, limits),
+      unit: temperature.temperature_unit || expectedUnit,
+      result: getTemperatureResult(temperature, limits, getExpectedTemperatureForReading(trailer, temperature.reading_point)),
       recordedAt: toIso(temperature.recorded_at),
       notes: temperature.notes ?? null,
     }));
@@ -274,6 +322,7 @@ export async function getVesselOperationReport(
     const mainTrailer = linkedMainTrailerId ? mainTrailersById.get(linkedMainTrailerId) ?? null : null;
     const trailerNumber = normalizeTrailerNumber(mainTrailer?.trailer_number ?? trailer.trailer_number) || "UNKNOWN";
     const trailerTemperatures = temperatureRows.filter((row) => row.trailerId === trailer.id);
+    const expectedUnit = (trailer.expected_temperature_unit ?? "C").trim() || "C";
     const frontTemperatureRow = trailerTemperatures.find((row) => row.readingPoint === "front") ?? null;
     const rearTemperatureRow = trailerTemperatures.find((row) => row.readingPoint === "rear") ?? null;
     const hasTemperatureFail = trailerTemperatures.some((row) => row.result === "fail");
@@ -312,9 +361,11 @@ export async function getVesselOperationReport(
       hasDamage,
       hasTemperatureAlert: trailer.has_temperature_alert === true,
       temperatureResult,
+      expectedFrontTemperature: getExpectedTemperatureForReading(trailer, "front"),
+      expectedRearTemperature: getExpectedTemperatureForReading(trailer, "rear"),
       frontTemperature: frontTemperatureRow?.recordedTemperature ?? null,
       rearTemperature: rearTemperatureRow?.recordedTemperature ?? null,
-      temperatureUnit: frontTemperatureRow?.unit ?? rearTemperatureRow?.unit ?? "C",
+      temperatureUnit: frontTemperatureRow?.unit ?? rearTemperatureRow?.unit ?? expectedUnit,
       operationalStatus: mainTrailer?.operational_status ?? trailer.status ?? "expected",
       notes: trailer.planning_notes ?? null,
       boatCheckNotes: trailer.planning_notes ?? null,
