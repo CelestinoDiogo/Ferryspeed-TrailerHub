@@ -89,7 +89,7 @@ export default function CompoundWaitingPage() {
         supabase
           .from("compound_waiting_active")
           .select("id, trailer_id, trailer_number, customer, load_status, priority_level, priority_reason, waiting_reason, arrived_at, waiting_since, waiting_minutes, vessel_operation_id, vessel_trailer_id, notes, created_at"),
-        supabase.rpc("get_compound_occupancy"),
+        (supabase as any).rpc("get_compound_occupancy"),
       ]);
 
       if (waitingError) {
@@ -187,7 +187,7 @@ export default function CompoundWaitingPage() {
     if (isMutating) return;
 
     await runAction(async () => {
-      const { error: rpcError } = await supabase.rpc("assign_next_waiting_trailer", {
+      const { error: rpcError } = await (supabase as any).rpc("assign_next_waiting_trailer", {
         p_assigned_by: null,
       });
 
@@ -200,7 +200,7 @@ export default function CompoundWaitingPage() {
 
     setActioningId(waitingId);
     await runAction(async () => {
-      const { error: rpcError } = await supabase.rpc("assign_waiting_trailer_to_compound", {
+      const { error: rpcError } = await (supabase as any).rpc("assign_waiting_trailer_to_compound", {
         p_waiting_id: waitingId,
         p_position: null,
         p_assigned_by: null,
@@ -215,7 +215,7 @@ export default function CompoundWaitingPage() {
 
     setActioningId(waitingId);
     await runAction(async () => {
-      const { error: rpcError } = await supabase.rpc("cancel_compound_waiting", {
+      const { error: rpcError } = await (supabase as any).rpc("cancel_compound_waiting", {
         p_waiting_id: waitingId,
         p_notes: "Cancelled from waiting queue dashboard.",
       });
