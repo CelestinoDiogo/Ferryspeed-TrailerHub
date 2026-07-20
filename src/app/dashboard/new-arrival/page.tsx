@@ -81,29 +81,35 @@ const normalizeCompoundPosition = (value?: string | null) => {
 };
 
 const getCompoundPositionState = async () => {
-  const { data, error } = await supabase
-    .from("trailers")
-    .select("compound_position")
-    .is("departure_date", null)
-    .neq("is_local", true);
+  const [{ data: trailerData, error: trailerError }, { data: availablePosition, error: positionError }] = await Promise.all([
+    supabase
+      .from("trailers")
+      .select("compound_position")
+      .is("departure_date", null)
+      .neq("is_local", true),
+    (supabase as any).rpc("get_first_available_compound_position"),
+  ]);
 
-  if (error) {
-    throw error;
+  if (trailerError) {
+    throw trailerError;
+  }
+
+  if (positionError) {
+    throw positionError;
   }
 
   const occupiedPositions = new Set<string>();
-  (data ?? []).forEach((item) => {
+  (trailerData ?? []).forEach((item) => {
     const normalizedPosition = normalizeCompoundPosition(item.compound_position);
     if (normalizedPosition) {
       occupiedPositions.add(normalizedPosition);
     }
   });
 
-  const availablePosition = Array.from({ length: 50 }, (_, index) => `P${String(index + 1).padStart(2, "0")}`).find(
-    (position) => !occupiedPositions.has(position),
-  );
-
-  return { occupiedPositions, availablePosition };
+  return {
+    occupiedPositions,
+    availablePosition: typeof availablePosition === "string" ? availablePosition : null,
+  };
 };
 
 function NewArrivalPageContent() {
@@ -323,6 +329,7 @@ function NewArrivalPageContent() {
 
     try {
       let finalPosition: string | null = null;
+      let addToWaitingQueue = false;
 
       if (!isLocal) {
         const { occupiedPositions, availablePosition } = await getCompoundPositionState();
@@ -350,10 +357,7 @@ function NewArrivalPageContent() {
         }
 
         if (!finalPosition) {
-          const message = "Compound is full.";
-          setPositionError(message);
-          window.alert(message);
-          return;
+          addToWaitingQueue = true;
         }
       }
 
@@ -390,6 +394,27 @@ function NewArrivalPageContent() {
         return;
       }
 
+      if (addToWaitingQueue) {
+        const { error: waitingError } = await (supabase as any).rpc("add_trailer_to_compound_waiting", {
+          p_trailer_id: data.id,
+          p_trailer_number: data.trailer_number,
+          p_customer: payload.customer,
+          p_load_status: payload.load_status,
+          p_priority_level: "normal",
+          p_priority_reason: null,
+          p_waiting_reason: "compound_full",
+          p_arrived_at: new Date().toISOString(),
+          p_vessel_operation_id: null,
+          p_vessel_trailer_id: searchParams.get("vesselTrailerId"),
+          p_notes: payload.notes,
+        });
+
+        if (waitingError) {
+          window.alert(waitingError.message || "Arrival saved, but the trailer could not be added to Waiting for Compound.");
+          return;
+        }
+      }
+
       const eventDescription = isLocal
         ? "Local trailer arrival registered."
         : trailerSource === "outsourced"
@@ -418,6 +443,13 @@ function NewArrivalPageContent() {
       reset();
       setTrailerSource("company");
       setIsLocal(false);
+
+      if (addToWaitingQueue) {
+        window.alert("Compound is full. Trailer added to Waiting for Compound.");
+        router.push("/dashboard/compound/waiting");
+        return;
+      }
+
       router.push("/dashboard?saved=1");
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to save arrival.";
