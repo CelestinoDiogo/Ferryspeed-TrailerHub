@@ -20,6 +20,10 @@ import {
   type VesselPriorityLevel,
   type VesselTrailerStatus,
 } from "@/lib/vessel-operations";
+import {
+  getTemperatureToleranceSettingsFromStorage,
+  isTemperatureOutOfRange,
+} from "@/lib/temperature-tolerance";
 
 export type TrailerFormState = {
   trailerNumber: string;
@@ -233,14 +237,6 @@ const getTemperatureOutOfRange = (reading: number | null, required?: string | nu
   }
 
   return reading < range.min || reading > range.max;
-};
-
-const getTemperatureMismatch = (actual: number | null, expected: number | null) => {
-  if (actual === null || expected === null) {
-    return false;
-  }
-
-  return Math.abs(actual - expected) > 0.01;
 };
 
 const resolveOperatorName = async () => {
@@ -830,11 +826,12 @@ export function useVesselOperation(operationId: string): UseVesselOperationResul
 
       try {
         const nowIso = new Date().toISOString();
+        const temperatureTolerance = getTemperatureToleranceSettingsFromStorage();
 
         const frontOut = hasLegacyExpectedRange
           ? getTemperatureOutOfRange(frontTemperature, trailer.temperature_required)
-          : getTemperatureMismatch(frontTemperature, expectedFrontTemperature);
-        const rearOut = getTemperatureMismatch(rearTemperature, expectedRearTemperature);
+          : isTemperatureOutOfRange(frontTemperature, expectedFrontTemperature, temperatureTolerance);
+        const rearOut = isTemperatureOutOfRange(rearTemperature, expectedRearTemperature, temperatureTolerance);
 
         const { error: deleteTemperatureError } = await supabase
           .from("vessel_inspection_temperatures")

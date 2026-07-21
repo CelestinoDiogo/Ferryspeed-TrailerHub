@@ -19,6 +19,12 @@ import {
   normalizeExportAllocationRecord,
   type ExportAllocationRecord,
 } from "@/lib/export-allocation";
+import {
+  getDefaultTemperatureToleranceSettings,
+  getTemperatureToleranceSettingsFromStorage,
+  normalizeTemperatureToleranceSettings,
+  saveTemperatureToleranceSettingsToStorage,
+} from "@/lib/temperature-tolerance";
 
 type DeliveryRow = OpsBooking;
 
@@ -66,8 +72,18 @@ export default function OperationsCentrePage() {
   const [exportAllocations, setExportAllocations] = useState<ExportAllocationRecord[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [lowerToleranceInput, setLowerToleranceInput] = useState("3");
+  const [upperToleranceInput, setUpperToleranceInput] = useState("3");
+  const [settingsMessage, setSettingsMessage] = useState<string | null>(null);
 
   const todayKey = useMemo(() => getLocalDateKey(), []);
+
+  useEffect(() => {
+    const defaults = getDefaultTemperatureToleranceSettings();
+    const settings = getTemperatureToleranceSettingsFromStorage();
+    setLowerToleranceInput(String(settings.lowerTolerance ?? defaults.lowerTolerance));
+    setUpperToleranceInput(String(settings.upperTolerance ?? defaults.upperTolerance));
+  }, []);
 
   useEffect(() => {
     const loadData = async () => {
@@ -256,6 +272,31 @@ export default function OperationsCentrePage() {
     };
   }, [exportAllocations]);
 
+  const handleSaveTemperatureTolerance = () => {
+    const lower = Number(lowerToleranceInput);
+    const upper = Number(upperToleranceInput);
+
+    if (!Number.isFinite(lower) || lower < 0) {
+      setSettingsMessage("Lower tolerance must be a valid number equal to or above 0.");
+      return;
+    }
+
+    if (!Number.isFinite(upper) || upper < 0) {
+      setSettingsMessage("Upper tolerance must be a valid number equal to or above 0.");
+      return;
+    }
+
+    const normalized = normalizeTemperatureToleranceSettings({
+      lowerTolerance: lower,
+      upperTolerance: upper,
+    });
+
+    saveTemperatureToleranceSettingsToStorage(normalized);
+    setLowerToleranceInput(String(normalized.lowerTolerance));
+    setUpperToleranceInput(String(normalized.upperTolerance));
+    setSettingsMessage("Temperature tolerance settings saved.");
+  };
+
   return (
     <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 text-slate-100">
         <header className="rounded-3xl border border-white/10 bg-slate-900/70 p-5 shadow-2xl shadow-black/20 backdrop-blur sm:p-6">
@@ -439,6 +480,55 @@ export default function OperationsCentrePage() {
                   <p className="mt-2 text-2xl font-bold text-rose-300">{exportOpsSummary.overdue}</p>
                 </Link>
               </div>
+            </section>
+
+            <section className="rounded-3xl border border-white/10 bg-slate-900/70 p-5 shadow-lg shadow-black/20 backdrop-blur">
+              <div className="flex flex-col gap-2">
+                <p className="text-sm font-semibold uppercase tracking-[0.3em] text-cyan-300">Settings</p>
+                <h2 className="text-lg font-semibold text-white">Temperature Tolerance</h2>
+                <p className="text-sm text-slate-300">Define tolerance margins used for expected front and rear temperature checks.</p>
+              </div>
+
+              <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                <label className="text-sm text-slate-200">
+                  Lower Tolerance ({"\u00b0"}C)
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.1"
+                    value={lowerToleranceInput}
+                    onChange={(event) => setLowerToleranceInput(event.target.value)}
+                    className="mt-1 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm outline-none"
+                  />
+                </label>
+
+                <label className="text-sm text-slate-200">
+                  Upper Tolerance ({"\u00b0"}C)
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.1"
+                    value={upperToleranceInput}
+                    onChange={(event) => setUpperToleranceInput(event.target.value)}
+                    className="mt-1 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm outline-none"
+                  />
+                </label>
+              </div>
+
+              <div className="mt-4 flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  onClick={handleSaveTemperatureTolerance}
+                  className="rounded-2xl bg-cyan-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-cyan-400"
+                >
+                  Save Temperature Tolerance
+                </button>
+                <span className="text-xs text-slate-400">Default: 3{"\u00b0"}C lower and 3{"\u00b0"}C upper.</span>
+              </div>
+
+              {settingsMessage ? (
+                <p className="mt-3 text-sm text-cyan-200">{settingsMessage}</p>
+              ) : null}
             </section>
           </>
         )}

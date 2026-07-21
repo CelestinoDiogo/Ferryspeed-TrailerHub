@@ -24,6 +24,17 @@ import {
   type VesselOperationRecord,
   type VesselOperationTrailerRecord,
 } from "@/lib/vessel-operations";
+import {
+  evaluateTemperatureStatus,
+  getAcceptedTemperatureRange,
+  getDefaultTemperatureToleranceSettings,
+  getTemperatureStatusLabel,
+  getTemperatureToleranceSettingsFromStorage,
+  isTemperatureOutOfRange,
+  TEMPERATURE_TOLERANCE_STORAGE_KEY,
+  type TemperatureStatus,
+  type TemperatureToleranceSettings,
+} from "@/lib/temperature-tolerance";
 
 type PhotoView = VesselInspectionPhotoRecord & { previewUrl?: string | null };
 type SelectedInspectionPhoto = {
@@ -86,14 +97,6 @@ const isOutOfConfiguredRange = (value: number | null, configuredRange?: string |
   return value < range.min || value > range.max;
 };
 
-const hasExpectedMismatch = (actual: number | null, expected: number | null) => {
-  if (actual === null || expected === null) {
-    return false;
-  }
-
-  return Math.abs(actual - expected) > 0.01;
-};
-
 const sanitizeFileName = (name: string) => name.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
 const buildSelectedPhotoId = (file: File) => `${file.name}:${file.size}:${file.lastModified}`;
 
@@ -115,6 +118,7 @@ function VesselInspectionPageContent() {
   const [damageRecord, setDamageRecord] = useState<VesselInspectionDamageRecord | null>(null);
   const [photos, setPhotos] = useState<PhotoView[]>([]);
   const [receptionConfirmedAt, setReceptionConfirmedAt] = useState<string | null>(null);
+  const [temperatureTolerance, setTemperatureTolerance] = useState<TemperatureToleranceSettings>(getDefaultTemperatureToleranceSettings);
 
   const [overallCondition, setOverallCondition] = useState<OverallCondition>("good");
   const [frontTemperature, setFrontTemperature] = useState("");
@@ -151,6 +155,19 @@ function VesselInspectionPageContent() {
         URL.revokeObjectURL(photo.previewUrl);
       });
     };
+  }, []);
+
+  useEffect(() => {
+    setTemperatureTolerance(getTemperatureToleranceSettingsFromStorage());
+
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === TEMPERATURE_TOLERANCE_STORAGE_KEY) {
+        setTemperatureTolerance(getTemperatureToleranceSettingsFromStorage());
+      }
+    };
+
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
   }, []);
 
   const clearSelectedPhotos = useCallback(() => {
@@ -381,6 +398,28 @@ function VesselInspectionPageContent() {
   const expectedFrontTemperature = useMemo(() => (trailer ? resolveExpectedFrontTemperature(trailer) : null), [trailer]);
   const expectedRearTemperature = useMemo(() => (trailer ? resolveExpectedRearTemperature(trailer) : null), [trailer]);
   const expectedTemperatureUnit = useMemo(() => normalizeExpectedTemperatureUnit(trailer?.expected_temperature_unit), [trailer?.expected_temperature_unit]);
+  const frontMeasuredTemperature = useMemo(() => parseNumber(frontTemperature), [frontTemperature]);
+  const rearMeasuredTemperature = useMemo(() => parseNumber(rearTemperature), [rearTemperature]);
+  const frontTemperatureStatus = useMemo<TemperatureStatus>(() => {
+    return evaluateTemperatureStatus(frontMeasuredTemperature, expectedFrontTemperature, temperatureTolerance);
+  }, [expectedFrontTemperature, frontMeasuredTemperature, temperatureTolerance]);
+  const rearTemperatureStatus = useMemo<TemperatureStatus>(() => {
+    return evaluateTemperatureStatus(rearMeasuredTemperature, expectedRearTemperature, temperatureTolerance);
+  }, [expectedRearTemperature, rearMeasuredTemperature, temperatureTolerance]);
+  const frontAcceptedRange = useMemo(() => {
+    if (expectedFrontTemperature === null) {
+      return null;
+    }
+
+    return getAcceptedTemperatureRange(expectedFrontTemperature, temperatureTolerance);
+  }, [expectedFrontTemperature, temperatureTolerance]);
+  const rearAcceptedRange = useMemo(() => {
+    if (expectedRearTemperature === null) {
+      return null;
+    }
+
+    return getAcceptedTemperatureRange(expectedRearTemperature, temperatureTolerance);
+  }, [expectedRearTemperature, temperatureTolerance]);
   const isFrontTemperatureRequired = useMemo(() => {
     if (expectedFrontTemperature !== null) {
       return true;
@@ -519,8 +558,8 @@ function VesselInspectionPageContent() {
       return;
     }
 
-    const frontValue = parseNumber(frontTemperature);
-    const rearValue = parseNumber(rearTemperature);
+    const frontValue = frontMeasuredTemperature;
+    const rearValue = rearMeasuredTemperature;
 
     if (isFrontTemperatureRequired && frontValue === null) {
       setError("Actual front temperature is required for this trailer.");
@@ -547,9 +586,9 @@ function VesselInspectionPageContent() {
       const nowIso = new Date().toISOString();
 
       const frontOutOfRange = frontAlertManual || (expectedFrontTemperature !== null
-        ? hasExpectedMismatch(frontValue, expectedFrontTemperature)
+        ? isTemperatureOutOfRange(frontValue, expectedFrontTemperature, temperatureTolerance)
         : isOutOfConfiguredRange(frontValue, trailer.temperature_required));
-      const rearOutOfRange = rearAlertManual || hasExpectedMismatch(rearValue, expectedRearTemperature);
+      const rearOutOfRange = rearAlertManual || isTemperatureOutOfRange(rearValue, expectedRearTemperature, temperatureTolerance);
 
       const { error: deleteTemperatureError } = await supabase
         .from("vessel_inspection_temperatures")
@@ -680,9 +719,11 @@ function VesselInspectionPageContent() {
     expectedFrontTemperature,
     expectedRearTemperature,
     expectedTemperatureUnit,
+    frontMeasuredTemperature,
     isFrontTemperatureRequired,
     isRearTemperatureRequired,
     trailer,
+    temperatureTolerance,
     vesselTrailerId,
     clearSelectedPhotos,
     loadInspection,
@@ -760,7 +801,7 @@ function VesselInspectionPageContent() {
 
         <section className="rounded-3xl border border-white/10 bg-slate-900/70 p-5 shadow-lg shadow-black/20 backdrop-blur sm:p-6">
           <p className="text-sm font-semibold uppercase tracking-[0.3em] text-cyan-400">Temperatures</p>
-          <p className="mt-2 text-xs text-slate-400">Unit: {expectedTemperatureUnit}. Front expected: {expectedFrontTemperature === null ? "-" : expectedFrontTemperature}. Rear expected: {expectedRearTemperature === null ? "-" : expectedRearTemperature}.</p>
+          <p className="mt-2 text-xs text-slate-400">Unit: {expectedTemperatureUnit}. Tolerance: -{temperatureTolerance.lowerTolerance}{expectedTemperatureUnit} / +{temperatureTolerance.upperTolerance}{expectedTemperatureUnit}.</p>
           <p className="mt-1 text-xs text-slate-400">{isFrontTemperatureRequired ? "Actual front temperature is required." : "Actual front temperature is optional."} {isRearTemperatureRequired ? "Actual rear temperature is required." : "Actual rear temperature is optional."}</p>
 
           <div className="mt-4 grid gap-3 sm:grid-cols-2">
@@ -781,6 +822,21 @@ function VesselInspectionPageContent() {
             <label className="flex items-center gap-2 text-sm text-slate-200">
               <input type="checkbox" checked={rearAlertManual} onChange={(event) => setRearAlertManual(event.target.checked)} /> Mark rear as alert
             </label>
+          </div>
+
+          <div className="mt-4 grid gap-3 sm:grid-cols-2">
+            <div className="rounded-2xl border border-white/10 bg-slate-950/70 p-3 text-sm text-slate-200">
+              <p><span className="font-semibold text-white">Front Expected:</span> {expectedFrontTemperature === null ? "-" : `${expectedFrontTemperature}${expectedTemperatureUnit}`}</p>
+              <p className="mt-1"><span className="font-semibold text-white">Accepted Range:</span> {frontAcceptedRange ? `${frontAcceptedRange.minimumAcceptedTemperature}${expectedTemperatureUnit} -> ${frontAcceptedRange.maximumAcceptedTemperature}${expectedTemperatureUnit}` : "-"}</p>
+              <p className="mt-1"><span className="font-semibold text-white">Measured:</span> {frontMeasuredTemperature === null ? "-" : `${frontMeasuredTemperature}${expectedTemperatureUnit}`}</p>
+              <p className="mt-1"><span className="font-semibold text-white">Status:</span> {frontAlertManual ? "Manual Temperature Alert" : getTemperatureStatusLabel(frontTemperatureStatus)}</p>
+            </div>
+            <div className="rounded-2xl border border-white/10 bg-slate-950/70 p-3 text-sm text-slate-200">
+              <p><span className="font-semibold text-white">Rear Expected:</span> {expectedRearTemperature === null ? "-" : `${expectedRearTemperature}${expectedTemperatureUnit}`}</p>
+              <p className="mt-1"><span className="font-semibold text-white">Accepted Range:</span> {rearAcceptedRange ? `${rearAcceptedRange.minimumAcceptedTemperature}${expectedTemperatureUnit} -> ${rearAcceptedRange.maximumAcceptedTemperature}${expectedTemperatureUnit}` : "-"}</p>
+              <p className="mt-1"><span className="font-semibold text-white">Measured:</span> {rearMeasuredTemperature === null ? "-" : `${rearMeasuredTemperature}${expectedTemperatureUnit}`}</p>
+              <p className="mt-1"><span className="font-semibold text-white">Status:</span> {rearAlertManual ? "Manual Temperature Alert" : getTemperatureStatusLabel(rearTemperatureStatus)}</p>
+            </div>
           </div>
         </section>
 

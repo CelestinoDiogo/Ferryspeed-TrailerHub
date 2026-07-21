@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/lib/database.types";
+import { getDefaultTemperatureToleranceSettings, isTemperatureOutOfRange } from "@/lib/temperature-tolerance";
 import type { TemperatureResult, VesselOperationalReportData } from "@/lib/reports/types";
 
 type TrailerRow = Database["public"]["Tables"]["vessel_operation_trailers"]["Row"];
@@ -103,7 +104,8 @@ const getTemperatureResult = (row: TemperatureRow, limits: TemperatureLimits, ex
   }
 
   if (expectedTemperature !== null) {
-    return Math.abs(value - expectedTemperature) <= 0.01 ? "pass" : "fail";
+    const tolerance = getDefaultTemperatureToleranceSettings();
+    return isTemperatureOutOfRange(value, expectedTemperature, tolerance) ? "fail" : "pass";
   }
 
   if (limits.min !== null && value < limits.min) {
