@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { COMPOUND_REFRESH_STORAGE_KEY } from "@/lib/export-allocation";
 import { supabase } from "@/lib/supabase";
 
 type CompoundWaitingActiveRow = {
@@ -178,6 +179,20 @@ export default function CompoundWaitingPage() {
 
   useEffect(() => {
     void loadWaitingData();
+  }, [loadWaitingData]);
+
+  useEffect(() => {
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key === COMPOUND_REFRESH_STORAGE_KEY) {
+        void loadWaitingData();
+      }
+    };
+
+    window.addEventListener("storage", handleStorage);
+
+    return () => {
+      window.removeEventListener("storage", handleStorage);
+    };
   }, [loadWaitingData]);
 
   const filteredRows = useMemo(() => {

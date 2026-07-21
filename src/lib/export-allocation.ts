@@ -464,3 +464,78 @@ export function isExportAllocationOverdue(
 
   return expected.getTime() < now.getTime();
 }
+
+export const COMPOUND_REFRESH_STORAGE_KEY = "ferryspeed:compound-updated";
+
+type CompoundRefreshRpcClient = {
+  rpc: (
+    fn: string,
+    args?: Record<string, unknown>,
+  ) => Promise<{
+    data: unknown;
+    error: { code?: string; message?: string } | null;
+  }>;
+};
+
+export type AutomaticWaitingAssignmentResult =
+  | {
+      assigned: true;
+      trailerNumber: string | null;
+      assignedPosition: string | null;
+    }
+  | {
+      assigned: false;
+      reason: "no_waiting" | "no_position";
+    };
+
+const extractFirstRpcRow = (value: unknown): Record<string, unknown> | null => {
+  if (!value) {
+    return null;
+  }
+
+  if (Array.isArray(value)) {
+    const first = value[0];
+    if (!first || typeof first !== "object") {
+      return null;
+    }
+
+    return first as Record<string, unknown>;
+  }
+
+  if (typeof value === "object") {
+    return value as Record<string, unknown>;
+  }
+
+  return null;
+};
+
+export async function assignNextWaitingTrailerAfterDeliveredEmpty(
+  rpcClient: CompoundRefreshRpcClient,
+): Promise<AutomaticWaitingAssignmentResult> {
+  const { data, error } = await rpcClient.rpc("assign_next_waiting_trailer");
+
+  if (error) {
+    const normalizedMessage = (error.message ?? "").trim().toLowerCase();
+
+    if (
+      normalizedMessage.includes("compound is full") ||
+      normalizedMessage.includes("no position is available")
+    ) {
+      return { assigned: false, reason: "no_position" };
+    }
+
+    if (normalizedMessage.includes("there are no trailers waiting for compound")) {
+      return { assigned: false, reason: "no_waiting" };
+    }
+
+    throw new Error(error.message || "Unable to automatically assign waiting trailer.");
+  }
+
+  const row = extractFirstRpcRow(data);
+
+  return {
+    assigned: true,
+    trailerNumber: (row?.trailer_number as string | null) ?? null,
+    assignedPosition: (row?.assigned_position as string | null) ?? null,
+  };
+}

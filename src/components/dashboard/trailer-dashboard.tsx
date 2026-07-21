@@ -12,6 +12,7 @@ import { PrintHeader } from "@/components/print/print-header";
 import { PrintReportLayout } from "@/components/print/print-report-layout";
 import { PrintSummary } from "@/components/print/print-summary";
 import { PrintTable } from "@/components/print/print-table";
+import { COMPOUND_REFRESH_STORAGE_KEY } from "@/lib/export-allocation";
 import { supabase } from "@/lib/supabase";
 import {
   calculateCollectionAging,
@@ -417,6 +418,20 @@ export function TrailerDashboard() {
 
     void loadStats();
   }, [saved]);
+
+  useEffect(() => {
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key === COMPOUND_REFRESH_STORAGE_KEY) {
+        window.location.reload();
+      }
+    };
+
+    window.addEventListener("storage", handleStorage);
+
+    return () => {
+      window.removeEventListener("storage", handleStorage);
+    };
+  }, []);
 
   const todayKey = getDateKey(new Date().toISOString());
   const arrivalsTodayCount = trailers.filter((item) => getDateKey(item.arrival_date) === todayKey).length;

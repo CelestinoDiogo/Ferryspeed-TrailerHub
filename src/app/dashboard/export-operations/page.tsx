@@ -15,6 +15,8 @@ import type { Database } from "@/lib/database.types";
 import { supabase } from "@/lib/supabase";
 import { getLocalDateKey } from "@/lib/operational-readiness";
 import {
+  COMPOUND_REFRESH_STORAGE_KEY,
+  assignNextWaitingTrailerAfterDeliveredEmpty,
   EXPORT_ACTIVE_STATUSES,
   isExportAllocationOffCompoundStatus,
   getAdvanceStatusActionLabel,
@@ -268,6 +270,7 @@ function ExportOperationsPageContent() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [warning, setWarning] = useState<string | null>(null);
   const [actioningId, setActioningId] = useState<string | null>(null);
 
   const updateFilters = (updates: { date?: string; customer?: string; status?: string }) => {
@@ -322,6 +325,7 @@ function ExportOperationsPageContent() {
   const loadAllocations = async () => {
     setIsLoading(true);
     setError(null);
+    setWarning(null);
 
     try {
       const queryColumns = `
@@ -776,6 +780,7 @@ function ExportOperationsPageContent() {
     setActioningId(allocation.id);
     setError(null);
     setSuccess(null);
+    setWarning(null);
 
     try {
       let movementMetadata: Record<string, unknown> | undefined;
@@ -788,11 +793,42 @@ function ExportOperationsPageContent() {
           new_compound_position: null,
         };
 
+        let automaticAssignmentMessage: string | null = null;
+
+        try {
+          const automaticAssignment = await assignNextWaitingTrailerAfterDeliveredEmpty(
+            supabase as unknown as {
+              rpc: (
+                fn: string,
+                args?: Record<string, unknown>,
+              ) => Promise<{
+                data: unknown;
+                error: { code?: string; message?: string } | null;
+              }>;
+            },
+          );
+
+          if (automaticAssignment.assigned) {
+            const trailerNumber = automaticAssignment.trailerNumber ?? "the waiting trailer";
+            const assignedPosition = automaticAssignment.assignedPosition ?? "the first available position";
+            automaticAssignmentMessage = `Trailer delivered empty. Waiting trailer ${trailerNumber} was automatically assigned to ${assignedPosition}.`;
+          }
+        } catch {
+          setWarning("Trailer delivered empty, but automatic waiting assignment could not be completed.");
+        }
+
         if (delivered.requiresClientEvent) {
           await createStatusChangedEvent(allocation, allocation.status, nextStatus, movementMetadata);
         }
-        setSuccess("Status updated to Delivered Empty. Trailer removed from compound inventory.");
+        setSuccess(
+          automaticAssignmentMessage
+            ? `Status updated to Delivered Empty. Trailer removed from compound inventory. ${automaticAssignmentMessage}`
+            : "Status updated to Delivered Empty. Trailer removed from compound inventory.",
+        );
         await loadAllocations();
+        if (typeof window !== "undefined") {
+          window.localStorage.setItem(COMPOUND_REFRESH_STORAGE_KEY, Date.now().toString());
+        }
         return;
       }
 
@@ -1006,6 +1042,12 @@ function ExportOperationsPageContent() {
 
         {success ? (
           <div className="rounded-2xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">{success}</div>
+        ) : null}
+
+        {warning ? (
+          <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
+            {warning}
+          </div>
         ) : null}
 
         <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
