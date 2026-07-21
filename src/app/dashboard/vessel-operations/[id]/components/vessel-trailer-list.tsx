@@ -2,6 +2,8 @@ import {
   formatVesselDateTime,
   getVesselPriorityClass,
   getVesselPriorityLabel,
+  getVesselInspectionProgressLabel,
+  getVesselInspectionProgressState,
   getVesselTrailerStatusClass,
   getVesselTrailerStatusLabel,
   normalizeExpectedTemperatureUnit,
@@ -9,7 +11,7 @@ import {
   resolveExpectedRearTemperature,
   type VesselOperationTrailerRecord,
 } from "@/lib/vessel-operations";
-import type { TrailerInspectionState } from "../hooks/use-vessel-operation";
+import Link from "next/link";
 
 type VesselTrailerListProps = {
   sortedTrailers: VesselOperationTrailerRecord[];
@@ -17,12 +19,9 @@ type VesselTrailerListProps = {
   editable: boolean;
   isReadOnly: boolean;
   actioningTrailerId: string | null;
-  getInspectionState: (trailerId: string) => TrailerInspectionState;
-  onInspectionFieldChange: <K extends keyof TrailerInspectionState>(trailerId: string, field: K, value: TrailerInspectionState[K]) => void;
   onTogglePriority: (trailer: VesselOperationTrailerRecord) => Promise<void>;
   onRemoveTrailer: (trailer: VesselOperationTrailerRecord) => Promise<void>;
   onMarkArrived: (trailer: VesselOperationTrailerRecord) => Promise<void>;
-  onSaveInspection: (trailer: VesselOperationTrailerRecord) => Promise<void>;
 };
 
 export function VesselTrailerList({
@@ -31,12 +30,9 @@ export function VesselTrailerList({
   editable,
   isReadOnly,
   actioningTrailerId,
-  getInspectionState,
-  onInspectionFieldChange,
   onTogglePriority,
   onRemoveTrailer,
   onMarkArrived,
-  onSaveInspection,
 }: VesselTrailerListProps) {
   return (
     <section className="space-y-3">
@@ -44,12 +40,13 @@ export function VesselTrailerList({
         <div className="rounded-3xl border border-white/10 bg-slate-900/70 p-6 text-sm text-slate-300">No trailers have been added to this vessel operation yet.</div>
       ) : (
         sortedTrailers.map((trailer) => {
-          const inspection = getInspectionState(trailer.id);
           const expectedFront = resolveExpectedFrontTemperature(trailer);
           const expectedRear = resolveExpectedRearTemperature(trailer);
           const expectedUnit = normalizeExpectedTemperatureUnit(trailer.expected_temperature_unit);
           const canMarkArrived = operationStatus === "confirmed" && trailer.status === "expected";
-          const canInspect = operationStatus === "confirmed" && (trailer.status === "arrived" || trailer.status === "inspected");
+          const canOpenInspection = operationStatus !== "draft" && trailer.arrival_status !== "cancelled" && trailer.arrival_status !== "not_discharged";
+          const inspectionState = getVesselInspectionProgressState(trailer);
+          const inspectionLabel = getVesselInspectionProgressLabel(inspectionState);
 
           return (
             <article key={trailer.id} className="rounded-3xl border border-white/10 bg-slate-900/70 p-4 shadow-lg shadow-black/20 backdrop-blur sm:p-5">
@@ -71,6 +68,7 @@ export function VesselTrailerList({
                       <p>Load Status: {trailer.load_status ?? "-"}</p>
                       <p>Expected Front Temp: {expectedFront === null ? "-" : `${expectedFront} ${expectedUnit}`}</p>
                       <p>Expected Rear Temp: {expectedRear === null ? "-" : `${expectedRear} ${expectedUnit}`}</p>
+                      <p>Inspection Progress: {inspectionLabel}</p>
                       <p>Arrival: {formatVesselDateTime(trailer.arrival_confirmed_at ?? trailer.arrived_at)}</p>
                       <p>Damage: {trailer.has_damage ? "Yes" : "No"}</p>
                       <p>Temp Alert: {trailer.has_temperature_alert ? "Yes" : "No"}</p>
@@ -88,6 +86,15 @@ export function VesselTrailerList({
                       >
                         Arrived
                       </button>
+                    ) : null}
+
+                    {canOpenInspection ? (
+                      <Link
+                        href={`/dashboard/vessel-operations/${trailer.vessel_operation_id}/boat-check/${trailer.id}`}
+                        className="rounded-2xl bg-cyan-500 px-4 py-3 text-center text-sm font-semibold text-slate-950 hover:bg-cyan-400"
+                      >
+                        Open Inspection
+                      </Link>
                     ) : null}
 
                     {editable ? (
@@ -112,129 +119,6 @@ export function VesselTrailerList({
                     ) : null}
                   </div>
                 </div>
-
-                {canInspect ? (
-                  <details className="rounded-2xl border border-white/10 bg-slate-950/60 p-4" open={trailer.status === "arrived"}>
-                    <summary className="cursor-pointer text-sm font-semibold text-cyan-100">Boat Check</summary>
-
-                    <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                      <label className="text-sm text-slate-200">
-                        Overall Condition
-                        <select
-                          value={inspection.overallCondition}
-                          onChange={(event) => onInspectionFieldChange(trailer.id, "overallCondition", event.target.value as "good" | "attention_required")}
-                          className="mt-1 w-full rounded-2xl border border-white/10 bg-slate-900 px-3 py-2 text-sm"
-                          disabled={isReadOnly || actioningTrailerId === trailer.id}
-                        >
-                          <option value="good">Good</option>
-                          <option value="attention_required">Attention Required</option>
-                        </select>
-                      </label>
-
-                      <label className="text-sm text-slate-200">
-                        Damage
-                        <select
-                          value={inspection.damage}
-                          onChange={(event) => onInspectionFieldChange(trailer.id, "damage", event.target.value as "yes" | "no")}
-                          className="mt-1 w-full rounded-2xl border border-white/10 bg-slate-900 px-3 py-2 text-sm"
-                          disabled={isReadOnly || actioningTrailerId === trailer.id}
-                        >
-                          <option value="no">No</option>
-                          <option value="yes">Yes</option>
-                        </select>
-                      </label>
-
-                      <label className="text-sm text-slate-200">
-                        Actual Front Temperature ({expectedUnit})
-                        <input
-                          type="number"
-                          value={inspection.frontTemperature}
-                          onChange={(event) => onInspectionFieldChange(trailer.id, "frontTemperature", event.target.value)}
-                          className="mt-1 w-full rounded-2xl border border-white/10 bg-slate-900 px-3 py-2 text-sm"
-                          disabled={isReadOnly || actioningTrailerId === trailer.id}
-                        />
-                      </label>
-
-                      <label className="text-sm text-slate-200">
-                        Actual Rear Temperature ({expectedUnit})
-                        <input
-                          type="number"
-                          value={inspection.rearTemperature}
-                          onChange={(event) => onInspectionFieldChange(trailer.id, "rearTemperature", event.target.value)}
-                          className="mt-1 w-full rounded-2xl border border-white/10 bg-slate-900 px-3 py-2 text-sm"
-                          disabled={isReadOnly || actioningTrailerId === trailer.id}
-                        />
-                      </label>
-
-                      {inspection.damage === "yes" ? (
-                        <>
-                          <label className="text-sm text-slate-200">
-                            Damage Type
-                            <input
-                              value={inspection.damageType}
-                              onChange={(event) => onInspectionFieldChange(trailer.id, "damageType", event.target.value)}
-                              className="mt-1 w-full rounded-2xl border border-white/10 bg-slate-900 px-3 py-2 text-sm"
-                              disabled={isReadOnly || actioningTrailerId === trailer.id}
-                            />
-                          </label>
-                          <label className="text-sm text-slate-200">
-                            Damage Location
-                            <input
-                              value={inspection.damageLocation}
-                              onChange={(event) => onInspectionFieldChange(trailer.id, "damageLocation", event.target.value)}
-                              className="mt-1 w-full rounded-2xl border border-white/10 bg-slate-900 px-3 py-2 text-sm"
-                              disabled={isReadOnly || actioningTrailerId === trailer.id}
-                            />
-                          </label>
-                          <label className="text-sm text-slate-200 sm:col-span-2">
-                            Damage Description
-                            <textarea
-                              rows={2}
-                              value={inspection.damageDescription}
-                              onChange={(event) => onInspectionFieldChange(trailer.id, "damageDescription", event.target.value)}
-                              className="mt-1 w-full rounded-2xl border border-white/10 bg-slate-900 px-3 py-2 text-sm"
-                              disabled={isReadOnly || actioningTrailerId === trailer.id}
-                            />
-                          </label>
-                        </>
-                      ) : null}
-
-                      <label className="text-sm text-slate-200 sm:col-span-2">
-                        Notes
-                        <textarea
-                          rows={2}
-                          value={inspection.notes}
-                          onChange={(event) => onInspectionFieldChange(trailer.id, "notes", event.target.value)}
-                          className="mt-1 w-full rounded-2xl border border-white/10 bg-slate-900 px-3 py-2 text-sm"
-                          disabled={isReadOnly || actioningTrailerId === trailer.id}
-                        />
-                      </label>
-
-                      <label className="text-sm text-slate-200 sm:col-span-2">
-                        Photos
-                        <input
-                          type="file"
-                          accept="image/*"
-                          multiple
-                          onChange={(event) => onInspectionFieldChange(trailer.id, "photos", Array.from(event.target.files ?? []))}
-                          className="mt-1 w-full rounded-2xl border border-white/10 bg-slate-900 px-3 py-2 text-sm"
-                          disabled={isReadOnly || actioningTrailerId === trailer.id}
-                        />
-                      </label>
-                    </div>
-
-                    <div className="mt-4 flex justify-end">
-                      <button
-                        type="button"
-                        onClick={() => void onSaveInspection(trailer)}
-                        disabled={isReadOnly || actioningTrailerId === trailer.id}
-                        className="rounded-2xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-2 text-sm font-semibold text-emerald-100 hover:bg-emerald-500/20 disabled:opacity-60"
-                      >
-                        Save Boat Check
-                      </button>
-                    </div>
-                  </details>
-                ) : null}
               </div>
             </article>
           );

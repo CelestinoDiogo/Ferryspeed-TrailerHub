@@ -7,7 +7,6 @@ import { ConfirmReceptionModal } from "../components/confirm-reception-modal";
 import { useVesselReception } from "../hooks/use-vessel-reception";
 import { supabase } from "@/lib/supabase";
 import {
-  buildVesselSupabaseErrorMessage,
   canConfirmVesselTrailerReception,
   formatTemperatureReading,
   formatVesselDateTime,
@@ -17,8 +16,6 @@ import {
   getVesselPriorityClass,
   getVesselPriorityLabel,
   getVesselTrailerStatusClass,
-  logVesselSupabaseError,
-  type SupabaseErrorLike,
   sortVesselOperationTrailersForArrivals,
   type VesselInspectionTemperatureRecord,
   type VesselOperationRecord,
@@ -37,8 +34,6 @@ type ViewTrailer = VesselOperationTrailerRecord & {
   frontTemperatureReading?: VesselInspectionTemperatureRecord | null;
   rearTemperatureReading?: VesselInspectionTemperatureRecord | null;
 };
-
-const asSupabaseErrorLike = (error: unknown) => error as SupabaseErrorLike;
 
 function VesselBoatCheckPageContent() {
   const params = useParams();
@@ -145,16 +140,14 @@ function VesselBoatCheckPageContent() {
   }, [loadBoatCheck]);
 
   const visibleTrailers = useMemo(() => {
-    return trailers.filter((item) => {
-      const arrivalStatus = (item.arrival_status ?? "") as string;
-      return arrivalStatus === "arrived" || item.status === "inspected";
-    });
+    return trailers.filter((item) => item.arrival_status !== "cancelled" && item.arrival_status !== "not_discharged");
   }, [trailers]);
 
   const summary = useMemo<BoatCheckSummary>(() => {
-    const arrived = trailers.filter((item) => item.arrival_status === "arrived" || item.status === "inspected").length;
-    const inspected = trailers.filter((item) => item.status === "inspected").length;
-    const pendingInspection = Math.max(arrived - inspected, 0);
+    const arrived = trailers.filter((item) => item.arrival_status === "arrived").length;
+    const inspected = trailers.filter((item) => item.status === "inspected" || Boolean(item.inspection_completed_at)).length;
+    const inspectedArrived = trailers.filter((item) => item.arrival_status === "arrived" && (item.status === "inspected" || Boolean(item.inspection_completed_at))).length;
+    const pendingInspection = Math.max(arrived - inspectedArrived, 0);
     const damages = trailers.filter((item) => item.has_damage).length;
     const temperatureAlerts = trailers.filter((item) => item.has_temperature_alert).length;
 
@@ -173,34 +166,8 @@ function VesselBoatCheckPageContent() {
         return;
       }
 
-      setActioningTrailerId(trailer.id);
       setError(null);
-
-      try {
-        const nowIso = new Date().toISOString();
-        const updatePayload = {
-          updated_at: nowIso,
-          inspection_started_at: trailer.inspection_started_at ?? nowIso,
-        };
-
-        const { error: updateError } = await supabase
-          .from("vessel_operation_trailers")
-          .update(updatePayload)
-          .eq("id", trailer.id)
-          .eq("arrival_status", "arrived");
-
-        if (updateError) {
-          logVesselSupabaseError("Start boat check inspection failed", updateError);
-          throw updateError;
-        }
-
-        router.push(`/dashboard/vessel-operations/${operationId}/boat-check/${trailer.id}`);
-      } catch (startErr) {
-        logVesselSupabaseError("Unable to start inspection", asSupabaseErrorLike(startErr));
-        setError(buildVesselSupabaseErrorMessage(asSupabaseErrorLike(startErr), "Unable to start inspection."));
-      } finally {
-        setActioningTrailerId(null);
-      }
+      router.push(`/dashboard/vessel-operations/${operationId}/boat-check/${trailer.id}`);
     },
     [actioningTrailerId, operationId, router],
   );
@@ -258,6 +225,7 @@ function VesselBoatCheckPageContent() {
               const inspectionState = getVesselInspectionProgressState(trailer);
               const inspectionLabel = getVesselInspectionProgressLabel(inspectionState);
               const isReadOnly = operation.status === "completed" || operation.status === "cancelled";
+              const canStartInspection = !isReadOnly && trailer.arrival_status !== "cancelled" && trailer.arrival_status !== "not_discharged";
 
               return (
                 <article key={trailer.id} className="rounded-3xl border border-white/10 bg-slate-900/70 p-4 shadow-lg shadow-black/20 backdrop-blur sm:p-5">
@@ -279,18 +247,18 @@ function VesselBoatCheckPageContent() {
                     </div>
 
                     <div className="flex flex-col gap-2 lg:min-w-56">
-                      {!isInspected && !isReadOnly ? (
+                      {canStartInspection && !isInspected ? (
                         <button
                           type="button"
                           onClick={() => void handleStartInspection(trailer)}
                           disabled={actioningTrailerId === trailer.id}
                           className="rounded-2xl bg-cyan-500 px-4 py-3 text-sm font-semibold text-slate-950 hover:bg-cyan-400 disabled:opacity-60"
                         >
-                          {actioningTrailerId === trailer.id ? "Starting..." : "Start Inspection"}
+                          {actioningTrailerId === trailer.id ? "Opening..." : "Open Inspection"}
                         </button>
                       ) : null}
 
-                      {isInspected ? (
+                      {isInspected || isReadOnly ? (
                         <Link href={`/dashboard/vessel-operations/${operation.id}/boat-check/${trailer.id}`} className="rounded-2xl border border-white/10 bg-slate-800 px-4 py-3 text-center text-sm font-semibold text-white hover:bg-slate-700">
                           {isReadOnly ? "View Inspection" : "Edit Inspection"}
                         </Link>

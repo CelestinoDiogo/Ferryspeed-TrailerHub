@@ -29,18 +29,15 @@ function VesselOperationDetailsPageContent() {
     error,
     success,
     formState,
-    getInspectionState,
     bulkText,
     setBulkText,
     handleFieldChange,
-    handleInspectionFieldChange,
     handleAddSingleTrailer,
     handleBulkAdd,
     handleTogglePriority,
     handleRemoveTrailer,
     handleConfirmList,
     handleMarkArrived,
-    handleSaveInspection,
     handleCompleteOperation,
   } = useVesselOperation(operationId);
 
@@ -127,12 +124,9 @@ function VesselOperationDetailsPageContent() {
           editable={editable}
           isReadOnly={isReadOnly}
           actioningTrailerId={actioningTrailerId}
-          getInspectionState={getInspectionState}
-          onInspectionFieldChange={handleInspectionFieldChange}
           onTogglePriority={handleTogglePriority}
           onRemoveTrailer={handleRemoveTrailer}
           onMarkArrived={handleMarkArrived}
-          onSaveInspection={handleSaveInspection}
         />
       </div>
     </main>

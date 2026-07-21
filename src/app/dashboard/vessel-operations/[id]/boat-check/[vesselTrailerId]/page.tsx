@@ -285,32 +285,25 @@ function VesselInspectionPageContent() {
 
       const trailerRow = trailerResult.data as VesselOperationTrailerRecord;
 
-      if (trailerRow.arrival_status !== "arrived") {
-        setError("Only arrived trailers can be inspected.");
-        setOperation(operationResult.data as VesselOperationRecord);
-        setTrailer(trailerRow);
-        return;
-      }
-
       if (!trailerRow.inspection_started_at && trailerRow.status !== "inspected") {
         const nowIso = new Date().toISOString();
-        const startPayload = {
-          updated_at: nowIso,
-          inspection_started_at: nowIso,
-        };
-
-        const { error: startError } = await supabase
+        const { data: startRow, error: startError } = await supabase
           .from("vessel_operation_trailers")
-          .update(startPayload)
+          .update({
+            updated_at: nowIso,
+            inspection_started_at: nowIso,
+          })
           .eq("id", trailerRow.id)
-          .eq("arrival_status", "arrived");
+          .is("inspection_started_at", null)
+          .select("inspection_started_at")
+          .maybeSingle();
 
         if (startError) {
           logVesselSupabaseError("Mark inspection started failed", startError);
           throw startError;
         }
 
-        trailerRow.inspection_started_at = nowIso;
+        trailerRow.inspection_started_at = startRow?.inspection_started_at ?? trailerRow.inspection_started_at ?? nowIso;
       }
 
       setOperation(operationResult.data as VesselOperationRecord);
@@ -459,7 +452,7 @@ function VesselInspectionPageContent() {
         if (uploadError) {
           if (isStorageConfigurationError(uploadError.message || "")) {
             console.error("Photo upload skipped due to storage configuration:", uploadError);
-            failedFiles.push(`${file.name} (Photo storage is not configured in this environment.)`);
+            failedFiles.push(`${file.name} (${uploadError.message || "Photo storage is not configured in this environment."})`);
             continue;
           }
           failedFiles.push(`${file.name} (${uploadError.message || "Upload failed."})`);
@@ -523,11 +516,6 @@ function VesselInspectionPageContent() {
     }
 
     if (isSaving) {
-      return;
-    }
-
-    if (trailer.arrival_status !== "arrived") {
-      setError("Only arrived trailers can be inspected.");
       return;
     }
 
@@ -651,8 +639,7 @@ function VesselInspectionPageContent() {
       const { error: trailerUpdateError } = await supabase
         .from("vessel_operation_trailers")
         .update(trailerUpdatePayload)
-        .eq("id", trailer.id)
-        .eq("arrival_status", "arrived");
+        .eq("id", trailer.id);
 
       if (trailerUpdateError) {
         logVesselSupabaseError("Finalize boat check trailer update failed", trailerUpdateError);
