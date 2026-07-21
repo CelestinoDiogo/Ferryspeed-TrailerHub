@@ -40,7 +40,6 @@ const loadPrintReport = async (operationId: string) => {
     return {
       reportData: null,
       error: "Unable to load Vessel Operation Report.",
-      errorDetails: error instanceof Error ? error.message : "Unknown error.",
     } as const;
   }
 };
@@ -50,7 +49,6 @@ export default function VesselOperationPrintPage() {
   const operationId = typeof params?.id === "string" ? params.id : "";
   const [reportData, setReportData] = useState<VesselOperationalReportData | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [errorDetails, setErrorDetails] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
@@ -59,8 +57,7 @@ export default function VesselOperationPrintPage() {
     const run = async () => {
       if (!operationId) {
         if (isMounted) {
-          setError("Invalid vessel operation id.");
-          setErrorDetails(null);
+          setError("Invalid vessel operation reference.");
           setIsLoading(false);
         }
         return;
@@ -68,7 +65,6 @@ export default function VesselOperationPrintPage() {
 
       setIsLoading(true);
       setError(null);
-      setErrorDetails(null);
 
       const result = await loadPrintReport(operationId);
       if (!isMounted) {
@@ -77,7 +73,6 @@ export default function VesselOperationPrintPage() {
 
       setReportData(result.reportData);
       setError(result.error);
-      setErrorDetails(result.errorDetails ?? null);
       setIsLoading(false);
     };
 
@@ -107,7 +102,6 @@ export default function VesselOperationPrintPage() {
           <h1 className="mt-3 text-2xl font-semibold text-slate-950">Print Report Unavailable</h1>
           <p className="mt-3 text-sm text-slate-600">The vessel operation report data could not be loaded for printing.</p>
           <p className="mt-4 text-sm text-rose-700">{error ?? "Unable to load Vessel Operation Report."}</p>
-          {errorDetails ? <p className="mt-2 text-sm text-slate-600">{errorDetails}</p> : null}
           <div className="mt-6 screen-only">
             <Link href="/dashboard/vessel-operations" className="rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-900 hover:bg-slate-50">
               Back

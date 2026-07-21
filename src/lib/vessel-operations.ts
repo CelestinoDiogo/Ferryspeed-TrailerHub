@@ -622,5 +622,5 @@ export const buildVesselSupabaseErrorMessage = (error?: SupabaseErrorLike | null
     return fallback;
   }
 
-  return [error.message, error.details, error.hint].filter(Boolean).join(" — ") || fallback;
+  return fallback;
 };

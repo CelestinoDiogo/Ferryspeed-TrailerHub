@@ -64,7 +64,7 @@ const getInspectionStatusLabel = (trailer: VesselOperationalReportData["trailers
   return formatStatusLabel(trailer.inspectionStatus);
 };
 
-const classifyReportLoadError = (error: unknown): { kind: ReportLoadErrorKind; userMessage: string; details: string } => {
+const classifyReportLoadError = (error: unknown): { kind: ReportLoadErrorKind; userMessage: string } => {
   const details = error instanceof Error ? error.message : "Unknown error.";
   const message = details.toLowerCase();
 
@@ -80,7 +80,6 @@ const classifyReportLoadError = (error: unknown): { kind: ReportLoadErrorKind; u
     return {
       kind: "auth",
       userMessage: "Authentication is required to load this report.",
-      details,
     };
   }
 
@@ -88,7 +87,6 @@ const classifyReportLoadError = (error: unknown): { kind: ReportLoadErrorKind; u
     return {
       kind: "not_found",
       userMessage: "Vessel operation not found.",
-      details,
     };
   }
 
@@ -96,14 +94,12 @@ const classifyReportLoadError = (error: unknown): { kind: ReportLoadErrorKind; u
     return {
       kind: "data",
       userMessage: "Unable to load Vessel Operation Report.",
-      details,
     };
   }
 
   return {
     kind: "unknown",
     userMessage: "Unable to load Vessel Operation Report.",
-    details,
   };
 };
 
@@ -120,19 +116,19 @@ const classifyAiReportError = (error: unknown): { kind: AiReportErrorKind; messa
   }
 
   if (lower.includes("not found")) {
-    return { kind: "not_found", message };
+    return { kind: "not_found", message: "Report not found." };
   }
 
   if (lower.includes("invalid request") || lower.includes("invalid vessel operation id") || lower.includes("invalid request payload")) {
-    return { kind: "invalid_request", message };
+    return { kind: "invalid_request", message: "Invalid request." };
   }
 
   if (lower.includes("openai_api_key") || lower.includes("missing openai") || lower.includes("not configured")) {
-    return { kind: "configuration", message };
+    return { kind: "configuration", message: "AI report service is not configured." };
   }
 
   if (lower.includes("openai api error") || lower.includes("ai generation failed") || lower.includes("provider")) {
-    return { kind: "provider", message };
+    return { kind: "provider", message: "AI report generation is temporarily unavailable." };
   }
 
   if (
@@ -145,10 +141,10 @@ const classifyAiReportError = (error: unknown): { kind: AiReportErrorKind; messa
     lower.includes("unable to save ai report draft") ||
     lower.includes("unable to update ai report draft")
   ) {
-    return { kind: "database", message };
+    return { kind: "database", message: "Unable to access report data right now." };
   }
 
-  return { kind: "unknown", message };
+  return { kind: "unknown", message: "Unable to complete AI report request." };
 };
 
 export default function VesselSummaryPage() {
@@ -165,13 +161,12 @@ export default function VesselSummaryPage() {
   const [isAiReportSaving, setIsAiReportSaving] = useState(false);
   const [isAiReportPreviewOpen, setIsAiReportPreviewOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [errorDetails, setErrorDetails] = useState<string | null>(null);
   const [loadErrorKind, setLoadErrorKind] = useState<ReportLoadErrorKind | null>(null);
   const [reportNotice, setReportNotice] = useState<string | null>(null);
 
   const loadReport = useCallback(async () => {
     if (!operationId) {
-      setError("Invalid vessel operation id.");
+      setError("Invalid vessel operation reference.");
       setLoadErrorKind("data");
       setIsLoading(false);
       return;
@@ -179,7 +174,6 @@ export default function VesselSummaryPage() {
 
     setIsLoading(true);
     setError(null);
-    setErrorDetails(null);
     setLoadErrorKind(null);
 
     try {
@@ -189,7 +183,6 @@ export default function VesselSummaryPage() {
       console.error("Unable to load vessel summary report:", loadErr);
       const classified = classifyReportLoadError(loadErr);
       setError(classified.userMessage);
-      setErrorDetails(classified.details);
       setLoadErrorKind(classified.kind);
     } finally {
       setIsLoading(false);
@@ -281,7 +274,7 @@ export default function VesselSummaryPage() {
       setAiReportDraft(payload.reportDraft ?? buildDeterministicVesselOperationAiReportDraft(reportData));
       setDraftHistory(payload.draftHistory ?? []);
       if (payload.message) {
-        setReportNotice(payload.message);
+        setReportNotice("Draft loaded.");
       }
     } catch (loadErr) {
       console.error("Unable to load AI report draft:", loadErr);
@@ -319,7 +312,7 @@ export default function VesselSummaryPage() {
       setAiReportDraft(payload.reportDraft);
       setDraftHistory(payload.draftHistory ?? []);
       setIsAiReportPreviewOpen(true);
-      setReportNotice(payload.message ?? (payload.usedFallback ? "Template-generated report created from live data." : "AI report generated successfully."));
+      setReportNotice(payload.usedFallback ? "Template-generated report created from live data." : "AI report generated successfully.");
     } catch (generateErr) {
       console.error("Unable to generate AI report:", generateErr);
       handleAiReportError(generateErr, "Unable to generate AI report.");
@@ -364,7 +357,7 @@ export default function VesselSummaryPage() {
 
       setAiReportDraft(payload.reportDraft);
       setDraftHistory(payload.draftHistory ?? []);
-      setReportNotice(payload.message ?? "Draft saved successfully.");
+      setReportNotice("Draft saved successfully.");
     } catch (saveErr) {
       console.error("Unable to save AI report draft:", saveErr);
       handleAiReportError(saveErr, "Unable to save AI report draft.");
@@ -441,7 +434,6 @@ export default function VesselSummaryPage() {
           <p className="text-sm font-semibold uppercase tracking-[0.25em] text-rose-700">Ferryspeed TrailerHub</p>
           <h1 className="mt-3 text-2xl font-semibold text-slate-950">{title}</h1>
           <p className="mt-3 text-sm text-rose-700">{error ?? "Unable to load Vessel Operation Report."}</p>
-          {errorDetails ? <p className="mt-2 text-sm text-slate-600">{errorDetails}</p> : null}
         </div>
       </main>
     );

@@ -55,9 +55,25 @@ export type AiAssistantSummaryItem = {
   value: string | number;
 };
 
+export type AiAssistantSectionItem = {
+  label: string;
+  value: string | number;
+};
+
+export type AiAssistantSection = {
+  key: string;
+  title: string;
+  items: AiAssistantSectionItem[];
+};
+
+export type AiAssistantAlert = {
+  severity: "warning" | "critical";
+  message: string;
+};
+
 export type AiAssistantRecord = Record<string, unknown>;
 
-export type AiAssistantUiResultType = "text" | "trailer" | "trailer_list" | "vessel_list" | "summary";
+export type AiAssistantUiResultType = "text" | "trailer" | "trailer_list" | "vessel_list" | "summary" | "operations_summary";
 
 export type AiAssistantResponse = {
   title?: string;
@@ -65,6 +81,8 @@ export type AiAssistantResponse = {
   resultType: AiAssistantUiResultType;
   data: AiAssistantRecord[];
   summary?: AiAssistantSummaryItem[];
+  sections?: AiAssistantSection[];
+  alerts?: AiAssistantAlert[];
   links: AiAssistantLink[];
   truncated?: boolean;
   queriedAt: string;

@@ -160,7 +160,7 @@ function ExportAllocationDetailsContent() {
 
   const loadAllocation = useCallback(async () => {
     if (!allocationId) {
-      setError("Invalid export allocation id.");
+      setError("Invalid export operation reference.");
       setIsLoading(false);
       return;
     }

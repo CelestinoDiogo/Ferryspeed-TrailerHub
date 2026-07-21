@@ -192,6 +192,11 @@ export function Trailer360Page({ trailerId }: Trailer360PageProps) {
   const [galleryError, setGalleryError] = useState<string | null>(null);
   const [selectedPreview, setSelectedPreview] = useState<{ url: string; title: string } | null>(null);
 
+  const genericPageError = "Unable to load trailer details right now.";
+  const genericVesselError = "Unable to load vessel operation details right now.";
+  const genericInspectionError = "Unable to load inspection details right now.";
+  const genericGalleryError = "Unable to load inspection photos right now.";
+
   const loadTrailer = useCallback(async () => {
     if (!trailerId) {
       setPageError("Trailer not found.");
@@ -253,7 +258,7 @@ export function Trailer360Page({ trailerId }: Trailer360PageProps) {
           .order("created_at", { ascending: false });
 
         if (vesselTrailerResult.error) {
-          setVesselSectionError(vesselTrailerResult.error.message || "Unable to load vessel operation records.");
+          setVesselSectionError(genericVesselError);
           vesselTrailerRows = [];
         } else {
           vesselTrailerRows = (vesselTrailerResult.data ?? []) as VesselOperationTrailerDbRow[];
@@ -268,7 +273,7 @@ export function Trailer360Page({ trailerId }: Trailer360PageProps) {
             .in("id", vesselOperationIds);
 
           if (vesselOperationResult.error) {
-            setVesselSectionError(vesselOperationResult.error.message || "Unable to load vessel operation details.");
+            setVesselSectionError(genericVesselError);
             vesselOperationRows = [];
           } else {
             vesselOperationRows = (vesselOperationResult.data ?? []) as VesselOperationDbRow[];
@@ -294,21 +299,21 @@ export function Trailer360Page({ trailerId }: Trailer360PageProps) {
           ]);
 
           if (damageResult.error) {
-            setInspectionSectionError(damageResult.error.message || "Unable to load inspection damage records.");
+            setInspectionSectionError(genericInspectionError);
             damageRows = [];
           } else {
             damageRows = (damageResult.data ?? []) as VesselInspectionDamageDbRow[];
           }
 
           if (temperatureResult.error) {
-            setInspectionSectionError(temperatureResult.error.message || "Unable to load inspection temperature records.");
+            setInspectionSectionError(genericInspectionError);
             temperatureRows = [];
           } else {
             temperatureRows = (temperatureResult.data ?? []) as VesselInspectionTemperatureDbRow[];
           }
 
           if (photoResult.error) {
-            setGalleryError(photoResult.error.message || "Unable to load inspection photos.");
+            setGalleryError(genericGalleryError);
             photoRows = [];
           } else {
             photoRows = (photoResult.data ?? []) as VesselInspectionPhotoRecord[];
@@ -369,7 +374,7 @@ export function Trailer360Page({ trailerId }: Trailer360PageProps) {
       );
     } catch (error) {
       console.error("Unable to load trailer 360 view:", error);
-      setPageError(error instanceof Error ? error.message : "Unable to load trailer details.");
+      setPageError(genericPageError);
       setProfile(null);
       setExportAllocations([]);
       setPhotos([]);
@@ -488,7 +493,7 @@ export function Trailer360Page({ trailerId }: Trailer360PageProps) {
         return null;
       }
 
-      setGalleryError(previewError instanceof Error ? previewError.message : "Unable to open selected photo.");
+      setGalleryError("Unable to open selected photo.");
     }
 
     return null;
@@ -528,7 +533,7 @@ export function Trailer360Page({ trailerId }: Trailer360PageProps) {
               <div>
                 <p className="text-xs font-semibold uppercase tracking-[0.3em] text-slate-500">Ferryspeed TrailerHub</p>
                 <h1 className="mt-2 text-3xl font-semibold tracking-tight text-slate-950">Trailer 360°</h1>
-                <p className="mt-2 text-sm text-slate-500">Single operational record for trailer {trailer.trailer_number ?? trailer.id}.</p>
+                <p className="mt-2 text-sm text-slate-500">Single operational record for trailer {trailer.trailer_number ?? "—"}.</p>
               </div>
 
               <div className="flex flex-wrap gap-2">

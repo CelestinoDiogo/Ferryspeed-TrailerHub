@@ -218,7 +218,7 @@ function VesselInspectionPageContent() {
 
   const loadInspection = useCallback(async () => {
     if (!operationId || !vesselTrailerId) {
-      setError("Invalid inspection route.");
+      setError("Invalid inspection reference.");
       setIsLoading(false);
       return;
     }
@@ -506,7 +506,7 @@ function VesselInspectionPageContent() {
     }
 
     if (!vesselTrailerId || trailer.id !== vesselTrailerId) {
-      setError("Invalid vessel trailer record. Refresh the page and try again.");
+      setError("Unable to validate the selected trailer inspection. Refresh and try again.");
       return;
     }
 

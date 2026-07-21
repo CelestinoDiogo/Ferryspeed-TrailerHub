@@ -2,10 +2,10 @@ import "server-only";
 import { z } from "zod";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { loadTrailerOperationalProfile, type TrailerOperationalProfile } from "@/lib/operations/trailer-operational-engine";
-import { buildActiveExportStatusByTrailerId, isTrailerEligibleForCompoundViews, isTrailerPresentInCompoundInventory, normalizeExportAllocationRecord, type ExportAllocationRecord } from "@/lib/export-allocation";
+import { buildActiveExportStatusByTrailerId, isExportAllocationOverdue, isTrailerEligibleForCompoundViews, isTrailerPresentInCompoundInventory, normalizeExportAllocationRecord, type ExportAllocationRecord } from "@/lib/export-allocation";
 import { getTrailerCurrentLocationLabel } from "@/lib/trailer-location";
 import type { Database } from "@/lib/database.types";
-import { aiAssistantIntentSchema, allowedExportStatuses, type AiAssistantIntent, type AiAssistantLink, type AiAssistantRecord, type AiAssistantResponse, type AiAssistantSummaryItem, type AiAssistantUiResultType } from "@/lib/ai-assistant-types";
+import { aiAssistantIntentSchema, allowedExportStatuses, type AiAssistantAlert, type AiAssistantIntent, type AiAssistantLink, type AiAssistantRecord, type AiAssistantResponse, type AiAssistantSection, type AiAssistantSummaryItem, type AiAssistantUiResultType } from "@/lib/ai-assistant-types";
 
 type TrailerRow = Database["public"]["Tables"]["trailers"]["Row"];
 type VesselOperationRow = Database["public"]["Tables"]["vessel_operations"]["Row"];
@@ -38,7 +38,17 @@ const sanitizeLimit = (value?: number | null) => {
   return Math.max(1, Math.min(MAX_LIST_LIMIT, Math.trunc(value ?? DEFAULT_LIST_LIMIT)));
 };
 
-const todayKey = () => new Date().toISOString().split("T")[0];
+const getDateKey = (value?: string | null) => {
+  if (!value) return null;
+
+  try {
+    return new Date(value).toISOString().split("T")[0];
+  } catch {
+    return null;
+  }
+};
+
+const todayKey = () => getDateKey(new Date().toISOString()) ?? new Date().toISOString().split("T")[0];
 
 const compactString = (value?: string | null) => value?.trim().replace(/\s+/g, " ") ?? "";
 
@@ -53,6 +63,8 @@ type InternalAiResponse = {
   resultType: AiAssistantUiResultType;
   data: AiAssistantRecord[];
   summary?: AiAssistantSummaryItem[];
+  sections?: AiAssistantSection[];
+  alerts?: AiAssistantAlert[];
   links: AiAssistantLink[];
   truncated?: boolean;
 };
@@ -172,7 +184,7 @@ const inferIntentFromRules = (question: string): AiAssistantIntent => {
       : { intent: "departures_today", date: date ?? todayKey(), limit: DEFAULT_LIST_LIMIT };
   }
 
-  if (/operational summary|today'?s operational summary|daily summary/i.test(normalized)) {
+  if (/operational summary|today'?s operational summary|daily operational summary|operational overview|operation today|situation today|how is the operation today|what needs attention today/i.test(normalized)) {
     return { intent: "operations_summary_today", date: date ?? todayKey(), limit: 1 };
   }
 
@@ -486,6 +498,118 @@ const fetchOperationalKpis = async (supabase: SupabaseClient<Database>, date: st
     damageAlerts,
     temperatureAlerts,
     exportWaitingCollection,
+  };
+};
+
+const fetchOperationsSummaryData = async (supabase: SupabaseClient<Database>, date: string) => {
+  const [
+    { data: trailersData, error: trailersError },
+    { data: exportAllocationsData, error: exportError },
+    { count: waitingCount, error: waitingError },
+    { data: vesselData, error: vesselError },
+    { data: vesselTrailerData, error: vesselTrailerError },
+    occupancyResult,
+  ] = await Promise.all([
+    supabase
+      .from("trailers")
+      .select("id, load_status, arrival_date, departure_date, compound_position, is_local"),
+    supabase
+      .from("export_allocations")
+      .select("id, trailer_id, status, expected_return_at, completed_at, cancelled_at, updated_at"),
+    supabase
+      .from("compound_waiting_active")
+      .select("id", { count: "exact", head: true }),
+    supabase
+      .from("vessel_operations")
+      .select("id, expected_arrival_at, actual_arrival_at"),
+    supabase
+      .from("vessel_operation_trailers")
+      .select("vessel_operation_id, arrival_status, inspection_started_at, inspection_completed_at, has_damage, has_temperature_alert"),
+    (supabase as any).rpc("get_compound_occupancy"),
+  ]);
+
+  if (trailersError) throw trailersError;
+  if (exportError) throw exportError;
+  if (waitingError) throw waitingError;
+  if (vesselError) throw vesselError;
+  if (vesselTrailerError) throw vesselTrailerError;
+  if (occupancyResult.error) throw occupancyResult.error;
+
+  const trailers = (trailersData ?? []) as Array<Pick<TrailerRow, "id" | "load_status" | "arrival_date" | "departure_date" | "compound_position" | "is_local">>;
+  const allocations = ((exportAllocationsData ?? []) as ExportAllocationRecord[]).map((row) => normalizeExportAllocationRecord(row));
+  const vesselOperations = (vesselData ?? []) as Array<Pick<VesselOperationRow, "id" | "expected_arrival_at" | "actual_arrival_at">>;
+  const vesselTrailers = (vesselTrailerData ?? []) as Array<Pick<VesselOperationTrailerRow, "vessel_operation_id" | "arrival_status" | "inspection_started_at" | "inspection_completed_at" | "has_damage" | "has_temperature_alert">>;
+
+  const activeExportAllocations = allocations.filter((item) => item.status !== "completed" && item.status !== "cancelled");
+  const activeExportStatusByTrailerId = buildActiveExportStatusByTrailerId(activeExportAllocations);
+  const compoundTrailers = trailers.filter((trailer) => trailer.is_local !== true && isTrailerEligibleForCompoundViews(trailer as TrailerRow, activeExportStatusByTrailerId.get(trailer.id)));
+  const compoundInventoryTrailers = compoundTrailers.filter((trailer) => isTrailerPresentInCompoundInventory(trailer as TrailerRow, activeExportStatusByTrailerId.get(trailer.id)));
+
+  const normalizedLoadStatus = (value?: string | null) => value?.trim().toLowerCase();
+  const trailersWithActiveExportAllocation = new Set(
+    activeExportAllocations
+      .map((item) => item.trailer_id)
+      .filter((value): value is string => Boolean(value)),
+  );
+
+  const arrivalsToday = trailers.filter((item) => getDateKey(item.arrival_date) === date).length;
+  const departuresToday = trailers.filter((item) => getDateKey(item.departure_date) === date).length;
+  const emptyAvailable = compoundInventoryTrailers.filter((item) => normalizedLoadStatus(item.load_status) === "empty" && !trailersWithActiveExportAllocation.has(item.id)).length;
+  const loadedCount = compoundInventoryTrailers.filter((item) => normalizedLoadStatus(item.load_status) === "loaded").length;
+  const waitingForCompound = waitingCount ?? 0;
+  const compoundOccupancy = typeof occupancyResult.data === "number" ? occupancyResult.data : null;
+
+  const todaysOperations = vesselOperations.filter((operation) => {
+    const operationDate = getDateKey(operation.actual_arrival_at) ?? getDateKey(operation.expected_arrival_at);
+    return operationDate === date;
+  });
+  const todaysOperationIds = new Set(todaysOperations.map((operation) => operation.id));
+  const vesselTrailersToday = vesselTrailers.filter((row) => todaysOperationIds.has(row.vessel_operation_id));
+  const expectedTrailersToday = vesselTrailersToday.length;
+  const arrivedTrailersToday = vesselTrailersToday.filter((row) => normalizeText(row.arrival_status) === "arrived").length;
+  const pendingTrailersToday = Math.max(expectedTrailersToday - arrivedTrailersToday, 0);
+  const inspectionsPendingInVesselToday = vesselTrailersToday.filter((row) => normalizeText(row.arrival_status) === "arrived" && !row.inspection_completed_at).length;
+
+  const inspectionsCompletedToday = vesselTrailers.filter((row) => getDateKey(row.inspection_completed_at) === date).length;
+  const inspectionsPending = vesselTrailers.filter((row) => normalizeText(row.arrival_status) === "arrived" && !row.inspection_completed_at).length;
+  const inspectionsInProgress = vesselTrailers.filter((row) => row.inspection_started_at && !row.inspection_completed_at).length;
+  const damageAlerts = vesselTrailers.filter((row) => row.has_damage === true).length;
+  const temperatureAlerts = vesselTrailers.filter((row) => row.has_temperature_alert === true).length;
+
+  const allocated = allocations.filter((row) => row.status === "allocated").length;
+  const deliveredEmpty = allocations.filter((row) => row.status === "delivered_empty").length;
+  const waitingLoading = allocations.filter((row) => row.status === "waiting_loading").length;
+  const collectedLoaded = allocations.filter((row) => row.status === "collected_loaded").length;
+  const completedToday = allocations.filter((row) => getDateKey(row.completed_at) === date).length;
+  const cancelledToday = allocations.filter((row) => getDateKey(row.cancelled_at) === date).length;
+  const waitingForCollection = deliveredEmpty;
+  const overdueOrWaitingCollection = allocations.filter((row) => row.status === "delivered_empty" || isExportAllocationOverdue(row)).length;
+
+  return {
+    arrivalsToday,
+    departuresToday,
+    emptyAvailable,
+    loadedCount,
+    waitingForCompound,
+    compoundOccupancy,
+    vesselOperationsToday: todaysOperations.length,
+    expectedTrailersToday,
+    arrivedTrailersToday,
+    pendingTrailersToday,
+    inspectionsPendingInVesselToday,
+    inspectionsCompletedToday,
+    inspectionsPending,
+    inspectionsInProgress,
+    damageAlerts,
+    temperatureAlerts,
+    allocated,
+    deliveredEmpty,
+    waitingLoading,
+    collectedLoaded,
+    completedToday,
+    cancelledToday,
+    waitingForCollection,
+    overdueOrWaitingCollection,
   };
 };
 
@@ -1138,40 +1262,118 @@ async function queryUnknown() {
 }
 
 async function queryOperationsSummaryToday(supabase: SupabaseClient<Database>, date: string) {
-  const kpis = await fetchOperationalKpis(supabase, date);
+  const data = await fetchOperationsSummaryData(supabase, date);
 
-  const attention: string[] = [];
-  if (kpis.waitingForCompound > 0) {
-    attention.push(`${kpis.waitingForCompound} trailers waiting for a compound position.`);
+  const sections: AiAssistantSection[] = [
+    {
+      key: "arrivals",
+      title: "Arrivals",
+      items: data.arrivalsToday > 0
+        ? [
+            { label: "Arrived today", value: `${data.arrivalsToday} trailers arrived today.` },
+            { label: "Inspections completed", value: `${data.inspectionsCompletedToday} inspections completed.` },
+            { label: "Inspections pending", value: `${data.inspectionsPending} inspections pending.` },
+          ]
+        : [{ label: "Arrivals", value: "No trailers have arrived today." }],
+    },
+    {
+      key: "departures",
+      title: "Departures",
+      items: data.departuresToday > 0
+        ? [{ label: "Departed today", value: `${data.departuresToday} trailers departed today.` }]
+        : [{ label: "Departures", value: "No trailers have departed today." }],
+    },
+    {
+      key: "compound",
+      title: "Compound",
+      items: [
+        { label: "Empty available", value: `${data.emptyAvailable} empty trailers available.` },
+        { label: "Loaded", value: `${data.loadedCount} loaded trailers currently in the operation.` },
+        { label: "Occupancy", value: data.compoundOccupancy === null ? "Occupancy: —." : `Occupancy: ${data.compoundOccupancy}%.` },
+        { label: "Waiting for position", value: `${data.waitingForCompound} trailers waiting for a position.` },
+      ],
+    },
+    {
+      key: "vessel_operations",
+      title: "Vessel Operations",
+      items: data.vesselOperationsToday > 0
+        ? [
+            { label: "Operations today", value: `${data.vesselOperationsToday} vessel operation${data.vesselOperationsToday === 1 ? "" : "s"} scheduled today.` },
+            { label: "Expected trailers", value: `${data.expectedTrailersToday} trailers expected.` },
+            { label: "Arrived trailers", value: `${data.arrivedTrailersToday} trailers arrived.` },
+            { label: "Pending trailers", value: `${data.pendingTrailersToday} trailers still pending.` },
+            { label: "Inspections pending", value: `${data.inspectionsPendingInVesselToday} inspections pending in today's operations.` },
+          ]
+        : [{ label: "Vessel operations", value: "No vessel operations are scheduled for today." }],
+    },
+    {
+      key: "export_operations",
+      title: "Export Operations",
+      items: [
+        { label: "Allocated", value: data.allocated },
+        { label: "Delivered empty", value: data.deliveredEmpty },
+        { label: "Waiting loading", value: data.waitingLoading },
+        { label: "Collected loaded", value: data.collectedLoaded },
+        { label: "Completed today", value: data.completedToday },
+        { label: "Cancelled today", value: data.cancelledToday },
+        { label: "Waiting for collection", value: data.waitingForCollection },
+      ],
+    },
+    {
+      key: "inspections",
+      title: "Inspections",
+      items: [
+        { label: "Completed today", value: `${data.inspectionsCompletedToday} completed today.` },
+        { label: "Pending", value: `${data.inspectionsPending} pending.` },
+        { label: "In progress", value: `${data.inspectionsInProgress} in progress.` },
+      ],
+    },
+  ];
+
+  const alerts: AiAssistantAlert[] = [];
+  if (data.temperatureAlerts > 0) {
+    alerts.push({ severity: "critical", message: `${data.temperatureAlerts} trailers have temperature alerts.` });
   }
-  if (kpis.inspectionsPending > 0) {
-    attention.push(`${kpis.inspectionsPending} inspections are still pending.`);
+  if (data.damageAlerts > 0) {
+    alerts.push({ severity: "warning", message: `${data.damageAlerts} trailer${data.damageAlerts === 1 ? "" : "s"} have reported damage.` });
   }
-  if (kpis.temperatureAlerts > 0) {
-    attention.push(`${kpis.temperatureAlerts} trailers have a temperature alert.`);
+  if (data.waitingForCompound > 0) {
+    alerts.push({ severity: "warning", message: `${data.waitingForCompound} trailers are waiting for a compound position.` });
   }
+  if (data.inspectionsPending > 0) {
+    alerts.push({ severity: "warning", message: `${data.inspectionsPending} inspections are pending.` });
+  }
+  if (data.pendingTrailersToday > 0) {
+    alerts.push({ severity: "warning", message: `${data.pendingTrailersToday} vessel trailers are still pending arrival today.` });
+  }
+  if (data.overdueOrWaitingCollection > 0) {
+    alerts.push({ severity: "warning", message: `${data.overdueOrWaitingCollection} export trailers are overdue or waiting for collection.` });
+  }
+
+  sections.push({
+    key: "attention_required",
+    title: "Attention Required",
+    items: alerts.length > 0
+      ? alerts.map((alert, index) => ({ label: `Alert ${index + 1}`, value: alert.message }))
+      : [{ label: "Status", value: "No immediate operational alerts were identified." }],
+  });
 
   return {
     intent: "operations_summary_today" as const,
-    title: "Today's operational summary",
-    answer: attention.length > 0
-      ? `Attention required:\n- ${attention.join("\n- ")}`
-      : "No immediate operational alerts were identified.",
-    resultType: "summary" as const,
+    title: "Today's Operational Summary",
+    answer: "Overview of today's live operation.",
+    resultType: "operations_summary" as const,
     data: [],
     summary: [
-      { label: "Arrivals", value: kpis.arrivalsToday },
-      { label: "Departures", value: kpis.departuresToday },
-      { label: "Empty trailers available", value: kpis.emptyAvailable },
-      { label: "Loaded trailers", value: kpis.loadedCount },
-      { label: "Waiting for compound", value: kpis.waitingForCompound },
-      { label: "Compound occupancy", value: kpis.compoundOccupancy === null ? "—" : `${kpis.compoundOccupancy}%` },
-      { label: "Vessel operations today", value: kpis.operationsToday },
-      { label: "Inspections pending", value: kpis.inspectionsPending },
-      { label: "Damage alerts", value: kpis.damageAlerts },
-      { label: "Temperature alerts", value: kpis.temperatureAlerts },
-      { label: "Export trailers waiting for collection", value: kpis.exportWaitingCollection },
+      { label: "Arrivals Today", value: data.arrivalsToday },
+      { label: "Departures Today", value: data.departuresToday },
+      { label: "Empty Available", value: data.emptyAvailable },
+      { label: "Compound Occupancy", value: data.compoundOccupancy === null ? "—" : `${data.compoundOccupancy}%` },
+      { label: "Waiting for Compound", value: data.waitingForCompound },
+      { label: "Vessel Operations Today", value: data.vesselOperationsToday },
     ],
+    sections,
+    alerts,
     links: [],
     truncated: false,
   };
@@ -1279,6 +1481,8 @@ export async function runAiAssistantQuery(supabase: SupabaseClient<Database>, qu
     resultType: response.resultType,
     data: response.data,
     summary: response.summary,
+    sections: response.sections,
+    alerts: response.alerts,
     links: response.links,
     queriedAt,
     truncated: response.truncated,

@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useMemo, useState } from "react";
 import { Bot, Loader2, Sparkles, Send, Trash2, ArrowRight, Clock3, Search } from "lucide-react";
 import { supabase } from "@/lib/supabase";
-import type { AiAssistantResponse } from "@/lib/ai-assistant-types";
+import type { AiAssistantResponse, AiAssistantAlert } from "@/lib/ai-assistant-types";
 
 type ConversationItem = {
   id: string;
@@ -30,6 +30,8 @@ const exampleQuestions = [
   "Show me the list.",
   "How many trailers departed today?",
   "Give me today's operational summary.",
+  "How is the operation today?",
+  "What needs attention today?",
   "What vessel operations are scheduled today?",
   "Show export trailers waiting for collection.",
   "Which trailers have damage alerts?",
@@ -51,6 +53,8 @@ const formatTimestamp = (value: string) => {
 };
 
 const keyLabel = (key: string) => key.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/_/g, " ").replace(/\b\w/g, (char) => char.toUpperCase());
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const TECHNICAL_KEY_PATTERN = /(^id$|_id$|^intent$|^provider$|^usedfallback$|^notice$|^link$|^exportlink$|^linkunavailablereason$|^vesseloperationid$)/i;
 
 const normalizeText = (value: string) => value.trim().toLowerCase();
 
@@ -64,7 +68,7 @@ const inferIntentFromQuestion = (question: string) => {
   if (/how many.*depart|count.*depart/.test(normalized)) return "count_departures_today";
   if (/arrived today|what arrived today|list.*arriv/.test(normalized)) return "arrivals_today";
   if (/departed today|what departed today|list.*depart/.test(normalized)) return "departures_today";
-  if (/operational summary|daily summary/.test(normalized)) return "operations_summary_today";
+  if (/operational summary|daily summary|how is the operation today|situation today|operational overview|needs attention today/.test(normalized)) return "operations_summary_today";
   if (/vessel operations/.test(normalized)) return "vessel_operations_today";
   if (/waiting for compound/.test(normalized)) return "list_waiting_compound";
   if (/empty trailers/.test(normalized)) return normalized.includes("how many") ? "count_empty" : "list_empty";
@@ -133,6 +137,47 @@ const resolveFollowUpQuestion = (raw: string, context: FollowUpContext) => {
   }
 
   return raw;
+};
+
+const toDisplayValue = (value: unknown) => {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (UUID_PATTERN.test(trimmed)) {
+      return null;
+    }
+    return trimmed || "—";
+  }
+
+  if (value === null || value === undefined) {
+    return "—";
+  }
+
+  if (typeof value === "object") {
+    return JSON.stringify(value);
+  }
+
+  return String(value);
+};
+
+const getDisplayEntries = (record: Record<string, unknown>) =>
+  Object.entries(record).filter(([key, value]) => {
+    if (TECHNICAL_KEY_PATTERN.test(key.trim().toLowerCase())) {
+      return false;
+    }
+
+    if (typeof value === "string" && UUID_PATTERN.test(value.trim())) {
+      return false;
+    }
+
+    return true;
+  });
+
+const getAlertTone = (severity: AiAssistantAlert["severity"]) => {
+  if (severity === "critical") {
+    return "border-rose-500/30 bg-rose-500/10 text-rose-100";
+  }
+
+  return "border-amber-500/30 bg-amber-500/10 text-amber-100";
 };
 
 const SESSION_EXPIRED_MESSAGE = "Your session has expired. Please sign in again.";
@@ -269,6 +314,42 @@ export default function AiAssistantPage() {
 
   const renderedExamples = useMemo(() => exampleQuestions, []);
 
+  const renderOperationsSummary = (response: AiAssistantResponse) => {
+    const sections = response.sections ?? [];
+    const alerts = response.alerts ?? [];
+
+    return (
+      <div className="space-y-4">
+        {sections.map((section) => {
+          const isAttention = section.key === "attention_required";
+          return (
+            <section key={section.key} className="rounded-2xl border border-white/10 bg-slate-950/60 p-4">
+              <h4 className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-300">{section.title}</h4>
+              <div className="mt-3 space-y-2">
+                {(section.items ?? []).map((item, index) => (
+                  <div key={`${section.key}-${index}`} className="rounded-xl border border-white/10 bg-slate-900/70 px-3 py-2 text-sm text-slate-200">
+                    <span className="font-semibold text-white">{item.label}: </span>
+                    <span>{String(item.value)}</span>
+                  </div>
+                ))}
+              </div>
+
+              {isAttention && alerts.length > 0 ? (
+                <div className="mt-3 space-y-2">
+                  {alerts.map((alert, index) => (
+                    <div key={`alert-${index}`} className={`rounded-xl border px-3 py-2 text-sm ${getAlertTone(alert.severity)}`}>
+                      {alert.message}
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+            </section>
+          );
+        })}
+      </div>
+    );
+  };
+
   const renderStructuredData = (response: AiAssistantResponse) => {
     if (response.data.length === 0) {
       return (
@@ -278,33 +359,44 @@ export default function AiAssistantPage() {
       );
     }
 
-    if (response.data.length === 1) {
-      const item = response.data[0] as Record<string, unknown>;
+    const normalizedRows = response.data
+      .map((row) => getDisplayEntries(row as Record<string, unknown>))
+      .filter((entries) => entries.length > 0);
+
+    if (normalizedRows.length === 0) {
+      return (
+        <div className="mt-4 rounded-2xl border border-white/10 bg-slate-950/60 p-4 text-sm text-slate-300">
+          No user-facing details were returned for this query.
+        </div>
+      );
+    }
+
+    if (normalizedRows.length === 1) {
+      const entries = normalizedRows[0];
       return (
         <div className="mt-4 grid gap-3 lg:grid-cols-2">
-          {Object.entries(item).slice(0, 8).map(([key, value]) => (
+          {entries.slice(0, 8).map(([key, value]) => (
             <div key={key} className="rounded-2xl border border-white/10 bg-slate-950/60 p-4">
               <p className="text-xs uppercase tracking-[0.22em] text-slate-500">{keyLabel(key)}</p>
-              <p className="mt-2 text-sm font-semibold text-white">{typeof value === "string" ? value : value === null || value === undefined ? "—" : JSON.stringify(value)}</p>
+              <p className="mt-2 text-sm font-semibold text-white">{toDisplayValue(value)}</p>
             </div>
           ))}
         </div>
       );
     }
 
-    if (response.data.length <= 10) {
+    if (normalizedRows.length <= 10) {
       return (
         <div className="mt-4 grid gap-3 md:grid-cols-2">
-          {response.data.map((row) => {
-            const item = row as Record<string, unknown>;
+          {normalizedRows.map((entries, rowIndex) => {
             return (
-              <div key={String(item.id ?? Math.random())} className="rounded-2xl border border-white/10 bg-slate-950/60 p-4">
-                {Object.entries(item)
+              <div key={`row-${rowIndex}`} className="rounded-2xl border border-white/10 bg-slate-950/60 p-4">
+                {entries
                   .slice(0, 6)
                   .map(([key, value]) => (
                     <div key={key} className="mb-2 last:mb-0">
                       <p className="text-[11px] uppercase tracking-[0.15em] text-slate-500">{keyLabel(key)}</p>
-                      <p className="text-sm text-slate-200">{typeof value === "string" ? value : value === null || value === undefined ? "—" : JSON.stringify(value)}</p>
+                      <p className="text-sm text-slate-200">{toDisplayValue(value)}</p>
                     </div>
                   ))}
               </div>
@@ -319,19 +411,19 @@ export default function AiAssistantPage() {
         <table className="min-w-full text-left text-sm text-slate-200">
           <thead className="border-b border-white/10 text-xs uppercase tracking-[0.2em] text-slate-500">
             <tr>
-              {Object.keys(response.data[0] as Record<string, unknown>).slice(0, 6).map((key) => (
+              {normalizedRows[0].slice(0, 6).map(([key]) => (
                 <th key={key} className="px-4 py-3">{keyLabel(key)}</th>
               ))}
             </tr>
           </thead>
           <tbody>
-            {response.data.map((row, index) => {
-              const item = row as Record<string, unknown>;
+            {normalizedRows.map((entries, index) => {
               return (
-                <tr key={String(item.id ?? index)} className="border-t border-white/5">
-                  {Object.values(item).slice(0, 6).map((value, cellIndex) => (
+                <tr key={`row-table-${index}`} className="border-t border-white/5">
+                  {entries.slice(0, 6).map(([key, value], cellIndex) => (
                     <td key={cellIndex} className="px-4 py-3 align-top text-slate-300">
-                      {typeof value === "string" ? value : value === null || value === undefined ? "—" : JSON.stringify(value)}
+                      <span className="sr-only">{key}: </span>
+                      {toDisplayValue(value)}
                     </td>
                   ))}
                 </tr>
@@ -352,7 +444,7 @@ export default function AiAssistantPage() {
               <p className="text-sm font-semibold uppercase tracking-[0.3em] text-cyan-400">Ferryspeed TrailerHub</p>
               <h1 className="mt-2 text-3xl font-semibold tracking-tight text-white">AI Assistant</h1>
               <p className="mt-2 max-w-2xl text-sm text-slate-300 sm:text-base">
-                Ask questions about live trailer, compound, export and vessel data. This first version is read-only and uses approved intents only.
+                Ask questions about live trailer, compound, export and vessel data. This assistant is read-only.
               </p>
             </div>
 
@@ -503,6 +595,8 @@ export default function AiAssistantPage() {
                             </div>
                           ) : null}
 
+                          {item.response.resultType === "operations_summary" ? renderOperationsSummary(item.response) : null}
+
                           {item.response.links.length > 0 ? (
                             <div className="flex flex-wrap gap-2">
                               {item.response.links.map((link) => (
@@ -524,7 +618,7 @@ export default function AiAssistantPage() {
                             </div>
                           ) : null}
 
-                          {renderStructuredData(item.response)}
+                          {item.response.resultType === "operations_summary" ? null : renderStructuredData(item.response)}
                         </div>
                       ) : (
                         <div className="mt-4 rounded-2xl border border-white/10 bg-slate-950/60 p-4 text-sm text-slate-400">
@@ -543,13 +637,13 @@ export default function AiAssistantPage() {
               <p className="text-sm font-semibold uppercase tracking-[0.28em] text-slate-500">Capabilities</p>
               <div className="mt-4 space-y-3 text-sm text-slate-300">
                 <p>Read-only queries only. No state changes, no SQL, no writes.</p>
-                <p>Uses authenticated Supabase sessions and approved intents only.</p>
+                <p>Uses authenticated Supabase sessions and operational question patterns only.</p>
                 <p>Results are limited to 50 rows and truncated where required.</p>
               </div>
             </section>
 
             <section className="rounded-3xl border border-white/10 bg-slate-900/70 p-5 shadow-lg shadow-black/20 backdrop-blur">
-              <p className="text-sm font-semibold uppercase tracking-[0.28em] text-slate-500">Example intents</p>
+              <p className="text-sm font-semibold uppercase tracking-[0.28em] text-slate-500">Example topics</p>
               <div className="mt-4 space-y-2 text-sm text-slate-300">
                 <p>Trailer lookup and location</p>
                 <p>Compound counts and lists</p>

@@ -203,7 +203,7 @@ function VesselPlanningPageContent() {
   useEffect(() => {
     const loadPlanning = async () => {
       if (!operationId) {
-        setError("Invalid vessel operation id.");
+        setError("Invalid vessel operation reference.");
         setIsLoading(false);
         return;
       }

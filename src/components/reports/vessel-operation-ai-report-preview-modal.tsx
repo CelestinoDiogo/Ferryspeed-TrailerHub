@@ -95,7 +95,6 @@ export function VesselOperationAiReportPreviewModal({
             <span className={`rounded-full px-3 py-1 ${report.generationMode === "template" ? "bg-amber-100 text-amber-800" : "bg-emerald-100 text-emerald-800"}`}>
               {report.generationMode === "template" ? "Template-generated" : "AI-generated"}
             </span>
-            {report.aiModel ? <span className="rounded-full bg-slate-100 px-3 py-1 text-slate-700">Model: {report.aiModel}</span> : null}
             {report.generatedAt ? <span className="rounded-full bg-slate-100 px-3 py-1 text-slate-700">Generated: {new Date(report.generatedAt).toLocaleString()}</span> : null}
           </div>
 

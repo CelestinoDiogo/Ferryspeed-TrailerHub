@@ -189,11 +189,11 @@ export function TrailerTimeline({ events, isLoading = false, error = null }: Tra
                         <p className="text-xs text-slate-300">{formatDateTime(event.occurredAt)}</p>
                       </div>
 
-                      <div className="mt-3 flex flex-wrap gap-2 text-xs text-slate-300">
-                        {event.userName ? <span className="rounded-full border border-white/10 bg-slate-950/40 px-2.5 py-1">User: {event.userName}</span> : null}
-                        {event.sourceRecordId ? <span className="rounded-full border border-white/10 bg-slate-950/40 px-2.5 py-1">Record: {event.sourceRecordId}</span> : null}
-                        <span className="rounded-full border border-white/10 bg-slate-950/40 px-2.5 py-1">Type: {event.eventType}</span>
-                      </div>
+                      {event.userName ? (
+                        <div className="mt-3 flex flex-wrap gap-2 text-xs text-slate-300">
+                          <span className="rounded-full border border-white/10 bg-slate-950/40 px-2.5 py-1">Handled by: {event.userName}</span>
+                        </div>
+                      ) : null}
                     </div>
                   </div>
                 ))}

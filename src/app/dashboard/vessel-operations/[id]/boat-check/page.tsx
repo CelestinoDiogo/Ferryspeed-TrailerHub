@@ -49,7 +49,7 @@ function VesselBoatCheckPageContent() {
 
   const loadBoatCheck = useCallback(async () => {
     if (!operationId) {
-      setError("Invalid vessel operation id.");
+      setError("Invalid vessel operation reference.");
       setIsLoading(false);
       return;
     }

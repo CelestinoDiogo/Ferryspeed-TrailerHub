@@ -72,7 +72,7 @@ const resolveOperatorName = async () => {
     (typeof user.user_metadata?.full_name === "string" && user.user_metadata.full_name.trim()) ||
     (typeof user.user_metadata?.name === "string" && user.user_metadata.name.trim());
 
-  return metadataName || user.email || user.id || "TrailerHub User";
+  return metadataName || user.email || "TrailerHub User";
 };
 
 const buildArrivalKpis = (trailers: VesselOperationTrailerRecord[]): ArrivalKpi => {
@@ -135,7 +135,7 @@ function VesselArrivalsPageContent() {
 
   const loadArrivals = useCallback(async () => {
     if (!operationId) {
-      setError("Invalid vessel operation id.");
+      setError("Invalid vessel operation reference.");
       setIsLoading(false);
       return;
     }
