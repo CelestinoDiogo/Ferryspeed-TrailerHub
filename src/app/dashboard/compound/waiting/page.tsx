@@ -33,6 +33,11 @@ type CompoundOccupancy = {
 
 type WaitingFilter = "all" | "urgent" | "high" | "normal" | "low";
 
+type CompoundWaitingAssignmentRpcRow = {
+  trailer_number?: string | null;
+  assigned_position?: string | null;
+};
+
 const PRIORITY_ORDER: Record<string, number> = {
   urgent: 1,
   high: 2,
@@ -67,6 +72,58 @@ const normalizeStatusLabel = (value?: string | null) => {
     .split("_")
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(" ");
+};
+
+const extractAssignmentRpcRow = (value: unknown): CompoundWaitingAssignmentRpcRow | null => {
+  if (!value) return null;
+
+  if (Array.isArray(value)) {
+    const first = value[0];
+    if (!first || typeof first !== "object") return null;
+    return first as CompoundWaitingAssignmentRpcRow;
+  }
+
+  if (typeof value === "object") {
+    return value as CompoundWaitingAssignmentRpcRow;
+  }
+
+  return null;
+};
+
+const buildAssignmentNotice = (defaultMessage: string, value: unknown) => {
+  const row = extractAssignmentRpcRow(value);
+  if (!row) return defaultMessage;
+
+  const trailerNumber = row.trailer_number?.trim();
+  const assignedPosition = row.assigned_position?.trim();
+
+  if (trailerNumber && assignedPosition) {
+    return `Trailer ${trailerNumber} assigned to position ${assignedPosition}.`;
+  }
+
+  if (trailerNumber) {
+    return `Trailer ${trailerNumber} assigned successfully.`;
+  }
+
+  if (assignedPosition) {
+    return `Assigned successfully to position ${assignedPosition}.`;
+  }
+
+  return defaultMessage;
+};
+
+const mapAssignmentErrorMessage = (message: string) => {
+  const normalized = message.trim().toLowerCase();
+
+  if (normalized.includes("compound is full") || normalized.includes("no position is available")) {
+    return "No compound position is currently available.";
+  }
+
+  if (normalized.includes("there are no trailers waiting for compound")) {
+    return "There are no trailers waiting for a compound position.";
+  }
+
+  return message;
 };
 
 export default function CompoundWaitingPage() {
@@ -163,17 +220,17 @@ export default function CompoundWaitingPage() {
   }, [waitingRows]);
 
   const runAction = useCallback(
-    async (run: () => Promise<unknown>, successMessage: string) => {
+    async (run: () => Promise<string>) => {
       setIsMutating(true);
       setError(null);
       setNotice(null);
 
       try {
-        await run();
+        const successMessage = await run();
         setNotice(successMessage);
         await loadWaitingData();
       } catch (actionErr) {
-        const message = actionErr instanceof Error ? actionErr.message : "Action failed.";
+        const message = actionErr instanceof Error ? mapAssignmentErrorMessage(actionErr.message) : "Action failed.";
         setError(message);
       } finally {
         setActioningId(null);
@@ -186,13 +243,24 @@ export default function CompoundWaitingPage() {
   const handleAssignNext = async () => {
     if (isMutating) return;
 
+    if (waitingRows.length === 0) {
+      setError(null);
+      setNotice("There are no trailers waiting for a compound position.");
+      return;
+    }
+
+    if ((occupancy?.available_positions ?? 0) <= 0) {
+      setError(null);
+      setNotice("No compound position is currently available.");
+      return;
+    }
+
     await runAction(async () => {
-      const { error: rpcError } = await (supabase as any).rpc("assign_next_waiting_trailer", {
-        p_assigned_by: null,
-      });
+      const { data: rpcData, error: rpcError } = await (supabase as any).rpc("assign_next_waiting_trailer");
 
       if (rpcError) throw rpcError;
-    }, "Next trailer assigned successfully.");
+      return buildAssignmentNotice("Next trailer assigned successfully.", rpcData);
+    });
   };
 
   const handleAssign = async (waitingId: string) => {
@@ -200,14 +268,13 @@ export default function CompoundWaitingPage() {
 
     setActioningId(waitingId);
     await runAction(async () => {
-      const { error: rpcError } = await (supabase as any).rpc("assign_waiting_trailer_to_compound", {
+      const { data: rpcData, error: rpcError } = await (supabase as any).rpc("assign_waiting_trailer_to_compound", {
         p_waiting_id: waitingId,
-        p_position: null,
-        p_assigned_by: null,
       });
 
       if (rpcError) throw rpcError;
-    }, "Waiting trailer assigned to compound.");
+      return buildAssignmentNotice("Waiting trailer assigned to compound.", rpcData);
+    });
   };
 
   const handleCancel = async (waitingId: string) => {
@@ -221,7 +288,8 @@ export default function CompoundWaitingPage() {
       });
 
       if (rpcError) throw rpcError;
-    }, "Waiting entry cancelled.");
+      return "Waiting entry cancelled.";
+    });
   };
 
   return (
@@ -240,10 +308,10 @@ export default function CompoundWaitingPage() {
               <button
                 type="button"
                 onClick={() => void handleAssignNext()}
-                disabled={isLoading || isMutating || waitingRows.length === 0}
+                disabled={isLoading || isMutating}
                 className="rounded-2xl bg-cyan-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-cyan-400 disabled:opacity-60"
               >
-                {isMutating && !actioningId ? "Assigning..." : "Assign Next"}
+                {isMutating && !actioningId ? "Assigning..." : "Assign Next Trailer"}
               </button>
               <Link
                 href="/dashboard/compound"
@@ -363,7 +431,7 @@ export default function CompoundWaitingPage() {
                               disabled={isMutating}
                               className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-3 py-1 text-xs font-semibold text-emerald-200 hover:bg-emerald-500/20 disabled:opacity-60"
                             >
-                              {isRowActioning ? "Assigning..." : "Assign"}
+                              {isRowActioning ? "Assigning..." : "Assign Position"}
                             </button>
                             <button
                               type="button"
