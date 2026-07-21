@@ -2,7 +2,9 @@
 
 import Image from "next/image";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { usePathname, useSearchParams } from "next/navigation";
+import { useState } from "react";
 import type { ComponentType } from "react";
 import {
   BarChart3,
@@ -26,6 +28,7 @@ import {
 import { isNavItemActive } from "@/components/layout/navigation";
 import { SidebarItem } from "@/components/layout/sidebar-item";
 import { SidebarSection } from "@/components/layout/sidebar-section";
+import { supabase } from "@/lib/supabase";
 
 type SidebarProps = {
   onNavigate?: () => void;
@@ -91,8 +94,21 @@ const groupedItems: MenuGroup[] = [
 ];
 
 export function Sidebar({ onNavigate, mobile = false }: SidebarProps) {
+  const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const [isSigningOut, setIsSigningOut] = useState(false);
+
+  const handleSignOut = async () => {
+    if (isSigningOut) {
+      return;
+    }
+
+    setIsSigningOut(true);
+    await supabase.auth.signOut();
+    router.replace("/login");
+    router.refresh();
+  };
 
   const isItemActive = (href: string) => {
     const [baseHref, queryString] = href.split("?");
@@ -158,6 +174,17 @@ export function Sidebar({ onNavigate, mobile = false }: SidebarProps) {
         </nav>
 
         <div className="mt-4 rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3">
+          <button
+            type="button"
+            onClick={() => {
+              void handleSignOut();
+            }}
+            disabled={isSigningOut}
+            className="mb-3 inline-flex w-full items-center justify-center gap-2 rounded-lg border border-white/20 bg-white/10 px-3 py-2 text-sm font-semibold text-white transition hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            <LogOut className="h-4 w-4" />
+            {isSigningOut ? "Signing out..." : "Sign Out"}
+          </button>
           <p className="text-sm font-semibold text-white">Ferryspeed</p>
           <p className="text-xs text-white/55">Enterprise Logistics Platform</p>
         </div>

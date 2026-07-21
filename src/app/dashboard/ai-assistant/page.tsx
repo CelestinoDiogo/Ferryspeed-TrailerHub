@@ -45,6 +45,15 @@ const SESSION_EXPIRED_MESSAGE = "Your session has expired. Please sign in again.
 
 const getSessionToken = async () => {
   const {
+    data: { user },
+    error: userError,
+  } = await supabase.auth.getUser();
+
+  if (userError) {
+    throw new Error(userError.message);
+  }
+
+  const {
     data: { session },
     error: sessionError,
   } = await supabase.auth.getSession();
@@ -53,11 +62,24 @@ const getSessionToken = async () => {
     throw new Error(sessionError.message);
   }
 
-  if (!session?.access_token) {
-    throw new Error("Auth session missing.");
+  if (session?.access_token) {
+    return session.access_token;
   }
 
-  return session.access_token;
+  const refreshResult = await supabase.auth.refreshSession();
+  if (refreshResult.data.session?.access_token) {
+    return refreshResult.data.session.access_token;
+  }
+
+  if (!user) {
+    throw new Error(SESSION_EXPIRED_MESSAGE);
+  }
+
+  if (refreshResult.error) {
+    throw new Error(refreshResult.error.message);
+  }
+
+  throw new Error("Unable to refresh authentication session.");
 };
 
 export default function AiAssistantPage() {
