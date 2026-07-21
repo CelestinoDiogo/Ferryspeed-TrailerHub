@@ -203,7 +203,7 @@ export function TrailerDashboard() {
               .eq("status", "waiting_collection"),
             supabase
               .from("export_allocations")
-              .select("id, trailer_id, status, expected_return_at, shipped_at"),
+              .select("id, trailer_id, status, expected_return_at, shipped_at, updated_at"),
             supabase
               .from("vessel_operations")
               .select("id, vessel_name, sailing_reference, expected_arrival_at, actual_arrival_at, status, created_at")
