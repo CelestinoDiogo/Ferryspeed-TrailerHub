@@ -7,6 +7,7 @@ import { ArrowLeft } from "lucide-react";
 import { PrintButton } from "@/components/print/print-button";
 import { TrailerTimeline } from "@/components/trailers/trailer-timeline";
 import { supabase } from "@/lib/supabase";
+import { getTrailerCurrentLocationLabel } from "@/lib/trailer-location";
 import {
   getExportAllocationStatusClasses,
   getExportAllocationStatusLabel,
@@ -22,7 +23,7 @@ import {
 const PHOTO_SIGNED_URL_TTL_SECONDS = 60 * 60;
 
 type PhotoView = VesselInspectionPhotoRecord & {
-  previewUrl?: string | null;
+  previewUrl: string;
 };
 
 type ExportAllocationView = Pick<
@@ -122,32 +123,6 @@ const getLoadBadgeClass = (loadStatus?: string | null) => {
   }
 
   return "border-slate-300 bg-slate-100 text-slate-700";
-};
-
-const getCurrentLocationLabel = (profile: TrailerOperationalProfile) => {
-  const trailer = profile.trailer;
-
-  if (trailer?.departure_date) {
-    return "Departed";
-  }
-
-  if (trailer?.is_local === true) {
-    return "Local Trailer";
-  }
-
-  if (profile.position.compoundPosition) {
-    return `Compound – ${profile.position.compoundPosition}`;
-  }
-
-  if (profile.position.operationalStage === "hold") {
-    return "Waiting for Compound";
-  }
-
-  if (profile.position.currentLocation) {
-    return profile.position.currentLocation;
-  }
-
-  return "Location Pending";
 };
 
 const getOperationalStatusLabel = (profile: TrailerOperationalProfile) => {
@@ -261,13 +236,21 @@ export function Trailer360Page({ trailerId }: Trailer360PageProps) {
         ...((vesselTrailerPhotoResult.data ?? []) as VesselInspectionPhotoRecord[]),
       ].filter((row, index, rows) => rows.findIndex((candidate) => candidate.id === row.id) === index);
 
-      const photoViews = await Promise.all(
+      const settledPhotoViews = await Promise.allSettled(
         mergedPhotos
           .filter((row) => Boolean(row.storage_path))
           .map(async (row) => {
             const storagePath = row.storage_path as string;
-            const signedResult = await supabase.storage.from("vessel-inspection-photos").createSignedUrl(storagePath, PHOTO_SIGNED_URL_TTL_SECONDS);
-            const previewUrl = signedResult.data?.signedUrl ?? supabase.storage.from("vessel-inspection-photos").getPublicUrl(storagePath).data.publicUrl;
+            const signedResult = await supabase.storage
+              .from("vessel-inspection-photos")
+              .createSignedUrl(storagePath, PHOTO_SIGNED_URL_TTL_SECONDS);
+            const previewUrl =
+              signedResult.data?.signedUrl ??
+              supabase.storage.from("vessel-inspection-photos").getPublicUrl(storagePath).data.publicUrl;
+
+            if (!previewUrl) {
+              throw new Error(`Unable to resolve preview URL for photo ${row.id}`);
+            }
 
             return {
               ...row,
@@ -276,7 +259,21 @@ export function Trailer360Page({ trailerId }: Trailer360PageProps) {
           }),
       );
 
-      setPhotos(photoViews.sort((left, right) => new Date(right.uploaded_at ?? 0).getTime() - new Date(left.uploaded_at ?? 0).getTime()));
+      const failedPhotosCount = settledPhotoViews.filter((result) => result.status === "rejected").length;
+      if (failedPhotosCount > 0) {
+        setGalleryError(`Some photos could not be loaded (${failedPhotosCount}).`);
+      }
+
+      const resolvedPhotoViews = settledPhotoViews
+        .filter((result) => result.status === "fulfilled")
+        .map((result) => (result.status === "fulfilled" ? result.value : null))
+        .filter((value): value is PhotoView => Boolean(value));
+
+      setPhotos(
+        resolvedPhotoViews.sort(
+          (left, right) => new Date(right.uploaded_at ?? 0).getTime() - new Date(left.uploaded_at ?? 0).getTime(),
+        ),
+      );
     } catch (error) {
       console.error("Unable to load trailer 360 view:", error);
       setPageError(error instanceof Error ? error.message : "Unable to load trailer details.");
@@ -340,7 +337,16 @@ export function Trailer360Page({ trailerId }: Trailer360PageProps) {
 
   const latestExportAllocation = exportAllocations[0] ?? null;
   const inspectionSummary = useMemo(() => (profile ? buildInspectionSummary(profile, photos) : null), [photos, profile]);
-  const currentLocation = profile ? getCurrentLocationLabel(profile) : "—";
+  const currentLocation = profile
+    ? getTrailerCurrentLocationLabel({
+        departureDate: profile.trailer?.departure_date,
+        isLocal: profile.trailer?.is_local,
+        compoundPosition: profile.position.compoundPosition,
+        waitingForCompound: profile.position.operationalStage === "hold",
+        exportLocation: profile.position.currentLocation?.includes("Export") ? profile.position.currentLocation : null,
+        fallbackLocation: profile.position.currentLocation,
+      })
+    : "—";
   const currentStatus = profile ? getOperationalStatusLabel(profile) : "—";
   const loadBadgeClass = getLoadBadgeClass(profile?.trailer?.load_status);
 
@@ -358,11 +364,40 @@ export function Trailer360Page({ trailerId }: Trailer360PageProps) {
     );
 
   const getPhotoPreview = async (photo: PhotoView) => {
-    if (!photo.previewUrl) {
-      return null;
+    setGalleryError(null);
+
+    try {
+      const storagePath = photo.storage_path?.trim();
+      if (!storagePath) {
+        throw new Error("Photo path missing.");
+      }
+
+      const signedResult = await supabase.storage
+        .from("vessel-inspection-photos")
+        .createSignedUrl(storagePath, PHOTO_SIGNED_URL_TTL_SECONDS);
+
+      const refreshedUrl =
+        signedResult.data?.signedUrl ??
+        supabase.storage.from("vessel-inspection-photos").getPublicUrl(storagePath).data.publicUrl;
+
+      if (!refreshedUrl) {
+        throw new Error("Unable to refresh photo URL.");
+      }
+
+      setPhotos((current) =>
+        current.map((row) => (row.id === photo.id ? { ...row, previewUrl: refreshedUrl } : row)),
+      );
+      setSelectedPreview({ url: refreshedUrl, title: photo.file_name ?? "Inspection photo" });
+    } catch (previewError) {
+      if (photo.previewUrl) {
+        setSelectedPreview({ url: photo.previewUrl, title: photo.file_name ?? "Inspection photo" });
+        setGalleryError("Photo URL could not be refreshed, but a previous preview is available.");
+        return null;
+      }
+
+      setGalleryError(previewError instanceof Error ? previewError.message : "Unable to open selected photo.");
     }
 
-    setSelectedPreview({ url: photo.previewUrl, title: photo.file_name ?? "Inspection photo" });
     return null;
   };
 

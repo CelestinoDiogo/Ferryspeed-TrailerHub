@@ -1175,7 +1175,15 @@ function ExportOperationsPageContent() {
                   <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                     <div>
                       <p className="text-xs uppercase tracking-[0.25em] text-slate-500">Trailer</p>
-                      <p className="mt-1 text-xl font-semibold text-white">{allocation.trailer_number ?? "-"}</p>
+                      <p className="mt-1 text-xl font-semibold text-white">
+                        {allocation.trailer_id ? (
+                          <Link href={`/dashboard/trailers/${allocation.trailer_id}`} className="underline decoration-cyan-400/60 underline-offset-2 hover:text-cyan-200">
+                            {allocation.trailer_number ?? "-"}
+                          </Link>
+                        ) : (
+                          allocation.trailer_number ?? "-"
+                        )}
+                      </p>
                     </div>
                     <div className="flex flex-wrap gap-2">
                       <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${getExportAllocationStatusClasses(allocation.status)}`}>
@@ -1227,6 +1235,11 @@ function ExportOperationsPageContent() {
                   </div>
 
                   <div className="mt-4 flex flex-wrap gap-2">
+                    {allocation.trailer_id ? (
+                      <Link href={`/dashboard/trailers/${allocation.trailer_id}`} className="rounded-xl border border-white/10 bg-slate-800 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-700">
+                        View Trailer
+                      </Link>
+                    ) : null}
                     <Link href={`/dashboard/export-operations/${allocation.id}`} className="rounded-xl border border-white/10 bg-slate-800 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-700">
                       View
                     </Link>

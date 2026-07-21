@@ -16,6 +16,7 @@ import {
   getTrailerFleetStatus,
 } from "@/lib/operations/trailer-operational-engine";
 import { supabase } from "@/lib/supabase";
+import { getTrailerCurrentLocationLabel } from "@/lib/trailer-location";
 import {
   EXPORT_ACTIVE_STATUS_QUERY_VALUES,
   getExportAllocationStatusLabel,
@@ -85,6 +86,9 @@ type SearchResultGroup = {
     status: string;
     operational_stage?: string | null;
     operational_location?: string | null;
+    current_operational_status?: string | null;
+    current_location?: string | null;
+    trailer_id?: string | null;
     vessel?: string | null;
     issue?: boolean;
     fleet_status?: string | null;
@@ -189,6 +193,9 @@ type OperationalSnapshot = {
   badgeClassName: string;
   fleetStatus: string;
 };
+
+const SEARCH_RESULTS_LIMIT = 500;
+const SEARCH_EVENTS_LIMIT = 1200;
 
 const formatDate = (value?: string | null) => {
   if (!value) {
@@ -327,21 +334,29 @@ function DashboardSearchPageContent() {
           supabase
             .from("trailers")
             .select("id, trailer_number, load_status, customer, consignee, container_number, compound_position, arrival_date, departure_date, trailer_source, external_company, external_reference, is_local, operational_status")
+            .limit(SEARCH_RESULTS_LIMIT)
             .order("arrival_date", { ascending: false }),
-          supabase.from("company_trailers").select("id, trailer_number, prefix, numeric_part").order("trailer_number", { ascending: true }),
+          supabase
+            .from("company_trailers")
+            .select("id, trailer_number, prefix, numeric_part")
+            .limit(SEARCH_RESULTS_LIMIT)
+            .order("trailer_number", { ascending: true }),
           supabase
             .from("export_allocations")
             .select("id, trailer_id, status, customer, collection_date, haulier, booking_reference, updated_at")
             .in("status", activeStatuses)
+            .limit(SEARCH_RESULTS_LIMIT)
             .order("updated_at", { ascending: false }),
           supabase
             .from("delivery_bookings")
             .select("id, trailer_id, delivery_date, delivery_time, customer, consignee, delivery_location, booking_reference, escort_required, status, notes, created_at, updated_at, delivered_at, waiting_collection_since, collection_due_date, collected_at, demurrage_free_days, demurrage_daily_rate, demurrage_currency, demurrage_notes")
             .not("status", "in", '("collected","cancelled")')
+            .limit(SEARCH_RESULTS_LIMIT)
             .order("updated_at", { ascending: false }),
           supabase
             .from("vessel_operation_trailers")
             .select("id, vessel_operation_id, trailer_id, trailer_number, customer, booking_reference, load_status, load_description, temperature_required, expected_front_temperature, expected_rear_temperature, expected_temperature_unit, priority_level, priority_reason, planned_destination, planning_notes, status, arrived_at, arrival_status, arrival_confirmed_at, arrival_record_id, arrival_confirmed_by, inspection_started_at, inspection_completed_at, position_assigned_at, assigned_position, has_damage, has_temperature_alert, created_at, updated_at")
+            .limit(SEARCH_RESULTS_LIMIT)
             .order("created_at", { ascending: false }),
         ]);
 
@@ -393,6 +408,7 @@ function DashboardSearchPageContent() {
                 .from("trailer_events")
                 .select("id, trailer_id, trailer_number, event_type, event_description, old_value, new_value, created_at, created_by")
                 .in("trailer_id", trailerIds)
+                .limit(SEARCH_EVENTS_LIMIT)
                 .order("created_at", { ascending: false })
             : Promise.resolve({ data: [], error: null }),
           trailerNumbers.length > 0
@@ -400,6 +416,7 @@ function DashboardSearchPageContent() {
                 .from("trailer_events")
                 .select("id, trailer_id, trailer_number, event_type, event_description, old_value, new_value, created_at, created_by")
                 .in("trailer_number", trailerNumbers)
+                .limit(SEARCH_EVENTS_LIMIT)
                 .order("created_at", { ascending: false })
             : Promise.resolve({ data: [], error: null }),
         ]);
@@ -641,6 +658,14 @@ function DashboardSearchPageContent() {
 
     const toTrailerItem = (item: TrailerRecord, status: string) => {
       const snapshot = operationalSnapshots.get(`trailer:${item.id}`);
+      const currentLocation = getTrailerCurrentLocationLabel({
+        departureDate: item.departure_date,
+        isLocal: item.is_local,
+        compoundPosition: item.compound_position,
+        waitingForCompound: snapshot?.stage === "hold",
+        exportLocation: snapshot?.location?.includes("Export") ? snapshot.location : null,
+        fallbackLocation: snapshot?.location ?? null,
+      });
       return {
       id: item.id,
       trailer_number: item.trailer_number,
@@ -658,7 +683,9 @@ function DashboardSearchPageContent() {
       active_export_allocation: item.active_export_allocation ?? null,
       status,
       operational_stage: snapshot?.stageLabel ?? status,
-      operational_location: snapshot?.location ?? (item.is_local ? "Local Trailer" : item.compound_position ?? "Compound"),
+      current_operational_status: snapshot?.stageLabel ?? status,
+      current_location: currentLocation,
+      operational_location: currentLocation,
       vessel: snapshot?.vessel ?? null,
       issue: snapshot?.hasIssues ?? false,
       fleet_status: snapshot?.fleetStatus ?? (item.trailer_source === "outsourced" ? "Outsourced" : "Ferryspeed Fleet"),
@@ -803,31 +830,45 @@ function DashboardSearchPageContent() {
 
     const companyItems = companyTrailers
       .filter((item) => matchesCompanyTrailer(item))
-      .map((item) => ({
-        id: item.id,
-        trailer_number: item.trailer_number,
-        load_status: "—",
-        position: "—",
-        customer: "—",
-        consignee: "—",
-        container: "—",
-        arrival_date: null,
-        departure_date: null,
-        trailer_source: "company",
-        external_company: null,
-        external_reference: null,
-        is_local: false,
-        active_export_allocation: null,
-        status: "Fleet Record",
-        operational_stage: operationalSnapshots.get(`company:${item.id}`)?.stageLabel ?? "Fleet Record",
-        operational_location: operationalSnapshots.get(`company:${item.id}`)?.location ?? "No active movement",
-        vessel: operationalSnapshots.get(`company:${item.id}`)?.vessel ?? null,
-        issue: operationalSnapshots.get(`company:${item.id}`)?.hasIssues ?? false,
-        fleet_status: operationalSnapshots.get(`company:${item.id}`)?.fleetStatus ?? "Ferryspeed Fleet",
-        stage_badge_class_name: operationalSnapshots.get(`company:${item.id}`)?.badgeClassName ?? "border-slate-500/30 bg-slate-500/10 text-slate-200",
-        profile_href: null,
-        source: "company" as const,
-      }));
+      .map((item) => {
+        const matchingTrailer = trailers.find((trailer) => normalizeText(trailer.trailer_number) === normalizeText(item.trailer_number));
+        const companySnapshot = operationalSnapshots.get(`company:${item.id}`);
+        const currentLocation = getTrailerCurrentLocationLabel({
+          departureDate: matchingTrailer?.departure_date,
+          isLocal: matchingTrailer?.is_local,
+          compoundPosition: matchingTrailer?.compound_position,
+          waitingForCompound: companySnapshot?.stage === "hold",
+          exportLocation: companySnapshot?.location?.includes("Export") ? companySnapshot.location : null,
+          fallbackLocation: companySnapshot?.location ?? null,
+        });
+        return {
+          id: item.id,
+          trailer_number: item.trailer_number,
+          load_status: "—",
+          position: "—",
+          customer: "—",
+          consignee: "—",
+          container: "—",
+          arrival_date: null,
+          departure_date: null,
+          trailer_source: "company",
+          external_company: null,
+          external_reference: null,
+          is_local: false,
+          active_export_allocation: null,
+          status: matchingTrailer ? (matchingTrailer.operational_status ?? "Trailer Record") : "Fleet Record",
+          operational_stage: matchingTrailer ? (matchingTrailer.operational_status ?? operationalSnapshots.get(`company:${item.id}`)?.stageLabel ?? "Trailer Record") : "Fleet Record",
+          current_operational_status: matchingTrailer ? (matchingTrailer.operational_status ?? operationalSnapshots.get(`company:${item.id}`)?.stageLabel ?? "Trailer Record") : "Fleet Record",
+          current_location: currentLocation,
+          operational_location: currentLocation,
+          vessel: operationalSnapshots.get(`company:${item.id}`)?.vessel ?? null,
+          issue: operationalSnapshots.get(`company:${item.id}`)?.hasIssues ?? false,
+          fleet_status: operationalSnapshots.get(`company:${item.id}`)?.fleetStatus ?? "Ferryspeed Fleet",
+          stage_badge_class_name: operationalSnapshots.get(`company:${item.id}`)?.badgeClassName ?? "border-slate-500/30 bg-slate-500/10 text-slate-200",
+          profile_href: matchingTrailer ? `/dashboard/trailers/${encodeURIComponent(matchingTrailer.id)}` : null,
+          source: "company" as const,
+        };
+      });
 
     return [
       {
@@ -1012,7 +1053,13 @@ function DashboardSearchPageContent() {
                           <div>
                             <p className="text-xs font-semibold uppercase tracking-[0.25em] text-slate-500">Trailer number</p>
                             <p className="mt-1 text-lg font-semibold text-white">
-                              {item.trailer_number ?? "—"}
+                              {item.profile_href ? (
+                                <Link href={item.profile_href} className="underline decoration-cyan-400/60 underline-offset-2 hover:text-cyan-200">
+                                  {item.trailer_number ?? "—"}
+                                </Link>
+                              ) : (
+                                item.trailer_number ?? "—"
+                              )}
                             </p>
                           </div>
                           <div className="flex flex-wrap gap-2">
@@ -1035,7 +1082,11 @@ function DashboardSearchPageContent() {
                           </div>
                           <div>
                             <dt className="text-xs uppercase tracking-[0.25em] text-slate-500">Current Location</dt>
-                            <dd className="mt-1">{item.operational_location ?? item.position ?? "—"}</dd>
+                            <dd className="mt-1">{item.current_location ?? item.operational_location ?? item.position ?? "—"}</dd>
+                          </div>
+                          <div>
+                            <dt className="text-xs uppercase tracking-[0.25em] text-slate-500">Current Operational Status</dt>
+                            <dd className="mt-1">{item.current_operational_status ?? item.status}</dd>
                           </div>
                           <div>
                             <dt className="text-xs uppercase tracking-[0.25em] text-slate-500">Customer</dt>
@@ -1063,7 +1114,7 @@ function DashboardSearchPageContent() {
                           </div>
                           <div>
                             <dt className="text-xs uppercase tracking-[0.25em] text-slate-500">Source</dt>
-                            <dd className="mt-1">{item.source === "company" ? "Company fleet" : "Trailer record"}</dd>
+                            <dd className="mt-1">{item.source === "company" ? (item.profile_href ? "Company fleet linked to trailer record" : "Company fleet") : "Trailer record"}</dd>
                           </div>
                           <div>
                             <dt className="text-xs uppercase tracking-[0.25em] text-slate-500">Fleet Status</dt>
@@ -1117,9 +1168,17 @@ function DashboardSearchPageContent() {
                             </Link>
                           </div>
                         ) : item.source === "company" ? (
-                          <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-100 px-3 py-2 text-sm text-slate-600">
-                            Fleet Record only. No operational trailer record exists yet.
-                          </div>
+                          item.profile_href ? (
+                            <div className="mt-3">
+                              <Link href={item.profile_href} className="text-sm font-semibold text-slate-700 underline hover:text-slate-900">
+                                View Trailer
+                              </Link>
+                            </div>
+                          ) : (
+                            <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-100 px-3 py-2 text-sm text-slate-600">
+                              Fleet Record only. No current operational record.
+                            </div>
+                          )
                         ) : null}
                       </article>
                     ))}

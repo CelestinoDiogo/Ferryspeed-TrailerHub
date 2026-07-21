@@ -623,7 +623,15 @@ function VesselArrivalsPageContent() {
                   <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                     <div className="space-y-2">
                       <div className="flex flex-wrap items-center gap-2">
-                        <h2 className="text-2xl font-bold text-white">{trailer.trailer_number ?? "-"}</h2>
+                        <h2 className="text-2xl font-bold text-white">
+                          {trailer.trailer_id ? (
+                            <Link href={`/dashboard/trailers/${trailer.trailer_id}`} className="underline decoration-cyan-400/60 underline-offset-2 hover:text-cyan-200">
+                              {trailer.trailer_number ?? "-"}
+                            </Link>
+                          ) : (
+                            trailer.trailer_number ?? "-"
+                          )}
+                        </h2>
                         <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${getVesselPriorityClass(trailer.priority_level)}`}>{getVesselPriorityLabel(trailer.priority_level)}</span>
                         <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${getVesselTrailerStatusClass((trailer.arrival_status === "available_for_arrival" ? "available_for_arrival" : trailer.status) ?? "expected")}`}>
                           {arrivalLabel}

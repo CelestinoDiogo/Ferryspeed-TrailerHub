@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
@@ -187,7 +187,7 @@ const getPositionColours = (position: PositionState): CardColours => {
 
 const getReadinessEmoji = (level: ReadinessLevel | null): string => {
   if (!level) return "";
-  return { ready: "🟢", needs_preparation: "🟡", action_required: "🔴" }[level];
+  return { ready: "­ƒƒó", needs_preparation: "­ƒƒí", action_required: "­ƒö┤" }[level];
 };
 
 const getReadinessLabel = (level: ReadinessLevel | null): string => {
@@ -204,7 +204,7 @@ export default function CompoundPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Load trailers and bookings in parallel — single round trip
+  // Load trailers and bookings in parallel ÔÇö single round trip
   useEffect(() => {
     const loadData = async () => {
       setIsLoading(true);
@@ -245,7 +245,7 @@ export default function CompoundPage() {
         }
         if (bookingsError) {
           console.error("[Compound] Bookings error:", bookingsError);
-          // Non-fatal — we can still show trailer positions
+          // Non-fatal ÔÇö we can still show trailer positions
         }
         if (exportAllocationsError) {
           throw exportAllocationsError;
@@ -272,7 +272,7 @@ export default function CompoundPage() {
     void loadData();
   }, []);
 
-  // Build enriched position states — no additional queries
+  // Build enriched position states ÔÇö no additional queries
   const allPositionStates = useMemo((): PositionState[] => {
     const todayKey = getLocalDateKey();
 
@@ -354,7 +354,7 @@ export default function CompoundPage() {
     });
   }, [trailers]);
 
-  // Apply search then filter — no Supabase queries
+  // Apply search then filter ÔÇö no Supabase queries
   const filteredPositions = useMemo((): PositionState[] => {
     const term = search.trim().toLowerCase();
 
@@ -393,7 +393,7 @@ export default function CompoundPage() {
     });
   }, [allPositionStates, search, filter]);
 
-  // Summary counts — computed from allPositionStates (unfiltered)
+  // Summary counts ÔÇö computed from allPositionStates (unfiltered)
   const summary = useMemo(() => {
     const occupied = allPositionStates.filter((s) => s.trailer).length;
     const empty = allPositionStates.filter((s) => !s.trailer).length;
@@ -430,7 +430,7 @@ export default function CompoundPage() {
               <p className="text-sm font-semibold uppercase tracking-[0.3em] text-cyan-400">Ferryspeed TrailerHub</p>
               <h1 className="mt-2 text-2xl font-semibold sm:text-3xl">Smart Compound</h1>
               <p className="mt-2 text-sm text-slate-300 sm:text-base">
-                Live operational map — position, readiness and delivery status at a glance.
+                Live operational map ÔÇö position, readiness and delivery status at a glance.
               </p>
             </div>
             <div className="flex flex-wrap gap-2">
@@ -464,11 +464,11 @@ export default function CompoundPage() {
               columns={[
                 { key: "position", header: "Position", render: (state) => state.position },
                 { key: "trailer", header: "Trailer", render: (state) => state.trailer?.trailer_number ?? "Available" },
-                { key: "customer", header: "Customer", render: (state) => state.trailer?.customer ?? "—" },
-                { key: "load_status", header: "Load", render: (state) => state.trailer?.load_status ?? "—" },
+                { key: "customer", header: "Customer", render: (state) => state.trailer?.customer ?? "ÔÇö" },
+                { key: "load_status", header: "Load", render: (state) => state.trailer?.load_status ?? "ÔÇö" },
                 { key: "booking_status", header: "Booking Status", render: (state) => state.booking ? statusLabel(state.booking.status) : "No Booking" },
                 { key: "readiness", header: "Readiness", render: (state) => getReadinessLabel(state.readiness) },
-                { key: "time", header: "Delivery Time", render: (state) => state.booking?.delivery_time ? formatTime(state.booking.delivery_time) : "—" },
+                { key: "time", header: "Delivery Time", render: (state) => state.booking?.delivery_time ? formatTime(state.booking.delivery_time) : "ÔÇö" },
               ]}
             />
             <PrintFooter />
@@ -513,7 +513,7 @@ export default function CompoundPage() {
                 <input
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
-                  placeholder="Search by trailer, customer or position…"
+                  placeholder="Search by trailer, customer or positionÔÇª"
                   className="flex-1 rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm outline-none"
                 />
               </div>
@@ -572,7 +572,7 @@ export default function CompoundPage() {
                       <div className="mt-2 space-y-1">
                         {/* Trailer Number */}
                         <p className="truncate text-sm font-bold text-white">
-                          {state.trailer.trailer_number ?? "—"}
+                          {state.trailer.trailer_number ?? "ÔÇö"}
                         </p>
 
                         {/* Customer */}
@@ -758,9 +758,9 @@ export default function CompoundPage() {
                           "Unnamed trailer"
                         )}
                       </p>
-                      <p className="mt-2 text-xs text-slate-400">Position: {trailer.compound_position ?? "—"}</p>
+                      <p className="mt-2 text-xs text-slate-400">Position: {trailer.compound_position ?? "ÔÇö"}</p>
                       <p className="mt-1 text-xs text-slate-400">Load: {trailer.load_status ?? "Unknown"}</p>
-                      <p className="mt-1 text-xs text-slate-400">Customer: {trailer.customer ?? "—"}</p>
+                      <p className="mt-1 text-xs text-slate-400">Customer: {trailer.customer ?? "ÔÇö"}</p>
                     </article>
                   ))}
                 </div>

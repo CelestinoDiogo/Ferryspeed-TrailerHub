@@ -347,7 +347,7 @@ const buildNextAction = (input: {
   currentVesselOperation: VesselOperationRow | null;
   currentVesselTrailer: VesselOperationTrailerRow | null;
 }): TrailerNextAction | null => {
-  const encodedTrailerNumber = encodeURIComponent(input.trailerNumber);
+  const encodedTrailerId = input.trailer?.id ? encodeURIComponent(input.trailer.id) : null;
 
   switch (input.stage) {
     case "expected":
@@ -408,9 +408,13 @@ const buildNextAction = (input: {
       };
     case "compound":
     case "local":
+      if (!encodedTrailerId) {
+        return null;
+      }
+
       return {
         label: "Open Trailer Profile",
-        href: `/dashboard/trailers/${encodedTrailerNumber}`,
+        href: `/dashboard/trailers/${encodedTrailerId}`,
         sourceModule: "system",
       };
     default:
@@ -423,7 +427,8 @@ const dedupeEvents = (events: OperationalEvent[]) => {
   return events
     .sort((left, right) => (toMs(right.occurredAt) ?? 0) - (toMs(left.occurredAt) ?? 0))
     .filter((event) => {
-      const key = [event.eventType, event.sourceModule, event.sourceRecordId ?? "none", event.occurredAt].join(":");
+      const minuteKey = event.occurredAt ? new Date(event.occurredAt).toISOString().slice(0, 16) : "none";
+      const key = [event.eventType, event.sourceModule, event.title.trim().toLowerCase(), minuteKey].join(":");
       if (seen.has(key)) {
         return false;
       }

@@ -648,7 +648,15 @@ export default function CompoundWaitingPage() {
                     const isRowActioning = actioningId === row.visual_id && isMutating;
                     return (
                       <tr key={row.visual_id} className="border-t border-white/10">
-                        <td className="px-3 py-3 font-semibold text-white">{row.trailer_number ?? "-"}</td>
+                        <td className="px-3 py-3 font-semibold text-white">
+                          {row.trailer_id ? (
+                            <Link href={`/dashboard/trailers/${row.trailer_id}`} className="transition hover:text-cyan-300">
+                              {row.trailer_number ?? "-"}
+                            </Link>
+                          ) : (
+                            row.trailer_number ?? "-"
+                          )}
+                        </td>
                         <td className="px-3 py-3">{normalizeStatusLabel(row.priority_level)}</td>
                         <td className="px-3 py-3">{row.customer ?? "-"}</td>
                         <td className="px-3 py-3">{row.load_status ?? "-"}</td>

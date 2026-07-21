@@ -1043,9 +1043,11 @@ function ExportAllocationDetailsContent() {
             <div>
               <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Trailer</p>
               <p className="mt-1 font-semibold text-white">{allocation.trailer_number ?? "-"}</p>
-              <Link href={`/dashboard/trailers/${allocation.trailer_id}`} className="mt-1 inline-block text-xs text-cyan-200 underline hover:text-cyan-100">
-                Open Trailer
-              </Link>
+              {allocation.trailer_id ? (
+                <Link href={`/dashboard/trailers/${allocation.trailer_id}`} className="mt-1 inline-block text-xs text-cyan-200 underline hover:text-cyan-100">
+                  Open Trailer
+                </Link>
+              ) : null}
             </div>
             <div>
               <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Customer</p>
