@@ -35,8 +35,32 @@ type CompoundOccupancy = {
 type WaitingFilter = "all" | "urgent" | "high" | "normal" | "low";
 
 type CompoundWaitingAssignmentRpcRow = {
+  id?: string;
+  trailer_id?: string | null;
   trailer_number?: string | null;
   assigned_position?: string | null;
+};
+
+type TrailerWithoutPositionRow = {
+  id: string;
+  trailer_number?: string | null;
+  customer?: string | null;
+  load_status?: string | null;
+  arrival_date?: string | null;
+  departure_date?: string | null;
+  is_local?: boolean | null;
+  compound_position?: string | null;
+};
+
+type ExportAllocationStatusRow = {
+  trailer_id?: string | null;
+  status?: string | null;
+  updated_at?: string | null;
+};
+
+type WaitingQueueRow = CompoundWaitingActiveRow & {
+  source: "formal" | "implicit";
+  visual_id: string;
 };
 
 const PRIORITY_ORDER: Record<string, number> = {
@@ -45,6 +69,15 @@ const PRIORITY_ORDER: Record<string, number> = {
   normal: 3,
   low: 4,
 };
+
+const OFF_COMPOUND_EXPORT_STATUSES = new Set([
+  "delivered_empty",
+  "waiting_loading",
+  "collected_loaded",
+  "ready_for_shipping",
+  "loaded_on_vessel",
+  "completed",
+]);
 
 const formatDateTime = (value?: string | null) => {
   if (!value) return "-";
@@ -127,8 +160,75 @@ const mapAssignmentErrorMessage = (message: string) => {
   return message;
 };
 
+const getWaitingMinutes = (waitingSince?: string | null) => {
+  if (!waitingSince) return null;
+
+  const waitingDate = new Date(waitingSince);
+  if (Number.isNaN(waitingDate.getTime())) {
+    return null;
+  }
+
+  return Math.max(0, Math.round((Date.now() - waitingDate.getTime()) / 60000));
+};
+
+const getLatestExportStatusByTrailerId = (rows: ExportAllocationStatusRow[]) => {
+  const sortedRows = [...rows].sort((left, right) => {
+    const leftTime = new Date(left.updated_at ?? 0).getTime();
+    const rightTime = new Date(right.updated_at ?? 0).getTime();
+
+    return rightTime - leftTime;
+  });
+
+  const statusByTrailerId = new Map<string, string>();
+
+  for (const row of sortedRows) {
+    const trailerId = row.trailer_id?.trim();
+    const status = row.status?.trim().toLowerCase();
+
+    if (!trailerId || !status || statusByTrailerId.has(trailerId)) {
+      continue;
+    }
+
+    statusByTrailerId.set(trailerId, status);
+  }
+
+  return statusByTrailerId;
+};
+
+const createImplicitQueueRow = (trailer: TrailerWithoutPositionRow): WaitingQueueRow => {
+  const waitingSince = trailer.arrival_date ?? null;
+
+  return {
+    id: `implicit:${trailer.id}`,
+    trailer_id: trailer.id,
+    trailer_number: trailer.trailer_number ?? null,
+    customer: trailer.customer ?? null,
+    load_status: trailer.load_status ?? null,
+    priority_level: "normal",
+    priority_reason: "Automatically surfaced from operational no-position list.",
+    waiting_reason: "awaiting_compound_position",
+    arrived_at: trailer.arrival_date ?? null,
+    waiting_since: waitingSince,
+    waiting_minutes: getWaitingMinutes(waitingSince),
+    vessel_operation_id: null,
+    vessel_trailer_id: null,
+    notes: null,
+    created_at: trailer.arrival_date ?? null,
+    source: "implicit",
+    visual_id: `implicit:${trailer.id}`,
+  };
+};
+
+const createFormalQueueRow = (row: CompoundWaitingActiveRow): WaitingQueueRow => ({
+  ...row,
+  source: "formal",
+  visual_id: row.id,
+});
+
 export default function CompoundWaitingPage() {
-  const [waitingRows, setWaitingRows] = useState<CompoundWaitingActiveRow[]>([]);
+  const [waitingRows, setWaitingRows] = useState<WaitingQueueRow[]>([]);
+  const [formalWaitingRows, setFormalWaitingRows] = useState<CompoundWaitingActiveRow[]>([]);
+  const [implicitWaitingRows, setImplicitWaitingRows] = useState<WaitingQueueRow[]>([]);
   const [occupancy, setOccupancy] = useState<CompoundOccupancy | null>(null);
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<WaitingFilter>("all");
@@ -143,11 +243,25 @@ export default function CompoundWaitingPage() {
     setError(null);
 
     try {
-      const [{ data: waitingData, error: waitingError }, { data: occupancyData, error: occupancyError }] = await Promise.all([
+      const [
+        { data: waitingData, error: waitingError },
+        { data: occupancyData, error: occupancyError },
+        { data: noPositionTrailersData, error: noPositionTrailersError },
+        { data: exportStatusData, error: exportStatusError },
+      ] = await Promise.all([
         supabase
           .from("compound_waiting_active")
           .select("id, trailer_id, trailer_number, customer, load_status, priority_level, priority_reason, waiting_reason, arrived_at, waiting_since, waiting_minutes, vessel_operation_id, vessel_trailer_id, notes, created_at"),
         (supabase as any).rpc("get_compound_occupancy"),
+        supabase
+          .from("trailers")
+          .select("id, trailer_number, customer, load_status, arrival_date, departure_date, is_local, compound_position")
+          .is("compound_position", null)
+          .is("departure_date", null)
+          .or("is_local.is.false,is_local.is.null"),
+        supabase
+          .from("export_allocations")
+          .select("trailer_id, status, updated_at"),
       ]);
 
       if (waitingError) {
@@ -156,8 +270,14 @@ export default function CompoundWaitingPage() {
       if (occupancyError) {
         throw occupancyError;
       }
+      if (noPositionTrailersError) {
+        throw noPositionTrailersError;
+      }
+      if (exportStatusError) {
+        throw exportStatusError;
+      }
 
-      const sortedRows = ((waitingData ?? []) as CompoundWaitingActiveRow[]).sort((left, right) => {
+      const sortedFormalRows = ((waitingData ?? []) as CompoundWaitingActiveRow[]).sort((left, right) => {
         const leftPriority = PRIORITY_ORDER[left.priority_level] ?? 99;
         const rightPriority = PRIORITY_ORDER[right.priority_level] ?? 99;
         if (leftPriority !== rightPriority) return leftPriority - rightPriority;
@@ -167,7 +287,49 @@ export default function CompoundWaitingPage() {
         return leftTime - rightTime;
       });
 
-      setWaitingRows(sortedRows);
+      const statusByTrailerId = getLatestExportStatusByTrailerId(
+        (exportStatusData ?? []) as ExportAllocationStatusRow[],
+      );
+
+      const eligibleOperationalRows = ((noPositionTrailersData ?? []) as TrailerWithoutPositionRow[]).filter((trailer) => {
+        if (trailer.is_local === true) {
+          return false;
+        }
+
+        if (trailer.departure_date && trailer.departure_date.trim() !== "") {
+          return false;
+        }
+
+        const exportStatus = statusByTrailerId.get(trailer.id)?.trim().toLowerCase();
+        if (exportStatus && OFF_COMPOUND_EXPORT_STATUSES.has(exportStatus)) {
+          return false;
+        }
+
+        return true;
+      });
+
+      const formalByTrailerId = new Map<string, WaitingQueueRow>();
+      for (const row of sortedFormalRows) {
+        formalByTrailerId.set(row.trailer_id, createFormalQueueRow(row));
+      }
+
+      const implicitRows = eligibleOperationalRows
+        .filter((trailer) => !formalByTrailerId.has(trailer.id))
+        .map((trailer) => createImplicitQueueRow(trailer));
+
+      const combinedRows = [...formalByTrailerId.values(), ...implicitRows].sort((left, right) => {
+        const leftPriority = PRIORITY_ORDER[left.priority_level] ?? 99;
+        const rightPriority = PRIORITY_ORDER[right.priority_level] ?? 99;
+        if (leftPriority !== rightPriority) return leftPriority - rightPriority;
+
+        const leftTime = left.waiting_since ? new Date(left.waiting_since).getTime() : 0;
+        const rightTime = right.waiting_since ? new Date(right.waiting_since).getTime() : 0;
+        return leftTime - rightTime;
+      });
+
+      setFormalWaitingRows(sortedFormalRows);
+      setImplicitWaitingRows(implicitRows);
+      setWaitingRows(combinedRows);
       setOccupancy(((occupancyData ?? [])[0] as CompoundOccupancy | undefined) ?? null);
     } catch (loadErr) {
       const message = loadErr instanceof Error ? loadErr.message : "Unable to load waiting queue.";
@@ -271,18 +433,71 @@ export default function CompoundWaitingPage() {
     }
 
     await runAction(async () => {
-      const { data: rpcData, error: rpcError } = await (supabase as any).rpc("assign_next_waiting_trailer");
+      if (formalWaitingRows.length > 0) {
+        const { data: rpcData, error: rpcError } = await (supabase as any).rpc("assign_next_waiting_trailer");
 
-      if (rpcError) throw rpcError;
-      return buildAssignmentNotice("Next trailer assigned successfully.", rpcData);
+        if (rpcError) throw rpcError;
+        return buildAssignmentNotice("Next trailer assigned successfully.", rpcData);
+      }
+
+      const oldestImplicitRow = [...implicitWaitingRows].sort((left, right) => {
+        const leftTime = left.waiting_since ? new Date(left.waiting_since).getTime() : 0;
+        const rightTime = right.waiting_since ? new Date(right.waiting_since).getTime() : 0;
+        return leftTime - rightTime;
+      })[0];
+
+      if (!oldestImplicitRow) {
+        return "There are no trailers waiting for a compound position.";
+      }
+
+      const { data: addData, error: addError } = await (supabase as any).rpc("add_trailer_to_compound_waiting", {
+        p_trailer_id: oldestImplicitRow.trailer_id,
+        p_priority_level: oldestImplicitRow.priority_level ?? "normal",
+        p_waiting_reason: oldestImplicitRow.waiting_reason ?? "compound_full",
+      });
+
+      if (addError) throw addError;
+
+      const addRow = extractAssignmentRpcRow(addData);
+      const waitingId = addRow?.id?.trim();
+
+      if (!waitingId) {
+        throw new Error("Unable to create waiting queue entry for assignment.");
+      }
+
+      const { data: assignData, error: assignError } = await (supabase as any).rpc("assign_waiting_trailer_to_compound", {
+        p_waiting_id: waitingId,
+      });
+
+      if (assignError) throw assignError;
+      return buildAssignmentNotice("Next trailer assigned successfully.", assignData);
     });
   };
 
-  const handleAssign = async (waitingId: string) => {
+  const handleAssign = async (row: WaitingQueueRow) => {
     if (isMutating) return;
 
-    setActioningId(waitingId);
+    setActioningId(row.visual_id);
     await runAction(async () => {
+      let waitingId = row.id;
+
+      if (row.source === "implicit") {
+        const { data: addData, error: addError } = await (supabase as any).rpc("add_trailer_to_compound_waiting", {
+          p_trailer_id: row.trailer_id,
+          p_priority_level: row.priority_level ?? "normal",
+          p_waiting_reason: row.waiting_reason ?? "compound_full",
+        });
+
+        if (addError) throw addError;
+
+        const addRow = extractAssignmentRpcRow(addData);
+        waitingId = addRow?.id?.trim() ?? "";
+
+        if (!waitingId) {
+          throw new Error("Unable to create waiting queue entry for assignment.");
+        }
+      }
+
       const { data: rpcData, error: rpcError } = await (supabase as any).rpc("assign_waiting_trailer_to_compound", {
         p_waiting_id: waitingId,
       });
@@ -409,6 +624,8 @@ export default function CompoundWaitingPage() {
         <section className="rounded-3xl border border-white/10 bg-slate-900/70 p-4 shadow-lg shadow-black/20 backdrop-blur sm:p-5">
           {isLoading ? (
             <p className="text-sm text-slate-400">Loading waiting queue...</p>
+          ) : waitingRows.length === 0 ? (
+            <p className="text-sm text-slate-400">There are no trailers waiting for a compound position.</p>
           ) : filteredRows.length === 0 ? (
             <p className="text-sm text-slate-400">No waiting trailers match the current filter.</p>
           ) : (
@@ -428,9 +645,9 @@ export default function CompoundWaitingPage() {
                 </thead>
                 <tbody>
                   {filteredRows.map((row) => {
-                    const isRowActioning = actioningId === row.id && isMutating;
+                    const isRowActioning = actioningId === row.visual_id && isMutating;
                     return (
-                      <tr key={row.id} className="border-t border-white/10">
+                      <tr key={row.visual_id} className="border-t border-white/10">
                         <td className="px-3 py-3 font-semibold text-white">{row.trailer_number ?? "-"}</td>
                         <td className="px-3 py-3">{normalizeStatusLabel(row.priority_level)}</td>
                         <td className="px-3 py-3">{row.customer ?? "-"}</td>
@@ -442,20 +659,22 @@ export default function CompoundWaitingPage() {
                           <div className="flex gap-2">
                             <button
                               type="button"
-                              onClick={() => void handleAssign(row.id)}
+                              onClick={() => void handleAssign(row)}
                               disabled={isMutating}
                               className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-3 py-1 text-xs font-semibold text-emerald-200 hover:bg-emerald-500/20 disabled:opacity-60"
                             >
                               {isRowActioning ? "Assigning..." : "Assign Position"}
                             </button>
-                            <button
-                              type="button"
-                              onClick={() => void handleCancel(row.id)}
-                              disabled={isMutating}
-                              className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-1 text-xs font-semibold text-rose-200 hover:bg-rose-500/20 disabled:opacity-60"
-                            >
-                              {isRowActioning ? "Saving..." : "Cancel"}
-                            </button>
+                            {row.source === "formal" ? (
+                              <button
+                                type="button"
+                                onClick={() => void handleCancel(row.id)}
+                                disabled={isMutating}
+                                className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-1 text-xs font-semibold text-rose-200 hover:bg-rose-500/20 disabled:opacity-60"
+                              >
+                                {isRowActioning ? "Saving..." : "Cancel"}
+                              </button>
+                            ) : null}
                           </div>
                         </td>
                       </tr>
