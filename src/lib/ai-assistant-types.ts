@@ -11,7 +11,10 @@ export const aiAssistantIntents = [
   "list_waiting_compound",
   "arrivals_today",
   "departures_today",
+  "count_arrivals_today",
+  "count_departures_today",
   "vessel_operations_today",
+  "operations_summary_today",
   "export_by_status",
   "trailers_by_customer",
   "trailers_with_damage",
@@ -47,18 +50,22 @@ export type AiAssistantLink = {
   href: string;
 };
 
+export type AiAssistantSummaryItem = {
+  label: string;
+  value: string | number;
+};
+
 export type AiAssistantRecord = Record<string, unknown>;
 
+export type AiAssistantUiResultType = "text" | "trailer" | "trailer_list" | "vessel_list" | "summary";
+
 export type AiAssistantResponse = {
+  title?: string;
   answer: string;
-  resultType: AiAssistantIntentName;
-  intent: AiAssistantIntentName;
+  resultType: AiAssistantUiResultType;
   data: AiAssistantRecord[];
-  summary: Record<string, unknown> | null;
+  summary?: AiAssistantSummaryItem[];
   links: AiAssistantLink[];
-  timestamp: string;
-  truncated: boolean;
-  provider: "openai" | "rules";
-  usedFallback: boolean;
-  notice?: string | null;
+  truncated?: boolean;
+  queriedAt: string;
 };

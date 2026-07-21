@@ -7,6 +7,7 @@ import { ArrowLeft } from "lucide-react";
 import { PrintButton } from "@/components/print/print-button";
 import { TrailerTimeline } from "@/components/trailers/trailer-timeline";
 import { supabase } from "@/lib/supabase";
+import type { Database } from "@/lib/database.types";
 import { getTrailerCurrentLocationLabel } from "@/lib/trailer-location";
 import {
   getExportAllocationStatusClasses,
@@ -25,6 +26,11 @@ const PHOTO_SIGNED_URL_TTL_SECONDS = 60 * 60;
 type PhotoView = VesselInspectionPhotoRecord & {
   previewUrl: string;
 };
+
+type VesselOperationTrailerDbRow = Database["public"]["Tables"]["vessel_operation_trailers"]["Row"];
+type VesselOperationDbRow = Database["public"]["Tables"]["vessel_operations"]["Row"];
+type VesselInspectionDamageDbRow = Database["public"]["Tables"]["vessel_inspection_damages"]["Row"];
+type VesselInspectionTemperatureDbRow = Database["public"]["Tables"]["vessel_inspection_temperatures"]["Row"];
 
 type ExportAllocationView = Pick<
   ExportAllocationRecord,
@@ -62,6 +68,8 @@ type VesselOperationGroup = {
 type Trailer360PageProps = {
   trailerId: string;
 };
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 const formatDate = (value?: string | null) => {
   if (!value) {
@@ -179,6 +187,8 @@ export function Trailer360Page({ trailerId }: Trailer360PageProps) {
   const [photos, setPhotos] = useState<PhotoView[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [pageError, setPageError] = useState<string | null>(null);
+  const [vesselSectionError, setVesselSectionError] = useState<string | null>(null);
+  const [inspectionSectionError, setInspectionSectionError] = useState<string | null>(null);
   const [galleryError, setGalleryError] = useState<string | null>(null);
   const [selectedPreview, setSelectedPreview] = useState<{ url: string; title: string } | null>(null);
 
@@ -189,13 +199,21 @@ export function Trailer360Page({ trailerId }: Trailer360PageProps) {
       return;
     }
 
+    if (!UUID_PATTERN.test(trailerId)) {
+      console.warn("Invalid trailer reference parameter:", trailerId);
+      setPageError("Invalid trailer reference.");
+      setIsLoading(false);
+      return;
+    }
+
     setIsLoading(true);
     setPageError(null);
+    setVesselSectionError(null);
+    setInspectionSectionError(null);
     setGalleryError(null);
 
     try {
       const loadedProfile = await loadTrailerOperationalProfile(supabase, trailerId);
-      setProfile(loadedProfile);
 
       const allocationRows = loadedProfile.exportAllocations
         .map((row) => ({
@@ -221,19 +239,94 @@ export function Trailer360Page({ trailerId }: Trailer360PageProps) {
       setExportAllocations(allocationRows);
 
       const trailer = loadedProfile.trailer;
-      const vesselTrailerPhotoResult = loadedProfile.vesselOperationTrailers.length > 0
-        ? await supabase
-            .from("vessel_inspection_photos")
-            .select("id, vessel_trailer_id, vessel_operation_id, category, storage_path, file_name, description, uploaded_at, uploaded_by")
-            .in("vessel_trailer_id", loadedProfile.vesselOperationTrailers.map((row) => row.id))
-        : { data: [], error: null };
+      let vesselTrailerRows: VesselOperationTrailerDbRow[] = [];
+      let vesselOperationRows: VesselOperationDbRow[] = [];
+      let damageRows: VesselInspectionDamageDbRow[] = [];
+      let temperatureRows: VesselInspectionTemperatureDbRow[] = [];
+      let photoRows: VesselInspectionPhotoRecord[] = [];
 
-      if (vesselTrailerPhotoResult.error) {
-        throw vesselTrailerPhotoResult.error;
+      if (trailer?.id) {
+        const vesselTrailerResult = await supabase
+          .from("vessel_operation_trailers")
+          .select("id, vessel_operation_id, trailer_id, trailer_number, customer, booking_reference, load_status, load_description, temperature_required, expected_front_temperature, expected_rear_temperature, expected_temperature_unit, priority_level, priority_reason, planned_destination, planning_notes, status, arrived_at, arrival_status, arrival_confirmed_at, arrival_record_id, arrival_confirmed_by, inspection_started_at, inspection_completed_at, position_assigned_at, assigned_position, has_damage, has_temperature_alert, created_at, updated_at")
+          .eq("trailer_id", trailer.id)
+          .order("created_at", { ascending: false });
+
+        if (vesselTrailerResult.error) {
+          setVesselSectionError(vesselTrailerResult.error.message || "Unable to load vessel operation records.");
+          vesselTrailerRows = [];
+        } else {
+          vesselTrailerRows = (vesselTrailerResult.data ?? []) as VesselOperationTrailerDbRow[];
+        }
+
+        const vesselOperationIds = Array.from(new Set(vesselTrailerRows.map((row) => row.vessel_operation_id).filter((value): value is string => Boolean(value))));
+
+        if (vesselOperationIds.length > 0) {
+          const vesselOperationResult = await supabase
+            .from("vessel_operations")
+            .select("id, vessel_name, sailing_reference, origin_port, berth, expected_arrival_at, actual_arrival_at, status, list_status, list_confirmed_at, list_confirmed_by, notes, created_at, updated_at")
+            .in("id", vesselOperationIds);
+
+          if (vesselOperationResult.error) {
+            setVesselSectionError(vesselOperationResult.error.message || "Unable to load vessel operation details.");
+            vesselOperationRows = [];
+          } else {
+            vesselOperationRows = (vesselOperationResult.data ?? []) as VesselOperationDbRow[];
+          }
+        }
+
+        const vesselTrailerIds = vesselTrailerRows.map((row) => row.id).filter((value): value is string => Boolean(value));
+
+        if (vesselTrailerIds.length > 0) {
+          const [damageResult, temperatureResult, photoResult] = await Promise.all([
+            supabase
+              .from("vessel_inspection_damages")
+              .select("id, vessel_trailer_id, trailer_id, trailer_number, damage_type, damage_location, severity, description, recorded_at, recorded_by")
+              .in("vessel_trailer_id", vesselTrailerIds),
+            supabase
+              .from("vessel_inspection_temperatures")
+              .select("id, vessel_trailer_id, trailer_id, trailer_number, temperature_value, temperature_unit, reading_point, notes, is_out_of_range, recorded_at, recorded_by")
+              .in("vessel_trailer_id", vesselTrailerIds),
+            supabase
+              .from("vessel_inspection_photos")
+              .select("id, vessel_trailer_id, category, storage_path, file_name, description, uploaded_at, uploaded_by")
+              .in("vessel_trailer_id", vesselTrailerIds),
+          ]);
+
+          if (damageResult.error) {
+            setInspectionSectionError(damageResult.error.message || "Unable to load inspection damage records.");
+            damageRows = [];
+          } else {
+            damageRows = (damageResult.data ?? []) as VesselInspectionDamageDbRow[];
+          }
+
+          if (temperatureResult.error) {
+            setInspectionSectionError(temperatureResult.error.message || "Unable to load inspection temperature records.");
+            temperatureRows = [];
+          } else {
+            temperatureRows = (temperatureResult.data ?? []) as VesselInspectionTemperatureDbRow[];
+          }
+
+          if (photoResult.error) {
+            setGalleryError(photoResult.error.message || "Unable to load inspection photos.");
+            photoRows = [];
+          } else {
+            photoRows = (photoResult.data ?? []) as VesselInspectionPhotoRecord[];
+          }
+        }
       }
 
+      const hydratedProfile: TrailerOperationalProfile = {
+        ...loadedProfile,
+        vesselOperationTrailers: vesselTrailerRows,
+        vesselOperations: vesselOperationRows,
+        inspectionDamages: damageRows,
+        inspectionTemperatures: temperatureRows,
+      };
+      setProfile(hydratedProfile);
+
       const mergedPhotos = [
-        ...((vesselTrailerPhotoResult.data ?? []) as VesselInspectionPhotoRecord[]),
+        ...photoRows,
       ].filter((row, index, rows) => rows.findIndex((candidate) => candidate.id === row.id) === index);
 
       const settledPhotoViews = await Promise.allSettled(
@@ -565,6 +658,12 @@ export function Trailer360Page({ trailerId }: Trailer360PageProps) {
             <p className="text-sm text-slate-500">{profile.vesselOperationTrailers.length} related vessel trailer record{profile.vesselOperationTrailers.length === 1 ? "" : "s"}</p>
           </div>
 
+          {vesselSectionError ? (
+            <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+              {vesselSectionError}
+            </div>
+          ) : null}
+
           {vesselOperationGroups.length === 0 ? (
             <div className="mt-4 rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-5 text-sm text-slate-500">No vessel operations are linked to this trailer yet.</div>
           ) : (
@@ -721,6 +820,11 @@ export function Trailer360Page({ trailerId }: Trailer360PageProps) {
 
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <p className="text-xs font-semibold uppercase tracking-[0.3em] text-slate-500">Inspection Summary</p>
+          {inspectionSectionError ? (
+            <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+              {inspectionSectionError}
+            </div>
+          ) : null}
           {!inspectionSummary ? (
             <div className="mt-4 rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-5 text-sm text-slate-500">No inspection data available yet.</div>
           ) : (

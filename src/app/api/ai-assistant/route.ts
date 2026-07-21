@@ -71,10 +71,8 @@ export async function POST(request: Request) {
     console.info("AI Assistant query", {
       userId: user.id,
       questionHash,
-      intent: response.intent,
+      title: response.title ?? null,
       resultType: response.resultType,
-      usedFallback: response.usedFallback,
-      provider: response.provider,
       success: true,
       elapsedMs,
     });

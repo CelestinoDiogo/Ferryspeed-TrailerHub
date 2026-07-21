@@ -14,15 +14,26 @@ type ConversationItem = {
   error: string | null;
 };
 
+type FollowUpContext = {
+  lastIntent: string | null;
+  lastTrailerNumber: string | null;
+  lastCustomer: string | null;
+  lastStatus: string | null;
+};
+
 const exampleQuestions = [
   "Where is trailer PFF1216?",
+  "Show its history.",
   "How many empty trailers are available?",
   "Which trailers are waiting for compound?",
-  "What arrived today?",
-  "What departed today?",
+  "How many trailers arrived today?",
+  "Show me the list.",
+  "How many trailers departed today?",
+  "Give me today's operational summary.",
   "What vessel operations are scheduled today?",
   "Show export trailers waiting for collection.",
   "Which trailers have damage alerts?",
+  "Which trailers have temperature alerts?",
 ];
 
 const formatTimestamp = (value: string) => {
@@ -40,6 +51,89 @@ const formatTimestamp = (value: string) => {
 };
 
 const keyLabel = (key: string) => key.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/_/g, " ").replace(/\b\w/g, (char) => char.toUpperCase());
+
+const normalizeText = (value: string) => value.trim().toLowerCase();
+
+const inferIntentFromQuestion = (question: string) => {
+  const normalized = normalizeText(question);
+
+  if (/show\s+its\s+history|trailer history/.test(normalized)) return "trailer_history";
+  if (/where\s+is\s+trailer|where is/.test(normalized)) return "find_trailer";
+  if (/latest inspection/.test(normalized)) return "latest_inspection";
+  if (/how many.*arriv|count.*arriv/.test(normalized)) return "count_arrivals_today";
+  if (/how many.*depart|count.*depart/.test(normalized)) return "count_departures_today";
+  if (/arrived today|what arrived today|list.*arriv/.test(normalized)) return "arrivals_today";
+  if (/departed today|what departed today|list.*depart/.test(normalized)) return "departures_today";
+  if (/operational summary|daily summary/.test(normalized)) return "operations_summary_today";
+  if (/vessel operations/.test(normalized)) return "vessel_operations_today";
+  if (/waiting for compound/.test(normalized)) return "list_waiting_compound";
+  if (/empty trailers/.test(normalized)) return normalized.includes("how many") ? "count_empty" : "list_empty";
+  if (/loaded trailers/.test(normalized)) return normalized.includes("how many") ? "count_loaded" : "list_loaded";
+  if (/compound/.test(normalized) && /how many|count/.test(normalized)) return "count_compound";
+  if (/compound/.test(normalized)) return "list_compound";
+  if (/export/.test(normalized)) return "export_by_status";
+  if (/damage/.test(normalized)) return "trailers_with_damage";
+  if (/temperature/.test(normalized)) return "trailers_with_temperature_alert";
+  if (/customer/.test(normalized)) return "trailers_by_customer";
+  return "unknown";
+};
+
+const extractFirstTrailerNumber = (response: AiAssistantResponse) => {
+  const fromData = response.data.find((row) => typeof row.trailerNumber === "string")?.trailerNumber;
+  if (typeof fromData === "string" && fromData.trim().length > 0) {
+    return fromData.trim().toUpperCase();
+  }
+
+  const fromTitle = response.title?.match(/trailer\s+([a-z0-9-]{3,12})/i)?.[1];
+  if (fromTitle) {
+    return fromTitle.toUpperCase();
+  }
+
+  return null;
+};
+
+const extractFirstCustomer = (response: AiAssistantResponse) => {
+  const fromData = response.data.find((row) => typeof row.customer === "string")?.customer;
+  if (typeof fromData === "string" && fromData.trim().length > 0) {
+    return fromData.trim();
+  }
+  return null;
+};
+
+const extractStatusFromQuestion = (question: string) => {
+  const normalized = normalizeText(question);
+  const knownStatuses = ["allocated", "delivered_empty", "waiting_loading", "collected_loaded", "completed", "cancelled"];
+  const found = knownStatuses.find((status) => normalized.includes(status.replace("_", " ")) || normalized.includes(status));
+  return found ?? null;
+};
+
+const resolveFollowUpQuestion = (raw: string, context: FollowUpContext) => {
+  const normalized = normalizeText(raw);
+
+  if (normalized === "show me the list." || normalized === "show me the list") {
+    if (context.lastIntent === "count_arrivals_today") {
+      return "What arrived today?";
+    }
+    if (context.lastIntent === "count_departures_today") {
+      return "What departed today?";
+    }
+    if (context.lastIntent === "count_empty") {
+      return "Show empty trailers in the compound.";
+    }
+    if (context.lastIntent === "count_loaded") {
+      return "Show loaded trailers in the compound.";
+    }
+    if (context.lastIntent === "count_compound") {
+      return "Show trailers in compound.";
+    }
+  }
+
+  if ((normalized === "show its history." || normalized === "show its history") && context.lastTrailerNumber) {
+    return `Show history for trailer ${context.lastTrailerNumber}.`;
+  }
+
+  return raw;
+};
 
 const SESSION_EXPIRED_MESSAGE = "Your session has expired. Please sign in again.";
 
@@ -87,6 +181,12 @@ export default function AiAssistantPage() {
   const [conversation, setConversation] = useState<ConversationItem[]>([]);
   const [isSending, setIsSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [followUpContext, setFollowUpContext] = useState<FollowUpContext>({
+    lastIntent: null,
+    lastTrailerNumber: null,
+    lastCustomer: null,
+    lastStatus: null,
+  });
 
   const hasConversation = conversation.length > 0;
 
@@ -109,11 +209,13 @@ export default function AiAssistantPage() {
     setIsSending(true);
     setError(null);
 
+    const effectiveQuestion = resolveFollowUpQuestion(trimmed, followUpContext);
+
     const createdAt = new Date().toISOString();
     const entryId = `${createdAt}-${Math.random().toString(36).slice(2, 8)}`;
     setConversation((current) => [
       ...current,
-      { id: entryId, question: trimmed, createdAt, response: null, error: null },
+      { id: entryId, question: effectiveQuestion, createdAt, response: null, error: null },
     ]);
 
     try {
@@ -124,7 +226,7 @@ export default function AiAssistantPage() {
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ question: trimmed }),
+        body: JSON.stringify({ question: effectiveQuestion }),
       });
 
       const payload = (await response.json()) as AiAssistantResponse & { error?: string };
@@ -140,6 +242,13 @@ export default function AiAssistantPage() {
       setConversation((current) =>
         current.map((item) => (item.id === entryId ? { ...item, response: payload, error: null } : item)),
       );
+
+      setFollowUpContext((current) => ({
+        lastIntent: inferIntentFromQuestion(effectiveQuestion),
+        lastTrailerNumber: extractFirstTrailerNumber(payload) ?? current.lastTrailerNumber,
+        lastCustomer: extractFirstCustomer(payload) ?? current.lastCustomer,
+        lastStatus: extractStatusFromQuestion(effectiveQuestion) ?? current.lastStatus,
+      }));
     } catch (requestError) {
       const rawMessage = requestError instanceof Error ? requestError.message : "Unable to answer that question right now.";
       const message = rawMessage === "Auth session missing." ? SESSION_EXPIRED_MESSAGE : rawMessage;
@@ -169,7 +278,7 @@ export default function AiAssistantPage() {
       );
     }
 
-    if (response.resultType === "find_trailer" || response.resultType === "latest_inspection") {
+    if (response.data.length === 1) {
       const item = response.data[0] as Record<string, unknown>;
       return (
         <div className="mt-4 grid gap-3 lg:grid-cols-2">
@@ -183,21 +292,21 @@ export default function AiAssistantPage() {
       );
     }
 
-    if (response.resultType === "trailer_history") {
+    if (response.data.length <= 10) {
       return (
-        <div className="mt-4 space-y-3">
+        <div className="mt-4 grid gap-3 md:grid-cols-2">
           {response.data.map((row) => {
             const item = row as Record<string, unknown>;
             return (
               <div key={String(item.id ?? Math.random())} className="rounded-2xl border border-white/10 bg-slate-950/60 p-4">
-                <div className="flex flex-wrap items-center gap-2">
-                  <p className="font-semibold text-white">{String(item.title ?? item.eventType ?? "Event")}</p>
-                  <span className="rounded-full border border-white/10 bg-white/5 px-2 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-300">
-                    {String(item.sourceModule ?? "system")}
-                  </span>
-                </div>
-                <p className="mt-2 text-sm text-slate-300">{String(item.description ?? "No description")}</p>
-                <p className="mt-2 text-xs text-slate-500">{formatTimestamp(String(item.occurredAt ?? response.timestamp))}</p>
+                {Object.entries(item)
+                  .slice(0, 6)
+                  .map(([key, value]) => (
+                    <div key={key} className="mb-2 last:mb-0">
+                      <p className="text-[11px] uppercase tracking-[0.15em] text-slate-500">{keyLabel(key)}</p>
+                      <p className="text-sm text-slate-200">{typeof value === "string" ? value : value === null || value === undefined ? "—" : JSON.stringify(value)}</p>
+                    </div>
+                  ))}
               </div>
             );
           })}
@@ -372,17 +481,27 @@ export default function AiAssistantPage() {
                       ) : item.response ? (
                         <div className="mt-4 space-y-4">
                           <div className="rounded-2xl border border-cyan-400/20 bg-cyan-500/10 p-4">
-                            <div className="flex flex-wrap items-center gap-2 text-xs uppercase tracking-[0.18em] text-cyan-100">
-                              <span className="rounded-full border border-cyan-400/20 bg-cyan-500/15 px-2.5 py-1">{item.response.provider}</span>
-                              <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1">{item.response.intent}</span>
-                              <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1">{item.response.resultType}</span>
-                              {item.response.truncated ? <span className="rounded-full border border-amber-400/30 bg-amber-500/10 px-2.5 py-1 text-amber-100">Truncated</span> : null}
-                              {item.response.usedFallback ? <span className="rounded-full border border-slate-400/20 bg-slate-500/10 px-2.5 py-1 text-slate-200">Fallback</span> : null}
-                            </div>
+                            {item.response.title ? <p className="text-sm font-semibold text-cyan-100">{item.response.title}</p> : null}
                             <p className="mt-3 text-sm text-white">{item.response.answer}</p>
-                            <p className="mt-2 text-xs text-slate-300">{formatTimestamp(item.response.timestamp)}</p>
-                            {item.response.notice ? <p className="mt-2 text-xs text-amber-200">{item.response.notice}</p> : null}
+                            <p className="mt-2 text-xs text-slate-300">Queried at {formatTimestamp(item.response.queriedAt)}</p>
                           </div>
+
+                          {item.response.summary && item.response.summary.length > 0 ? (
+                            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                              {item.response.summary.map((entry) => (
+                                <div key={`${item.id}-${entry.label}`} className="rounded-2xl border border-white/10 bg-slate-950/60 p-3">
+                                  <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">{entry.label}</p>
+                                  <p className="mt-1 text-base font-semibold text-white">{String(entry.value)}</p>
+                                </div>
+                              ))}
+                            </div>
+                          ) : null}
+
+                          {item.response.truncated ? (
+                            <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
+                              Showing the first 50 results.
+                            </div>
+                          ) : null}
 
                           {item.response.links.length > 0 ? (
                             <div className="flex flex-wrap gap-2">
@@ -392,6 +511,16 @@ export default function AiAssistantPage() {
                                   <ArrowRight className="h-4 w-4" />
                                 </Link>
                               ))}
+                            </div>
+                          ) : null}
+
+                          {item.response.links.length === 0 &&
+                          item.response.data.some((row) => {
+                            const record = row as Record<string, unknown>;
+                            return record.linkUnavailableReason === "No operational trailer record available.";
+                          }) ? (
+                            <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
+                              No operational trailer record available.
                             </div>
                           ) : null}
 
