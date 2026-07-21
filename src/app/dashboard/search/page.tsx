@@ -663,7 +663,7 @@ function DashboardSearchPageContent() {
       issue: snapshot?.hasIssues ?? false,
       fleet_status: snapshot?.fleetStatus ?? (item.trailer_source === "outsourced" ? "Outsourced" : "Ferryspeed Fleet"),
       stage_badge_class_name: snapshot?.badgeClassName ?? "border-slate-500/30 bg-slate-500/10 text-slate-200",
-      profile_href: item.trailer_number ? `/dashboard/trailers/${encodeURIComponent(item.trailer_number)}` : null,
+      profile_href: `/dashboard/trailers/${encodeURIComponent(item.id)}`,
       source: "trailer" as const,
       };
     };
@@ -825,7 +825,7 @@ function DashboardSearchPageContent() {
         issue: operationalSnapshots.get(`company:${item.id}`)?.hasIssues ?? false,
         fleet_status: operationalSnapshots.get(`company:${item.id}`)?.fleetStatus ?? "Ferryspeed Fleet",
         stage_badge_class_name: operationalSnapshots.get(`company:${item.id}`)?.badgeClassName ?? "border-slate-500/30 bg-slate-500/10 text-slate-200",
-        profile_href: item.trailer_number ? `/dashboard/trailers/${encodeURIComponent(item.trailer_number)}` : null,
+        profile_href: null,
         source: "company" as const,
       }));
 
@@ -1012,16 +1012,7 @@ function DashboardSearchPageContent() {
                           <div>
                             <p className="text-xs font-semibold uppercase tracking-[0.25em] text-slate-500">Trailer number</p>
                             <p className="mt-1 text-lg font-semibold text-white">
-                              {item.profile_href && item.trailer_number ? (
-                                <Link
-                                  href={item.profile_href}
-                                  className="transition hover:text-cyan-300"
-                                >
-                                  {item.trailer_number}
-                                </Link>
-                              ) : (
-                                "—"
-                              )}
+                              {item.trailer_number ?? "—"}
                             </p>
                           </div>
                           <div className="flex flex-wrap gap-2">
@@ -1116,6 +1107,18 @@ function DashboardSearchPageContent() {
                             >
                               View Export Allocation
                             </Link>
+                          </div>
+                        ) : null}
+
+                        {item.source === "trailer" && item.profile_href ? (
+                          <div className="mt-3">
+                            <Link href={item.profile_href} className="text-sm font-semibold text-slate-700 underline hover:text-slate-900">
+                              View Trailer
+                            </Link>
+                          </div>
+                        ) : item.source === "company" ? (
+                          <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-100 px-3 py-2 text-sm text-slate-600">
+                            Fleet Record only. No operational trailer record exists yet.
                           </div>
                         ) : null}
                       </article>

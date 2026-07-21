@@ -107,6 +107,8 @@ export type TrailerOperationalProfile = {
   vesselOperations: VesselOperationRow[];
   deliveryBookings: DeliveryBookingRow[];
   exportAllocations: ExportAllocationRow[];
+  inspectionDamages: DamageRow[];
+  inspectionTemperatures: TemperatureRow[];
   events: OperationalEvent[];
   relatedRecords: TrailerRelatedRecord[];
   position: TrailerOperationalPosition;
@@ -1171,6 +1173,8 @@ export async function loadTrailerOperationalProfile(
     vesselOperations,
     deliveryBookings,
     exportAllocations,
+    inspectionDamages: damages,
+    inspectionTemperatures: temperatures,
     events,
     relatedRecords,
     position,

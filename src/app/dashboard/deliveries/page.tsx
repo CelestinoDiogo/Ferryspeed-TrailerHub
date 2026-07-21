@@ -686,7 +686,7 @@ function DeliveriesPageContent() {
                           {markingCollected === b.id ? "Marking..." : "✓ Mark Collected"}
                         </button>
                         <Link href={`/dashboard/deliveries/${b.id}`} className="rounded-xl border border-white/10 bg-slate-800 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-700">View Booking</Link>
-                        <Link href={`/dashboard/trailers/${b.trailer_number ?? b.trailer_id}`} className="rounded-xl border border-white/10 bg-slate-800 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-700">View Trailer</Link>
+                        <Link href={`/dashboard/trailers/${b.trailer_id}`} className="rounded-xl border border-white/10 bg-slate-800 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-700">View Trailer</Link>
                       </div>
                     </div>
                   </article>

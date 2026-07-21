@@ -206,7 +206,7 @@ export default function LocalTrailersPage() {
 
                   <div className="flex flex-col gap-2 lg:min-w-52">
                     <Link
-                      href={`/dashboard/trailers/${trailer.trailer_number ?? trailer.id}`}
+                      href={`/dashboard/trailers/${trailer.id}`}
                       className="rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-2 text-center text-sm font-semibold text-white hover:bg-slate-900"
                     >
                       View History
