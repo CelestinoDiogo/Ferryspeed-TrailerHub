@@ -41,39 +41,23 @@ const formatTimestamp = (value: string) => {
 
 const keyLabel = (key: string) => key.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/_/g, " ").replace(/\b\w/g, (char) => char.toUpperCase());
 
-const AI_SESSION_RETRY_DELAY_MS = 250;
+const SESSION_EXPIRED_MESSAGE = "Your session has expired. Please sign in again.";
 
 const getSessionToken = async () => {
-  const initialSession = await supabase.auth.getSession();
-  if (initialSession.error) {
-    throw new Error(initialSession.error.message);
+  const {
+    data: { session },
+    error: sessionError,
+  } = await supabase.auth.getSession();
+
+  if (sessionError) {
+    throw new Error(sessionError.message);
   }
 
-  if (initialSession.data.session?.access_token) {
-    return initialSession.data.session.access_token;
+  if (!session?.access_token) {
+    throw new Error("Auth session missing.");
   }
 
-  // Ensure auth state is hydrated before rejecting a still-signed-in user.
-  const userResult = await supabase.auth.getUser();
-  if (userResult.error) {
-    throw new Error(userResult.error.message);
-  }
-
-  if (!userResult.data.user) {
-    throw new Error("Your session is not available. Please sign in again.");
-  }
-
-  await new Promise((resolve) => window.setTimeout(resolve, AI_SESSION_RETRY_DELAY_MS));
-  const retrySession = await supabase.auth.getSession();
-  if (retrySession.error) {
-    throw new Error(retrySession.error.message);
-  }
-
-  if (!retrySession.data.session?.access_token) {
-    throw new Error("Your session is not available. Please sign in again.");
-  }
-
-  return retrySession.data.session.access_token;
+  return session.access_token;
 };
 
 export default function AiAssistantPage() {
@@ -114,7 +98,6 @@ export default function AiAssistantPage() {
       const token = await getSessionToken();
       const response = await fetch("/api/ai-assistant", {
         method: "POST",
-        credentials: "include",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
@@ -124,6 +107,10 @@ export default function AiAssistantPage() {
 
       const payload = (await response.json()) as AiAssistantResponse & { error?: string };
 
+      if (response.status === 401) {
+        throw new Error(SESSION_EXPIRED_MESSAGE);
+      }
+
       if (!response.ok) {
         throw new Error(payload.error ?? "Unable to answer that question right now.");
       }
@@ -132,7 +119,8 @@ export default function AiAssistantPage() {
         current.map((item) => (item.id === entryId ? { ...item, response: payload, error: null } : item)),
       );
     } catch (requestError) {
-      const message = requestError instanceof Error ? requestError.message : "Unable to answer that question right now.";
+      const rawMessage = requestError instanceof Error ? requestError.message : "Unable to answer that question right now.";
+      const message = rawMessage === "Auth session missing." ? SESSION_EXPIRED_MESSAGE : rawMessage;
       setError(message);
       setConversation((current) =>
         current.map((item) => (item.id === entryId ? { ...item, response: null, error: message } : item)),
