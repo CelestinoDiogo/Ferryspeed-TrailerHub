@@ -436,7 +436,7 @@ async function queryWaitingCompound(supabase: SupabaseClient<Database>, limit: n
       .from("compound_waiting_active")
       .select("id, trailer_id, trailer_number, customer, load_status, priority_level, priority_reason, waiting_reason, arrived_at, waiting_since, waiting_minutes, vessel_operation_id, vessel_trailer_id, notes, created_at")
       .order("waiting_since", { ascending: true }),
-    supabase.rpc("get_compound_occupancy"),
+    (supabase as any).rpc("get_compound_occupancy"),
     supabase
       .from("trailers")
       .select("id, trailer_number, customer, load_status, arrival_date, departure_date, is_local, compound_position")

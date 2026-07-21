@@ -29,11 +29,39 @@ async function hashQuestion(question: string) {
 
 export async function POST(request: Request) {
   const startedAt = Date.now();
+  const authHeader = request.headers.get("authorization") ?? request.headers.get("Authorization");
+  const cookieHeader = request.headers.get("cookie");
 
   try {
+    console.info("AI Assistant auth debug", {
+      phase: "request_received",
+      hasAuthorizationHeader: Boolean(authHeader),
+      hasCookieHeader: Boolean(cookieHeader),
+      cookieHeaderLength: cookieHeader?.length ?? 0,
+    });
+
     const accessToken = getRouteBearerToken(request);
+    console.info("AI Assistant auth debug", {
+      phase: "token_extracted",
+      tokenLength: accessToken.length,
+      tokenPrefix: accessToken.slice(0, 8),
+    });
+
     const supabase = createAuthenticatedRouteSupabaseClient(request);
+
+    const sessionProbe = await supabase.auth.getSession();
+    console.info("AI Assistant auth debug", {
+      phase: "session_probe",
+      sessionFound: Boolean(sessionProbe.data.session),
+      sessionError: sessionProbe.error?.message ?? null,
+    });
+
     const user = await requireAuthenticatedRouteUser(supabase, accessToken);
+    console.info("AI Assistant auth debug", {
+      phase: "user_probe",
+      userFound: Boolean(user),
+      userId: user.id,
+    });
 
     const payload = requestSchema.parse(await request.json().catch(() => ({})));
     const response = await runAiAssistantQuery(supabase, payload.question);
@@ -69,6 +97,14 @@ export async function POST(request: Request) {
     }
 
     if (error instanceof SupabaseRouteAuthError) {
+      console.info("AI Assistant auth debug", {
+        phase: "auth_rejected",
+        status: error.status,
+        reason: error.message,
+        hasAuthorizationHeader: Boolean(authHeader),
+        hasCookieHeader: Boolean(cookieHeader),
+      });
+
       console.info("AI Assistant query", {
         questionHash,
         intent: "unknown",

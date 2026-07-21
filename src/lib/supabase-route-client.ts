@@ -26,14 +26,14 @@ export function getRouteBearerToken(request: Request): string {
   const authorization = request.headers.get("authorization") ?? request.headers.get("Authorization");
 
   if (!authorization) {
-    throw new SupabaseRouteAuthError("Missing or invalid authentication token.", 401);
+    throw new SupabaseRouteAuthError("Missing Authorization header.", 401);
   }
 
   const match = authorization.match(/^Bearer\s+(.+)$/i);
   const token = match?.[1]?.trim();
 
   if (!token) {
-    throw new SupabaseRouteAuthError("Missing or invalid authentication token.", 401);
+    throw new SupabaseRouteAuthError("Malformed Authorization header. Expected Bearer token.", 401);
   }
 
   return token;
@@ -74,11 +74,11 @@ export async function requireAuthenticatedRouteUser(
   const { data, error } = await supabase.auth.getUser(accessToken);
 
   if (error) {
-    throw new SupabaseRouteAuthError("Missing or invalid authentication token.", 401);
+    throw new SupabaseRouteAuthError(`Invalid authentication token: ${error.message}`, 401);
   }
 
   if (!data.user) {
-    throw new SupabaseRouteAuthError("Missing or invalid authentication token.", 401);
+    throw new SupabaseRouteAuthError("Authentication token did not resolve to a user.", 401);
   }
 
   return data.user;

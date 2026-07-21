@@ -41,18 +41,39 @@ const formatTimestamp = (value: string) => {
 
 const keyLabel = (key: string) => key.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/_/g, " ").replace(/\b\w/g, (char) => char.toUpperCase());
 
+const AI_SESSION_RETRY_DELAY_MS = 250;
+
 const getSessionToken = async () => {
-  const { data, error } = await supabase.auth.getSession();
-  if (error) {
-    throw new Error(error.message);
+  const initialSession = await supabase.auth.getSession();
+  if (initialSession.error) {
+    throw new Error(initialSession.error.message);
   }
 
-  const token = data.session?.access_token ?? null;
-  if (!token) {
+  if (initialSession.data.session?.access_token) {
+    return initialSession.data.session.access_token;
+  }
+
+  // Ensure auth state is hydrated before rejecting a still-signed-in user.
+  const userResult = await supabase.auth.getUser();
+  if (userResult.error) {
+    throw new Error(userResult.error.message);
+  }
+
+  if (!userResult.data.user) {
     throw new Error("Your session is not available. Please sign in again.");
   }
 
-  return token;
+  await new Promise((resolve) => window.setTimeout(resolve, AI_SESSION_RETRY_DELAY_MS));
+  const retrySession = await supabase.auth.getSession();
+  if (retrySession.error) {
+    throw new Error(retrySession.error.message);
+  }
+
+  if (!retrySession.data.session?.access_token) {
+    throw new Error("Your session is not available. Please sign in again.");
+  }
+
+  return retrySession.data.session.access_token;
 };
 
 export default function AiAssistantPage() {
@@ -93,6 +114,7 @@ export default function AiAssistantPage() {
       const token = await getSessionToken();
       const response = await fetch("/api/ai-assistant", {
         method: "POST",
+        credentials: "include",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
