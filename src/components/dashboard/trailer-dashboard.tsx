@@ -166,6 +166,9 @@ export function TrailerDashboard() {
   const [waitingCollectionSummary, setWaitingCollectionSummary] = useState<WaitingCollectionSummary>({ count: 0, attentionRequiredCount: 0, oldestTrailer: null, oldestDays: 0 });
   const [exportSummary, setExportSummary] = useState<ExportSummary>(defaultExportSummary);
   const [vesselOperations, setVesselOperations] = useState<VesselOperationCard[]>([]);
+  const [arrivalsTodayCount, setArrivalsTodayCount] = useState(0);
+  const [departuresTodayCount, setDeparturesTodayCount] = useState(0);
+  const [vesselOpsTodayCount, setVesselOpsTodayCount] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -209,7 +212,6 @@ export function TrailerDashboard() {
               .from("vessel_operations")
               .select("id, vessel_name, sailing_reference, expected_arrival_at, actual_arrival_at, status, created_at")
               .order("expected_arrival_at", { ascending: true })
-              .limit(4)
           ]);
 
         if (supabaseError) throw supabaseError;
@@ -219,6 +221,24 @@ export function TrailerDashboard() {
         if (vesselError) throw vesselError;
 
         const trailers = (data ?? []) as TrailerRecord[];
+        setArrivalsTodayCount(
+          trailers.filter((item) => getDateKey(item.arrival_date) === todayKey).length,
+        );
+        setDeparturesTodayCount(
+          trailers.filter((item) => getDateKey(item.departure_date) === todayKey).length,
+        );
+
+        const allVesselOperations = (vesselData ?? []) as VesselOperationCard[];
+        setVesselOpsTodayCount(
+          allVesselOperations.filter((operation) => {
+            const operationDate =
+              getDateKey(operation.actual_arrival_at) ??
+              getDateKey(operation.expected_arrival_at);
+
+            return operationDate === todayKey;
+          }).length,
+        );
+
         const exportAllocations = ((exportAllocationsData ?? []) as ExportAllocationRecord[]).map((row) =>
           normalizeExportAllocationRecord(row),
         );
@@ -227,7 +247,7 @@ export function TrailerDashboard() {
         const visibleTrailers = trailers.filter((trailer) =>
           trailer.is_local === true || isTrailerEligibleForCompoundViews(trailer, activeExportStatusByTrailerId.get(trailer.id)),
         );
-        setVesselOperations((vesselData ?? []) as VesselOperationCard[]);
+        setVesselOperations(allVesselOperations.slice(0, 4));
         setTrailers(visibleTrailers);
 
         const activeTrailers = visibleTrailers.filter((item) => {
@@ -411,6 +431,9 @@ export function TrailerDashboard() {
         setWaitingCollections([]);
         setWaitingCollectionSummary({ count: 0, attentionRequiredCount: 0, oldestTrailer: null, oldestDays: 0 });
         setExportSummary(defaultExportSummary);
+        setArrivalsTodayCount(0);
+        setDeparturesTodayCount(0);
+        setVesselOpsTodayCount(0);
       } finally {
         setIsLoading(false);
       }
@@ -433,12 +456,8 @@ export function TrailerDashboard() {
     };
   }, []);
 
-  const todayKey = getDateKey(new Date().toISOString());
-  const arrivalsTodayCount = trailers.filter((item) => getDateKey(item.arrival_date) === todayKey).length;
-  const departuresTodayCount = trailers.filter((item) => getDateKey(item.departure_date) === todayKey).length;
   const deliveriesTodayCount = todayDeliveries.length;
   const collectionsTodayCount = waitingCollectionSummary.count;
-  const vesselOpsTodayCount = vesselOperations.length;
 
   const activeCompoundTrailers = trailers.filter((item) => {
     const departureDate = item.departure_date;
