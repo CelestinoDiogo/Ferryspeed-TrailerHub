@@ -923,10 +923,11 @@ export function useVesselOperation(operationId: string): UseVesselOperationResul
 
         if (inspection.photos.length > 0) {
           for (const photo of inspection.photos) {
-            const storagePath = `operation-${operation.id}/trailer-${trailer.id}/${Date.now()}-${sanitizeFileName(photo.name || "photo")}`;
+            const storagePath = `vessel-operations/${operation.id}/${trailer.id}/${Date.now()}-${sanitizeFileName(photo.name || "photo")}`;
             const { error: uploadError } = await supabase.storage.from("vessel-inspection-photos").upload(storagePath, photo, {
               cacheControl: "3600",
               upsert: false,
+              contentType: photo.type,
             });
 
             if (uploadError) {
@@ -935,6 +936,7 @@ export function useVesselOperation(operationId: string): UseVesselOperationResul
 
             const photoPayload = {
               vessel_trailer_id: trailer.id,
+              vessel_operation_id: operation.id,
               category: "Boat Check",
               storage_path: storagePath,
               file_name: photo.name,

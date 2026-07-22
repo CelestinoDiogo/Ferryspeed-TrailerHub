@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useMemo, useState } from "react";
+import { HistoryDateRangeFilter } from "@/components/common/history-date-range-filter";
 import { PrintButton } from "@/components/print/print-button";
 import { PrintFilters } from "@/components/print/print-filters";
 import { PrintFooter } from "@/components/print/print-footer";
@@ -14,6 +15,13 @@ import { PrintTable } from "@/components/print/print-table";
 import type { Database } from "@/lib/database.types";
 import { supabase } from "@/lib/supabase";
 import { getLocalDateKey } from "@/lib/operational-readiness";
+import {
+  createHistoryDateRange,
+  getHistoryDateRangeLabel,
+  isDateWithinHistoryRange,
+  normalizeHistoryPreset,
+  type HistoryDateRangeValue,
+} from "@/lib/history-date-range";
 import {
   COMPOUND_REFRESH_STORAGE_KEY,
   assignNextWaitingTrailerAfterDeliveredEmpty,
@@ -110,6 +118,19 @@ const formatDate = (value?: string | null) => {
 };
 
 const normalizeText = (value?: string | null) => value?.trim().toLowerCase() ?? "";
+
+const getDateKey = (value?: string | null) => {
+  if (!value) {
+    return null;
+  }
+
+  const normalized = value.trim();
+  if (normalized.length >= 10) {
+    return normalized.slice(0, 10);
+  }
+
+  return null;
+};
 
 const formatDateKey = (value?: string | null) => {
   if (!value) return "-";
@@ -258,11 +279,13 @@ function ExportOperationsPageContent() {
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const saved = searchParams.get("saved") === "1";
-  const selectedDate = searchParams.get("date") ?? "";
   const selectedCustomerQuery = searchParams.get("customer") ?? "";
   const statusQuery = searchParams.get("status");
   const legacyFilterQuery = statusQuery ? null : searchParams.get("filter");
   const statusFilter = getStatusQueryValue(statusQuery ?? legacyFilterQuery ?? "all");
+  const historyPresetQuery = searchParams.get("history");
+  const historyStartQuery = searchParams.get("start") ?? "";
+  const historyEndQuery = searchParams.get("end") ?? "";
 
   const [searchTerm, setSearchTerm] = useState("");
 
@@ -273,17 +296,27 @@ function ExportOperationsPageContent() {
   const [warning, setWarning] = useState<string | null>(null);
   const [actioningId, setActioningId] = useState<string | null>(null);
 
-  const updateFilters = (updates: { date?: string; customer?: string; status?: string }) => {
-    const params = new URLSearchParams(searchParams.toString());
+  const historyRange = useMemo<HistoryDateRangeValue>(() => {
+    const preset = normalizeHistoryPreset(historyPresetQuery);
 
-    if (updates.date !== undefined) {
-      const value = updates.date.trim();
-      if (value) {
-        params.set("date", value);
-      } else {
-        params.delete("date");
-      }
+    if (preset === "custom") {
+      const fallback = createHistoryDateRange("today");
+      return {
+        preset,
+        startDate: historyStartQuery || fallback.startDate,
+        endDate: historyEndQuery || fallback.endDate,
+      };
     }
+
+    return createHistoryDateRange(preset);
+  }, [historyEndQuery, historyPresetQuery, historyStartQuery]);
+
+  const updateFilters = (updates: {
+    customer?: string;
+    status?: string;
+    history?: HistoryDateRangeValue;
+  }) => {
+    const params = new URLSearchParams(searchParams.toString());
 
     if (updates.customer !== undefined) {
       const value = updates.customer.trim();
@@ -303,7 +336,29 @@ function ExportOperationsPageContent() {
       }
     }
 
+    if (updates.history !== undefined) {
+      params.set("history", updates.history.preset);
+
+      if (updates.history.preset === "custom") {
+        if (updates.history.startDate.trim()) {
+          params.set("start", updates.history.startDate.trim());
+        } else {
+          params.delete("start");
+        }
+
+        if (updates.history.endDate.trim()) {
+          params.set("end", updates.history.endDate.trim());
+        } else {
+          params.delete("end");
+        }
+      } else {
+        params.delete("start");
+        params.delete("end");
+      }
+    }
+
     params.delete("filter");
+    params.delete("date");
 
     const nextUrl = params.toString() ? `${pathname}?${params.toString()}` : pathname;
     router.replace(nextUrl, { scroll: false });
@@ -311,7 +366,9 @@ function ExportOperationsPageContent() {
 
   const handleClearFilters = () => {
     setSearchTerm("");
-    router.replace(pathname, { scroll: false });
+    const params = new URLSearchParams();
+    params.set("history", "today");
+    router.replace(`${pathname}?${params.toString()}`, { scroll: false });
   };
 
   const handlePrintList = () => {
@@ -417,22 +474,17 @@ function ExportOperationsPageContent() {
     const nowIso = new Date().toISOString();
 
     return allocations.filter((item) => {
-      const collectionDate = item.collection_date?.trim() ?? "";
+      const collectionDateKey = getDateKey(item.collection_date);
+      if (!isDateWithinHistoryRange(collectionDateKey, historyRange)) {
+        return false;
+      }
 
-      if (selectedDate.trim()) {
-        if (collectionDate !== selectedDate.trim()) {
-          return false;
-        }
-      } else if (legacyFilterQuery === "today") {
-        const collectionDateKey = collectionDate.slice(0, 10);
-        if (collectionDateKey !== todayKey) {
-          return false;
-        }
-      } else if (legacyFilterQuery === "upcoming") {
-        const collectionDateKey = collectionDate.slice(0, 10);
-        if (!collectionDateKey || !todayKey || collectionDateKey <= todayKey) {
-          return false;
-        }
+      if (legacyFilterQuery === "upcoming" && todayKey && collectionDateKey && collectionDateKey <= todayKey) {
+        return false;
+      }
+
+      if (legacyFilterQuery === "upcoming" && !collectionDateKey) {
+        return false;
       }
 
       if (statusFilter === "overdue") {
@@ -465,7 +517,7 @@ function ExportOperationsPageContent() {
 
       return true;
     });
-  }, [allocations, legacyFilterQuery, searchTerm, selectedDate, statusFilter]);
+  }, [allocations, historyRange, legacyFilterQuery, searchTerm, statusFilter]);
 
   const customerOptions = useMemo(() => getCustomerOptions(baseFilteredAllocations), [baseFilteredAllocations]);
 
@@ -515,7 +567,7 @@ function ExportOperationsPageContent() {
   );
 
   const selectedStatusLabel = getStatusLabel(statusFilter);
-  const selectedDateLabel = selectedDate.trim() ? formatDateKey(selectedDate) : "All Dates";
+  const selectedDateLabel = getHistoryDateRangeLabel(historyRange);
   const selectedCustomerLabel = resolvedCustomerValue ? resolvedCustomerValue : "All Customers";
   const printedAt = formatPrintedDateTime();
 
@@ -1070,16 +1122,13 @@ function ExportOperationsPageContent() {
         </section>
 
         <section className="filters rounded-3xl border border-white/10 bg-slate-900/70 p-4 shadow-lg shadow-black/20 backdrop-blur sm:p-5">
-          <div className="grid gap-3 xl:grid-cols-4">
-            <label className="flex flex-col gap-2 text-sm text-slate-300">
-              <span className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Collection Date</span>
-              <input
-                type="date"
-                value={selectedDate}
-                onChange={(event) => updateFilters({ date: event.target.value })}
-                className="h-11 rounded-2xl border border-white/10 bg-slate-950/80 px-3 text-slate-100 outline-none ring-0 placeholder:text-slate-500 focus:border-cyan-400/50"
-              />
-            </label>
+          <HistoryDateRangeFilter
+            value={historyRange}
+            onChange={(nextRange) => updateFilters({ history: nextRange })}
+            label="Collection Period"
+          />
+
+          <div className="mt-3 grid gap-3 xl:grid-cols-3">
 
             <label className="flex flex-col gap-2 text-sm text-slate-300">
               <span className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Customer</span>
@@ -1130,13 +1179,6 @@ function ExportOperationsPageContent() {
             </p>
 
             <div className="flex flex-wrap gap-2">
-              <button
-                type="button"
-                onClick={() => updateFilters({ date: getLocalDateKey() })}
-                className="rounded-2xl border border-white/10 bg-slate-800 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-700"
-              >
-                Today
-              </button>
               <button
                 type="button"
                 onClick={handleClearFilters}

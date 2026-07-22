@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import {
+  COMPOUND_REFRESH_STORAGE_KEY,
   EXPORT_ACTIVE_STATUS_QUERY_VALUES,
   isTrailerAvailableForExportAllocation,
   type ExportAllocationPriority,
@@ -298,6 +299,22 @@ export default function NewExportAllocationPage() {
         throw new Error(insertError?.message || "Unable to create export allocation.");
       }
 
+      const { error: waitingCleanupError } = await supabase
+        .from("compound_waiting_list")
+        .update(
+          {
+            status: "cancelled",
+            notes: "Automatically removed after export allocation creation.",
+            updated_at: nowIso,
+          } as never,
+        )
+        .eq("trailer_id", trailer.id)
+        .eq("status", "waiting");
+
+      if (waitingCleanupError) {
+        throw new Error(waitingCleanupError.message || "Export allocation created, but waiting queue could not be synchronized.");
+      }
+
       const { error: eventError } = await supabase.from("trailer_events").insert({
         trailer_id: trailer.id,
         trailer_number: normalizeTrailerNumber(trailer.trailer_number),
@@ -321,6 +338,10 @@ export default function NewExportAllocationPage() {
 
       if (eventError) {
         console.error("Failed to create export_allocation_created event:", eventError);
+      }
+
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem(COMPOUND_REFRESH_STORAGE_KEY, Date.now().toString());
       }
 
       router.push("/dashboard/export-operations?saved=1");

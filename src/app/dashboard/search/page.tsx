@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useMemo, useState } from "react";
+import { HistoryDateRangeFilter } from "@/components/common/history-date-range-filter";
 import { PrintButton } from "@/components/print/print-button";
 import { PrintFilters } from "@/components/print/print-filters";
 import { PrintFooter } from "@/components/print/print-footer";
@@ -23,6 +24,12 @@ import {
   normalizeExportAllocationStatus,
   type ExportAllocationStatus,
 } from "@/lib/export-allocation";
+import {
+  createHistoryDateRange,
+  getHistoryDateRangeLabel,
+  isDateWithinHistoryRange,
+  type HistoryDateRangeValue,
+} from "@/lib/history-date-range";
 
 type TrailerRecord = {
   id: string;
@@ -257,6 +264,7 @@ function DashboardSearchPageContent() {
   const [vesselOperationTrailers, setVesselOperationTrailers] = useState<VesselOperationTrailerRecord[]>([]);
   const [vesselOperations, setVesselOperations] = useState<VesselOperationRecord[]>([]);
   const [trailerEvents, setTrailerEvents] = useState<TrailerEventRecord[]>([]);
+  const [historyDateRange, setHistoryDateRange] = useState<HistoryDateRangeValue>(() => createHistoryDateRange("today"));
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -314,6 +322,14 @@ function DashboardSearchPageContent() {
     if (activeFilter === "departures_today") return "Today's Departures";
     return null;
   }, [activeFilter]);
+
+  const isArrivalOrDepartureFilter = activeFilter === "arrivals_today" || activeFilter === "departures_today";
+
+  useEffect(() => {
+    if (!isArrivalOrDepartureFilter) {
+      setHistoryDateRange(createHistoryDateRange("today"));
+    }
+  }, [isArrivalOrDepartureFilter]);
 
   useEffect(() => {
     let isMounted = true;
@@ -783,16 +799,16 @@ function DashboardSearchPageContent() {
         groupDescription = "Active trailers from the Ferryspeed fleet";
         accent = "from-cyan-500 to-blue-600";
       } else if (activeFilter === "arrivals_today") {
-        filteredTrailers = trailers.filter((item) => getDateKey(item.arrival_date) === todayKey);
-        statusLabel = "Arrived Today";
-        groupTitle = "Today's arrivals";
-        groupDescription = "Trailers that arrived today";
+        filteredTrailers = trailers.filter((item) => isDateWithinHistoryRange(getDateKey(item.arrival_date), historyDateRange));
+        statusLabel = "Arrived";
+        groupTitle = "Arrivals";
+        groupDescription = `Trailers that arrived within ${getHistoryDateRangeLabel(historyDateRange).toLowerCase()}`;
         accent = "from-sky-500 to-cyan-600";
       } else if (activeFilter === "departures_today") {
-        filteredTrailers = trailers.filter((item) => getDateKey(item.departure_date) === todayKey);
-        statusLabel = "Departed Today";
-        groupTitle = "Today's departures";
-        groupDescription = "Trailers that departed today";
+        filteredTrailers = trailers.filter((item) => isDateWithinHistoryRange(getDateKey(item.departure_date), historyDateRange));
+        statusLabel = "Departed";
+        groupTitle = "Departures";
+        groupDescription = `Trailers that departed within ${getHistoryDateRangeLabel(historyDateRange).toLowerCase()}`;
         accent = "from-violet-500 to-fuchsia-600";
       }
 
@@ -893,7 +909,7 @@ function DashboardSearchPageContent() {
         items: companyItems,
       },
     ];
-  }, [activeFilter, companyTrailers, operationalSnapshots, search, todayKey, trailers]);
+  }, [activeFilter, companyTrailers, historyDateRange, operationalSnapshots, search, todayKey, trailers]);
 
   const hasAnyResults = searchGroups.some((group) => group.items.length > 0);
   const totalResults = searchGroups.reduce((count, group) => count + group.items.length, 0);
@@ -943,6 +959,7 @@ function DashboardSearchPageContent() {
                 items={[
                   { label: "Search", value: search.trim() || "Current filtered view" },
                   { label: "Dashboard Filter", value: activeFilterTitle ?? "None" },
+                  { label: "Period", value: isArrivalOrDepartureFilter ? getHistoryDateRangeLabel(historyDateRange) : "Current day" },
                 ]}
               />
             </PrintHeader>
@@ -989,6 +1006,16 @@ function DashboardSearchPageContent() {
           <p className="mt-2 text-sm text-slate-400">
             Matches are checked across the trailers and company fleet tables.
           </p>
+
+          {isArrivalOrDepartureFilter ? (
+            <div className="mt-4 rounded-2xl border border-white/10 bg-slate-950/60 p-3">
+              <HistoryDateRangeFilter
+                value={historyDateRange}
+                onChange={setHistoryDateRange}
+                label={activeFilter === "arrivals_today" ? "Arrivals Period" : "Departures Period"}
+              />
+            </div>
+          ) : null}
         </section>
 
         {hasFilter && activeFilterTitle ? (

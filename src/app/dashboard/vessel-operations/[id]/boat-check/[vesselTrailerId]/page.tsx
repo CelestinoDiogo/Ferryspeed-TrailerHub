@@ -53,6 +53,7 @@ const DAMAGE_LOCATIONS = ["Front", "Rear", "Left Side", "Right Side", "Roof", "U
 const DAMAGE_SEVERITIES = ["Minor", "Moderate", "Severe"];
 
 const MAX_PHOTO_SIZE = 10 * 1024 * 1024;
+const PHOTO_SIGNED_URL_TTL_SECONDS = 60 * 60;
 
 const normalizeReadingPoint = (value?: string | null) => (value ?? "").trim().toLowerCase();
 
@@ -106,6 +107,18 @@ const isStorageConfigurationError = (errorMessage: string) => {
 };
 
 const asSupabaseErrorLike = (error: unknown) => error as SupabaseErrorLike;
+
+const resolveInspectionPhotoPreviewUrl = async (storagePath: string) => {
+  const signedResult = await supabase.storage
+    .from("vessel-inspection-photos")
+    .createSignedUrl(storagePath, PHOTO_SIGNED_URL_TTL_SECONDS);
+
+  return (
+    signedResult.data?.signedUrl ??
+    supabase.storage.from("vessel-inspection-photos").getPublicUrl(storagePath).data.publicUrl ??
+    null
+  );
+};
 
 function VesselInspectionPageContent() {
   const params = useParams();
@@ -356,14 +369,31 @@ function VesselInspectionPageContent() {
       setInspectionNotes(trailerRow.planning_notes ?? "");
 
       const photoRows = (photosResult.data ?? []) as VesselInspectionPhotoRecord[];
-      setPhotos(
-        photoRows.map((photo) => ({
-          ...photo,
-          previewUrl: photo.storage_path
-            ? supabase.storage.from("vessel-inspection-photos").getPublicUrl(photo.storage_path).data.publicUrl
-            : null,
-        })),
+      const settledPhotoViews = await Promise.allSettled(
+        photoRows.map(async (photo) => {
+          const storagePath = photo.storage_path?.trim();
+          if (!storagePath) {
+            return {
+              ...photo,
+              previewUrl: null,
+            } satisfies PhotoView;
+          }
+
+          return {
+            ...photo,
+            previewUrl: await resolveInspectionPhotoPreviewUrl(storagePath),
+          } satisfies PhotoView;
+        }),
       );
+
+      const resolvedPhotos: PhotoView[] = [];
+      for (const result of settledPhotoViews) {
+        if (result.status === "fulfilled") {
+          resolvedPhotos.push(result.value as PhotoView);
+        }
+      }
+
+      setPhotos(resolvedPhotos);
 
       const { data: receptionEvents } = await supabase
         .from("trailer_events")
@@ -502,6 +532,7 @@ function VesselInspectionPageContent() {
           .from("vessel_inspection_photos")
           .insert({
             vessel_trailer_id: trailerData.id,
+            vessel_operation_id: operationData.id,
             category: source === "camera" ? "boat_check_camera" : "boat_check_upload",
             storage_path: storagePath,
             file_name: safeFileName,
@@ -523,7 +554,7 @@ function VesselInspectionPageContent() {
 
         nextPhotos.push({
           ...(photoData as VesselInspectionPhotoRecord),
-          previewUrl: supabase.storage.from("vessel-inspection-photos").getPublicUrl(storagePath).data.publicUrl,
+          previewUrl: await resolveInspectionPhotoPreviewUrl(storagePath),
         });
       }
 

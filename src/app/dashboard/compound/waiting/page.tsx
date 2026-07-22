@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { COMPOUND_REFRESH_STORAGE_KEY } from "@/lib/export-allocation";
+import { isExportAllocationActive, normalizeExportAllocationStatus } from "@/lib/export-allocation";
 import { supabase } from "@/lib/supabase";
 
 type CompoundWaitingActiveRow = {
@@ -69,15 +70,6 @@ const PRIORITY_ORDER: Record<string, number> = {
   normal: 3,
   low: 4,
 };
-
-const OFF_COMPOUND_EXPORT_STATUSES = new Set([
-  "delivered_empty",
-  "waiting_loading",
-  "collected_loaded",
-  "ready_for_shipping",
-  "loaded_on_vessel",
-  "completed",
-]);
 
 const formatDateTime = (value?: string | null) => {
   if (!value) return "-";
@@ -300,8 +292,8 @@ export default function CompoundWaitingPage() {
           return false;
         }
 
-        const exportStatus = statusByTrailerId.get(trailer.id)?.trim().toLowerCase();
-        if (exportStatus && OFF_COMPOUND_EXPORT_STATUSES.has(exportStatus)) {
+        const exportStatus = statusByTrailerId.get(trailer.id);
+        if (exportStatus && isExportAllocationActive(normalizeExportAllocationStatus(exportStatus))) {
           return false;
         }
 
