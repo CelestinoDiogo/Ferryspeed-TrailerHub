@@ -123,12 +123,20 @@ const classifyAiReportError = (error: unknown): { kind: AiReportErrorKind; messa
     return { kind: "invalid_request", message: "Invalid request." };
   }
 
+  if (lower.includes("email delivery is not configured yet")) {
+    return { kind: "configuration", message: "Email delivery is not configured yet." };
+  }
+
   if (lower.includes("openai_api_key") || lower.includes("missing openai") || lower.includes("not configured")) {
     return { kind: "configuration", message: "AI report service is not configured." };
   }
 
   if (lower.includes("openai api error") || lower.includes("ai generation failed") || lower.includes("provider")) {
     return { kind: "provider", message: "AI report generation is temporarily unavailable." };
+  }
+
+  if (lower.includes("could not be sent") || lower.includes("unable to send")) {
+    return { kind: "provider", message: "The report could not be sent. Please try again." };
   }
 
   if (
@@ -159,10 +167,13 @@ export default function VesselSummaryPage() {
   const [isAiReportLoading, setIsAiReportLoading] = useState(false);
   const [isAiReportGenerating, setIsAiReportGenerating] = useState(false);
   const [isAiReportSaving, setIsAiReportSaving] = useState(false);
+  const [isAiReportFinalizing, setIsAiReportFinalizing] = useState(false);
+  const [isAiReportSending, setIsAiReportSending] = useState(false);
   const [isAiReportPreviewOpen, setIsAiReportPreviewOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loadErrorKind, setLoadErrorKind] = useState<ReportLoadErrorKind | null>(null);
   const [reportNotice, setReportNotice] = useState<string | null>(null);
+  const [emailProviderConfigured, setEmailProviderConfigured] = useState(false);
 
   const loadReport = useCallback(async () => {
     if (!operationId) {
@@ -256,7 +267,7 @@ export default function VesselSummaryPage() {
   const handleAiReportError = useCallback((error: unknown, fallbackMessage: string) => {
     const classified = classifyAiReportError(error);
 
-    setReportNotice(classified.message || fallbackMessage);
+    setReportNotice(classified.kind === "unknown" ? fallbackMessage : classified.message || fallbackMessage);
   }, []);
 
   const loadAiReportDraft = useCallback(async () => {
@@ -273,6 +284,7 @@ export default function VesselSummaryPage() {
 
       setAiReportDraft(payload.reportDraft ?? buildDeterministicVesselOperationAiReportDraft(reportData));
       setDraftHistory(payload.draftHistory ?? []);
+      setEmailProviderConfigured(Boolean(payload.emailProviderConfigured));
       if (payload.message) {
         setReportNotice("Draft loaded.");
       }
@@ -311,8 +323,9 @@ export default function VesselSummaryPage() {
 
       setAiReportDraft(payload.reportDraft);
       setDraftHistory(payload.draftHistory ?? []);
+      setEmailProviderConfigured(Boolean(payload.emailProviderConfigured));
       setIsAiReportPreviewOpen(true);
-      setReportNotice(payload.usedFallback ? "Template-generated report created from live data." : "AI report generated successfully.");
+      setReportNotice(payload.usedFallback ? "A data-based report has been prepared from the current vessel operation records." : "AI report generated successfully.");
     } catch (generateErr) {
       console.error("Unable to generate AI report:", generateErr);
       handleAiReportError(generateErr, "Unable to generate AI report.");
@@ -346,6 +359,7 @@ export default function VesselSummaryPage() {
             usedFallback: aiReportDraft.usedFallback,
             aiModel: aiReportDraft.aiModel,
             generatedAt: aiReportDraft.generatedAt,
+            status: aiReportDraft.status,
           },
         }),
         fallbackError: "Unable to save report draft.",
@@ -357,6 +371,7 @@ export default function VesselSummaryPage() {
 
       setAiReportDraft(payload.reportDraft);
       setDraftHistory(payload.draftHistory ?? []);
+      setEmailProviderConfigured(Boolean(payload.emailProviderConfigured));
       setReportNotice("Draft saved successfully.");
     } catch (saveErr) {
       console.error("Unable to save AI report draft:", saveErr);
@@ -366,9 +381,171 @@ export default function VesselSummaryPage() {
     }
   }, [aiReportDraft, handleAiReportError, operationId, requestAiReport]);
 
+  const finalizeAiReport = useCallback(async () => {
+    if (!operationId || !aiReportDraft) {
+      return;
+    }
+
+    setIsAiReportFinalizing(true);
+    setReportNotice(null);
+
+    try {
+      const payload = await requestAiReport({
+        method: "POST",
+        body: JSON.stringify({
+          action: "finalize",
+          draft: {
+            reportId: aiReportDraft.reportId,
+            subject: aiReportDraft.subject,
+            recipients: aiReportDraft.recipients,
+            cc: aiReportDraft.cc,
+            generatedContent: aiReportDraft.generatedContent,
+            editedContent: aiReportDraft.editedContent || aiReportDraft.body,
+            body: aiReportDraft.body,
+            generationMode: aiReportDraft.generationMode,
+            usedFallback: aiReportDraft.usedFallback,
+            aiModel: aiReportDraft.aiModel,
+            generatedAt: aiReportDraft.generatedAt,
+            status: aiReportDraft.status,
+          },
+        }),
+        fallbackError: "Unable to finalize report.",
+      });
+
+      if (!payload.reportDraft) {
+        throw new AiReportRequestError("Unable to finalize report.", 500, "database");
+      }
+
+      setAiReportDraft(payload.reportDraft);
+      setDraftHistory(payload.draftHistory ?? []);
+      setEmailProviderConfigured(Boolean(payload.emailProviderConfigured));
+      setReportNotice("Report finalized successfully.");
+    } catch (finalizeErr) {
+      console.error("Unable to finalize AI report:", finalizeErr);
+      handleAiReportError(finalizeErr, "Unable to finalize AI report.");
+    } finally {
+      setIsAiReportFinalizing(false);
+    }
+  }, [aiReportDraft, handleAiReportError, operationId, requestAiReport]);
+
+  const sendAiReport = useCallback(async () => {
+    if (!operationId || !aiReportDraft) {
+      return;
+    }
+
+    const normalizedSubject = aiReportDraft.subject.trim();
+    const normalizedBody = aiReportDraft.body.trim();
+    const normalizedRecipients = aiReportDraft.recipients.map((value) => value.trim()).filter(Boolean);
+
+    if (!normalizedRecipients.length) {
+      setReportNotice("Add at least one valid recipient before sending this report.");
+      return;
+    }
+
+    if (!normalizedSubject) {
+      setReportNotice("Subject cannot be empty.");
+      return;
+    }
+
+    if (!normalizedBody) {
+      setReportNotice("Report body cannot be empty.");
+      return;
+    }
+
+    if (aiReportDraft.status === "draft") {
+      const confirmDraftSend = window.confirm("This report is still a draft. Send it anyway?");
+      if (!confirmDraftSend) {
+        return;
+      }
+    }
+
+    setIsAiReportSending(true);
+    setReportNotice(null);
+
+    try {
+      const { data, error: sessionError } = await supabase.auth.getSession();
+      if (sessionError) {
+        throw new AiReportRequestError(sessionError.message, 401, "signed_out");
+      }
+
+      const accessToken = data.session?.access_token;
+      if (!accessToken) {
+        throw new AiReportRequestError("You are signed out of AI report services. Refresh the page or sign in again.", 401, "signed_out");
+      }
+
+      let reportId = aiReportDraft.reportId;
+      if (!reportId) {
+        const draftPayload = await requestAiReport({
+          method: "POST",
+          body: JSON.stringify({
+            action: "save_draft",
+            draft: {
+              reportId: aiReportDraft.reportId,
+              subject: aiReportDraft.subject,
+              recipients: aiReportDraft.recipients,
+              cc: aiReportDraft.cc,
+              generatedContent: aiReportDraft.generatedContent,
+              editedContent: aiReportDraft.editedContent || aiReportDraft.body,
+              body: aiReportDraft.body,
+              generationMode: aiReportDraft.generationMode,
+              usedFallback: aiReportDraft.usedFallback,
+              aiModel: aiReportDraft.aiModel,
+              generatedAt: aiReportDraft.generatedAt,
+              status: aiReportDraft.status,
+            },
+          }),
+          fallbackError: "Unable to save report draft.",
+        });
+
+        if (!draftPayload.reportDraft?.reportId) {
+          throw new AiReportRequestError("Unable to save report draft.", 500, "database");
+        }
+
+        reportId = draftPayload.reportDraft.reportId;
+        setAiReportDraft(draftPayload.reportDraft);
+        setDraftHistory(draftPayload.draftHistory ?? []);
+      }
+
+      const response = await fetch(`/api/vessel-operations/${operationId}/ai-report/send`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({
+          reportId,
+          sendDraft: aiReportDraft.status === "draft",
+          recipients: aiReportDraft.recipients,
+          cc: aiReportDraft.cc,
+          subject: aiReportDraft.subject,
+          body: aiReportDraft.body,
+        }),
+      });
+
+      const payload = (await response.json()) as VesselOperationAiReportResponse & { error?: string };
+      if (!response.ok) {
+        throw new AiReportRequestError(payload.error || "The report could not be sent. Please try again.", response.status, response.status === 401 ? "signed_out" : "unknown");
+      }
+
+      if (!payload.reportDraft) {
+        throw new AiReportRequestError("The report could not be sent. Please try again.", 500, "database");
+      }
+
+      setAiReportDraft(payload.reportDraft);
+      setDraftHistory(payload.draftHistory ?? []);
+      setEmailProviderConfigured(Boolean(payload.emailProviderConfigured));
+      setReportNotice("Report sent successfully.");
+    } catch (sendErr) {
+      console.error("Unable to send AI report:", sendErr);
+      handleAiReportError(sendErr, "The report could not be sent. Please try again.");
+    } finally {
+      setIsAiReportSending(false);
+    }
+  }, [aiReportDraft, handleAiReportError, operationId, requestAiReport]);
+
   const splitEmailList = useCallback((value: string) => {
     return value
-      .split(",")
+      .split(/[\n,;]+/)
       .map((entry) => entry.trim())
       .filter(Boolean);
   }, []);
@@ -442,6 +619,20 @@ export default function VesselSummaryPage() {
   const { operation, statistics } = reportData;
   const completed = operation.status === "completed";
   const operationHasNoTrailers = reportData.trailers.length === 0;
+  const operationHeaderRows = [
+    { label: "Vessel Name", value: operation.vesselName?.trim() || null },
+    { label: "Voyage / Sailing Ref", value: operation.voyageReference?.trim() || null },
+    { label: "Origin Port", value: operation.port?.trim() || null },
+    { label: "Berth", value: operation.berth?.trim() || null },
+    { label: "Expected Arrival", value: operation.expectedArrivalAt ? formatVesselDateTime(operation.expectedArrivalAt) : null },
+    { label: "Actual Arrival", value: operation.actualArrivalAt ? formatVesselDateTime(operation.actualArrivalAt) : null },
+    { label: "Operation Status", value: formatStatusLabel(operation.status) },
+    {
+      label: "List Confirmed",
+      value: operation.listConfirmedAt ? `${formatVesselDateTime(operation.listConfirmedAt)}${operation.listConfirmedBy ? ` by ${operation.listConfirmedBy}` : ""}` : null,
+    },
+    { label: "Completion Status", value: completed ? `Completed at ${formatVesselDateTime(operation.operationCompletedAt)}` : "Operation not completed" },
+  ].filter((item) => item.value);
 
   return (
     <main className="min-h-screen bg-slate-100 px-4 py-6 text-slate-900 sm:px-6 lg:px-8">
@@ -498,6 +689,7 @@ export default function VesselSummaryPage() {
                       <th className="py-2 pr-4">Generated By</th>
                       <th className="py-2 pr-4">Subject</th>
                       <th className="py-2 pr-4">Mode</th>
+                      <th className="py-2 pr-4">Status</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -507,6 +699,7 @@ export default function VesselSummaryPage() {
                         <td className="py-2 pr-4">{item.generatedBy ?? "-"}</td>
                         <td className="py-2 pr-4">{item.subject}</td>
                         <td className="py-2 pr-4">{item.generationMode === "ai" ? "AI" : "Template"}</td>
+                        <td className="py-2 pr-4">{item.status === "final" ? "Final" : item.status === "sent" ? "Sent" : "Draft"}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -520,15 +713,12 @@ export default function VesselSummaryPage() {
           <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
             <p className="text-sm font-semibold uppercase tracking-[0.3em] text-cyan-700">Operation Header</p>
             <div className="mt-4 grid gap-3 sm:grid-cols-2">
-              <div><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Vessel Name</p><p className="mt-1 text-base font-semibold text-slate-950">{operation.vesselName}</p></div>
-              <div><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Voyage / Sailing Ref</p><p className="mt-1 text-base font-semibold text-slate-950">{operation.voyageReference ?? "-"}</p></div>
-              <div><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Origin Port</p><p className="mt-1 text-base font-semibold text-slate-950">{operation.port ?? "-"}</p></div>
-              <div><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Berth</p><p className="mt-1 text-base font-semibold text-slate-950">{operation.berth ?? "-"}</p></div>
-              <div><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Expected Arrival</p><p className="mt-1 text-base font-semibold text-slate-950">{formatVesselDateTime(operation.expectedArrivalAt)}</p></div>
-              <div><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Actual Arrival</p><p className="mt-1 text-base font-semibold text-slate-950">{formatVesselDateTime(operation.actualArrivalAt)}</p></div>
-              <div><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Operation Status</p><p className="mt-1 text-base font-semibold text-slate-950">{formatStatusLabel(operation.status)}</p></div>
-              <div><p className="text-xs uppercase tracking-[0.2em] text-slate-500">List Confirmed</p><p className="mt-1 text-base font-semibold text-slate-950">{formatVesselDateTime(operation.listConfirmedAt)}{operation.listConfirmedBy ? ` by ${operation.listConfirmedBy}` : ""}</p></div>
-              <div className="sm:col-span-2"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Completion Status</p><p className="mt-1 text-base font-semibold text-slate-950">{completed ? `Completed at ${formatVesselDateTime(operation.operationCompletedAt)}` : "Operation not completed"}</p></div>
+              {operationHeaderRows.map((item) => (
+                <div key={item.label} className={item.label === "Completion Status" ? "sm:col-span-2" : ""}>
+                  <p className="text-xs uppercase tracking-[0.2em] text-slate-500">{item.label}</p>
+                  <p className="mt-1 text-base font-semibold text-slate-950">{item.value}</p>
+                </div>
+              ))}
             </div>
           </div>
 
@@ -661,12 +851,17 @@ export default function VesselSummaryPage() {
         report={aiReportDraft}
         isLoading={isAiReportGenerating}
         isSaving={isAiReportSaving}
+        isFinalizing={isAiReportFinalizing}
+        isSending={isAiReportSending}
+        emailProviderConfigured={emailProviderConfigured}
         notice={reportNotice}
         printHref={`/dashboard/vessel-operations/${operationId}/print`}
         onClose={() => setIsAiReportPreviewOpen(false)}
         onRegenerate={() => void generateAiReport()}
         onCopy={() => void handleCopyAiReport()}
         onSaveDraft={() => void saveAiReportDraft()}
+        onFinalize={() => void finalizeAiReport()}
+        onSendReport={() => void sendAiReport()}
         onSubjectChange={(value) => {
           setAiReportDraft((current) => (current ? { ...current, subject: value } : current));
         }}

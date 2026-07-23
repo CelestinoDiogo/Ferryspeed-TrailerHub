@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import { logTrailerEvent, resolveAuditOperatorName } from "@/lib/trailer-audit-log";
 import { supabase } from "@/lib/supabase";
 import { EXPORT_ACTIVE_STATUS_QUERY_VALUES } from "@/lib/export-allocation";
 
@@ -177,6 +178,32 @@ export default function LoadTrailerPage() {
       console.error("Load update saved but trailer event creation failed:", eventError);
       alert("Trailer updated, but history event could not be recorded.");
     }
+
+    const operatorName = await resolveAuditOperatorName();
+    await logTrailerEvent({
+      trailerId: currentTrailer.id,
+      trailerNumber: currentTrailer.trailer_number,
+      eventType: "load_status_changed",
+      description: "Trailer marked as loaded.",
+      previousValue: {
+        load_status: currentTrailer.load_status ?? null,
+        customer: currentTrailer.customer ?? null,
+        consignee: currentTrailer.consignee ?? null,
+        container_number: currentTrailer.container_number ?? null,
+        load_description: currentTrailer.load_description ?? null,
+        notes: currentTrailer.notes ?? null,
+      },
+      newValue: {
+        load_status: updatePayload.load_status,
+        customer: updatePayload.customer,
+        consignee: updatePayload.consignee,
+        container_number: updatePayload.container_number,
+        load_description: updatePayload.load_description,
+        notes: updatePayload.notes,
+      },
+      sourceModule: "compound",
+      performedBy: operatorName,
+    });
 
     router.push("/dashboard?saved=1");
   }

@@ -3,8 +3,9 @@
 import Image from "next/image";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
+import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
-import { AlertTriangle, Anchor, ChevronRight, ClipboardList, Package, Ship, Truck, Wrench } from "lucide-react";
+import { AlertTriangle, Anchor, ChevronRight, ClipboardList, Package, PlusCircle, ScanSearch, Ship, Truck, Wrench } from "lucide-react";
 import { PrintButton } from "@/components/print/print-button";
 import { PrintFilters } from "@/components/print/print-filters";
 import { PrintFooter } from "@/components/print/print-footer";
@@ -41,6 +42,7 @@ type TrailerRecord = {
   id: string;
   trailer_number?: string | null;
   load_status?: string | null;
+  operational_status?: string | null;
   arrival_date?: string | null;
   departure_date?: string | null;
   compound_position?: string | null;
@@ -98,13 +100,44 @@ type ExportSummary = {
 
 type OperationalAlert = {
   id: string;
-  type: "missing_position" | "high_occupancy" | "loaded_no_customer" | "incomplete_info";
+  type:
+    | "missing_position"
+    | "high_occupancy"
+    | "loaded_no_customer"
+    | "incomplete_info"
+    | "allocated_in_compound"
+    | "missing_latest_stock_check"
+    | "waiting_collection_24h"
+    | "temperature_alert"
+    | "damage_pending_review";
   severity: "warning" | "alert";
   title: string;
   description: string;
   trailerId?: string;
   trailerNumber?: string;
   href?: string;
+};
+
+type StockCheckHeadline = {
+  id: string;
+  started_at: string | null;
+  status: string;
+};
+
+type StockCheckDiscrepancyRow = {
+  id: string;
+  trailer_number: string | null;
+  discrepancy_type: string | null;
+  resolution_status: string | null;
+};
+
+type VesselTrailerAlertRow = {
+  id: string;
+  has_temperature_alert: boolean | null;
+  has_damage: boolean | null;
+  inspection_completed_at: string | null;
+  arrival_status: string;
+  status: string | null;
 };
 
 type VesselOperationCard = {
@@ -155,6 +188,12 @@ const getPrintedDateTime = () =>
     minute: "2-digit",
   });
 
+const normalizeLoadStatus = (value?: string | null) => value?.trim().toLowerCase() ?? "";
+const normalizeText = (value?: string | null) => value?.trim().toLowerCase() ?? "";
+
+const hasMissingDiscrepancy = (value?: string | null) => normalizeText(value).includes("missing");
+const hasUnexpectedDiscrepancy = (value?: string | null) => normalizeText(value).includes("unexpected");
+
 export function TrailerDashboard() {
   const searchParams = useSearchParams();
   const [stats, setStats] = useState<DashboardStats>(defaultStats);
@@ -169,6 +208,16 @@ export function TrailerDashboard() {
   const [arrivalsTodayCount, setArrivalsTodayCount] = useState(0);
   const [departuresTodayCount, setDeparturesTodayCount] = useState(0);
   const [vesselOpsTodayCount, setVesselOpsTodayCount] = useState(0);
+  const [latestStockCheckId, setLatestStockCheckId] = useState<string | null>(null);
+  const [awaitingInspectionCount, setAwaitingInspectionCount] = useState(0);
+  const [activeExportAllocationsCount, setActiveExportAllocationsCount] = useState(0);
+  const [missingTrailersCount, setMissingTrailersCount] = useState(0);
+  const [unexpectedTrailersCount, setUnexpectedTrailersCount] = useState(0);
+  const [operationalStatusIssuesCount, setOperationalStatusIssuesCount] = useState(0);
+  const [allocatedInCompoundCount, setAllocatedInCompoundCount] = useState(0);
+  const [waitingCollection24hCount, setWaitingCollection24hCount] = useState(0);
+  const [temperatureAlertsCount, setTemperatureAlertsCount] = useState(0);
+  const [damagePendingReviewCount, setDamagePendingReviewCount] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -183,9 +232,18 @@ export function TrailerDashboard() {
       try {
         const todayKey = getDateKey(new Date().toISOString());
 
-        const [{ data, error: supabaseError }, { data: eventsData, error: eventsError }, { data: deliveriesData, error: deliveriesError }, { data: waitingData }, { data: exportAllocationsData, error: exportAllocationsError }, { data: vesselData, error: vesselError }] =
+        const [
+          { data, error: supabaseError },
+          { data: eventsData, error: eventsError },
+          { data: deliveriesData, error: deliveriesError },
+          { data: waitingData },
+          { data: exportAllocationsData, error: exportAllocationsError },
+          { data: vesselData, error: vesselError },
+          { data: vesselTrailerData, error: vesselTrailerError },
+          { data: latestStockCheckData, error: latestStockCheckError },
+        ] =
           await Promise.all([
-            supabase.from("trailers").select("id, trailer_number, load_status, arrival_date, departure_date, compound_position, customer, load_description, trailer_source, external_company, external_reference, is_local"),
+            supabase.from("trailers").select("id, trailer_number, load_status, operational_status, arrival_date, departure_date, compound_position, customer, load_description, trailer_source, external_company, external_reference, is_local"),
             supabase
               .from("trailer_events")
               .select("id, trailer_number, event_type, event_description, created_at")
@@ -211,7 +269,16 @@ export function TrailerDashboard() {
             supabase
               .from("vessel_operations")
               .select("id, vessel_name, sailing_reference, expected_arrival_at, actual_arrival_at, status, created_at")
-              .order("expected_arrival_at", { ascending: true })
+              .order("expected_arrival_at", { ascending: true }),
+            supabase
+              .from("vessel_operation_trailers")
+              .select("id, has_temperature_alert, has_damage, inspection_completed_at, arrival_status, status"),
+            supabase
+              .from("compound_stock_checks")
+              .select("id, started_at, status")
+              .order("started_at", { ascending: false })
+              .limit(1)
+              .maybeSingle(),
           ]);
 
         if (supabaseError) throw supabaseError;
@@ -219,6 +286,8 @@ export function TrailerDashboard() {
         if (deliveriesError) throw deliveriesError;
         if (exportAllocationsError) throw exportAllocationsError;
         if (vesselError) throw vesselError;
+        if (vesselTrailerError) throw vesselTrailerError;
+        if (latestStockCheckError) throw latestStockCheckError;
 
         const trailers = (data ?? []) as TrailerRecord[];
         setArrivalsTodayCount(
@@ -243,6 +312,7 @@ export function TrailerDashboard() {
           normalizeExportAllocationRecord(row),
         );
         const activeExportAllocations = exportAllocations.filter((item) => isExportAllocationActive(item.status));
+        setActiveExportAllocationsCount(activeExportAllocations.length);
         const activeExportStatusByTrailerId = buildActiveExportStatusByTrailerId(activeExportAllocations);
         const visibleTrailers = trailers.filter((trailer) =>
           trailer.is_local === true || isTrailerEligibleForCompoundViews(trailer, activeExportStatusByTrailerId.get(trailer.id)),
@@ -261,8 +331,6 @@ export function TrailerDashboard() {
           isTrailerPresentInCompoundInventory(item, activeExportStatusByTrailerId.get(item.id)),
         );
 
-        const normalizedLoadStatus = (value?: string | null) => value?.trim().toLowerCase();
-
         const trailersWithActiveExportAllocation = new Set<string>(
           activeExportAllocations
             .map((item) => item.trailer_id)
@@ -270,11 +338,11 @@ export function TrailerDashboard() {
         );
 
         const availableEmptyTrailers = compoundInventoryTrailers.filter(
-          (item) => normalizedLoadStatus(item.load_status) === "empty" && !trailersWithActiveExportAllocation.has(item.id)
+          (item) => normalizeLoadStatus(item.load_status) === "empty" && !trailersWithActiveExportAllocation.has(item.id)
         ).length;
 
         const loadedTrailers = compoundInventoryTrailers.filter(
-          (item) => normalizedLoadStatus(item.load_status) === "loaded"
+          (item) => normalizeLoadStatus(item.load_status) === "loaded"
         ).length;
 
         const activeCount = compoundInventoryTrailers.length;
@@ -327,6 +395,7 @@ export function TrailerDashboard() {
         let attentionRequiredCount = 0;
         let oldestDays = 0;
         let oldestTrailer: string | null = null;
+        let waitingOver24h = 0;
         waitingList.forEach((b) => {
           const aging = calculateCollectionAging({
             delivery_date: b["delivery_date"] as string,
@@ -335,12 +404,64 @@ export function TrailerDashboard() {
             collection_due_date: b["collection_due_date"] as string | null,
           });
           if (aging.agingLevel === "red") attentionRequiredCount++;
+          if (aging.waitingDays >= 1) waitingOver24h++;
           if (aging.waitingDays > oldestDays) {
             oldestDays = aging.waitingDays;
             oldestTrailer = ((b["trailers"] as Record<string, unknown> | null)?.["trailer_number"] as string | null) ?? null;
           }
         });
+        setWaitingCollection24hCount(waitingOver24h);
         setWaitingCollectionSummary({ count: waitingList.length, attentionRequiredCount, oldestTrailer, oldestDays });
+
+        const vesselTrailerRows = (vesselTrailerData ?? []) as VesselTrailerAlertRow[];
+        const awaitingInspection = vesselTrailerRows.filter(
+          (row) => normalizeText(row.arrival_status) === "arrived" && !row.inspection_completed_at,
+        ).length;
+        const temperatureAlerts = vesselTrailerRows.filter((row) => row.has_temperature_alert === true).length;
+        const damagePendingReview = vesselTrailerRows.filter(
+          (row) => row.has_damage === true && !row.inspection_completed_at,
+        ).length;
+        setAwaitingInspectionCount(awaitingInspection);
+        setTemperatureAlertsCount(temperatureAlerts);
+        setDamagePendingReviewCount(damagePendingReview);
+
+        const issueStatuses = new Set(["hold", "maintenance", "not_discharged"]);
+        const operationalIssues = activeTrailers.filter((item) => issueStatuses.has(normalizeText(item.operational_status))).length;
+        setOperationalStatusIssuesCount(operationalIssues);
+
+        const allocatedInCompound = activeExportAllocations.filter((allocation) => {
+          if (allocation.status !== "allocated" || !allocation.trailer_id) {
+            return false;
+          }
+
+          const linkedTrailer = activeTrailers.find((trailer) => trailer.id === allocation.trailer_id);
+          return Boolean(linkedTrailer && normalizeText(linkedTrailer.compound_position));
+        }).length;
+        setAllocatedInCompoundCount(allocatedInCompound);
+
+        const latestStockCheck = (latestStockCheckData ?? null) as StockCheckHeadline | null;
+        setLatestStockCheckId(latestStockCheck?.id ?? null);
+
+        let latestMissing = 0;
+        let latestUnexpected = 0;
+
+        if (latestStockCheck?.id) {
+          const { data: latestCheckItems, error: latestItemsError } = await supabase
+            .from("compound_stock_check_items")
+            .select("id, trailer_number, discrepancy_type, resolution_status")
+            .eq("stock_check_id", latestStockCheck.id);
+
+          if (latestItemsError) {
+            throw latestItemsError;
+          }
+
+          const discrepancyRows = (latestCheckItems ?? []) as StockCheckDiscrepancyRow[];
+          latestMissing = discrepancyRows.filter((row) => hasMissingDiscrepancy(row.discrepancy_type)).length;
+          latestUnexpected = discrepancyRows.filter((row) => hasUnexpectedDiscrepancy(row.discrepancy_type)).length;
+        }
+
+        setMissingTrailersCount(latestMissing);
+        setUnexpectedTrailersCount(latestUnexpected);
 
         // Generate operational alerts
         const generatedAlerts: OperationalAlert[] = [];
@@ -373,7 +494,7 @@ export function TrailerDashboard() {
 
         // Check for loaded trailers without customer
         const loadedTrailersNoCustomer = compoundTrailers.filter((t) => {
-          const isLoaded = normalizedLoadStatus(t.load_status) === "loaded";
+          const isLoaded = normalizeLoadStatus(t.load_status) === "loaded";
           const hasCustomer = t.customer && t.customer.trim() !== "";
           return isLoaded && !hasCustomer;
         });
@@ -390,7 +511,7 @@ export function TrailerDashboard() {
 
         // Check for incomplete information (loaded without description)
         const loadedTrailersNoDescription = compoundTrailers.filter((t) => {
-          const isLoaded = normalizedLoadStatus(t.load_status) === "loaded";
+          const isLoaded = normalizeLoadStatus(t.load_status) === "loaded";
           const hasDescription = t.load_description && t.load_description.trim() !== "";
           return isLoaded && !hasDescription;
         });
@@ -416,6 +537,63 @@ export function TrailerDashboard() {
           });
         }
 
+        if (allocatedInCompound > 0) {
+          generatedAlerts.push({
+            id: "allocated_in_compound_alert",
+            type: "allocated_in_compound",
+            severity: "warning",
+            title: `${allocatedInCompound} Allocated Trailer${allocatedInCompound === 1 ? "" : "s"} Still in Compound`,
+            description: "Allocated trailers still occupy compound positions and need progression.",
+            href: "/dashboard/export-operations?status=allocated",
+          });
+        }
+
+        if (latestMissing > 0) {
+          generatedAlerts.push({
+            id: "missing_latest_stock_check_alert",
+            type: "missing_latest_stock_check",
+            severity: "alert",
+            title: `${latestMissing} Missing from Latest Stock Check`,
+            description: "Latest stock check has missing trailers requiring operational follow-up.",
+            href: latestStockCheck?.id
+              ? `/dashboard/compound/review-discrepancies?stockCheckId=${latestStockCheck.id}&filter=missing`
+              : "/dashboard/compound/review-discrepancies?filter=missing",
+          });
+        }
+
+        if (waitingOver24h > 0) {
+          generatedAlerts.push({
+            id: "waiting_collection_24h_alert",
+            type: "waiting_collection_24h",
+            severity: "warning",
+            title: `${waitingOver24h} Waiting Collection Over 24h`,
+            description: "Delivered trailers have been waiting for collection for more than 24 hours.",
+            href: "/dashboard/deliveries?filter=waiting",
+          });
+        }
+
+        if (temperatureAlerts > 0) {
+          generatedAlerts.push({
+            id: "temperature_alert",
+            type: "temperature_alert",
+            severity: "alert",
+            title: `${temperatureAlerts} Temperature Alert${temperatureAlerts === 1 ? "" : "s"}`,
+            description: "Trailer inspections flagged temperature exceptions requiring review.",
+            href: "/dashboard/vessel-operations?filter=today",
+          });
+        }
+
+        if (damagePendingReview > 0) {
+          generatedAlerts.push({
+            id: "damage_pending_review",
+            type: "damage_pending_review",
+            severity: "warning",
+            title: `${damagePendingReview} Damage Pending Review`,
+            description: "Inspection damage records remain pending completion review.",
+            href: "/dashboard/vessel-operations?filter=today",
+          });
+        }
+
         setAlerts(generatedAlerts);
       } catch (err) {
         const message =
@@ -434,6 +612,16 @@ export function TrailerDashboard() {
         setArrivalsTodayCount(0);
         setDeparturesTodayCount(0);
         setVesselOpsTodayCount(0);
+        setLatestStockCheckId(null);
+        setAwaitingInspectionCount(0);
+        setActiveExportAllocationsCount(0);
+        setMissingTrailersCount(0);
+        setUnexpectedTrailersCount(0);
+        setOperationalStatusIssuesCount(0);
+        setAllocatedInCompoundCount(0);
+        setWaitingCollection24hCount(0);
+        setTemperatureAlertsCount(0);
+        setDamagePendingReviewCount(0);
       } finally {
         setIsLoading(false);
       }
@@ -468,14 +656,17 @@ export function TrailerDashboard() {
   const awaitingPositionCount = activeCompoundTrailers.filter(
     (item) => !item.compound_position || item.compound_position.trim() === "",
   ).length;
-  const maintenanceCount = alerts.filter((item) => item.type === "incomplete_info").length;
+  const maintenanceCount = activeCompoundTrailers.filter((item) => {
+    const status = normalizeLoadStatus(item.load_status);
+    return status !== "" && status !== "empty" && status !== "loaded";
+  }).length;
 
   const programmeCards = [
     { label: "Arrivals", subtitle: "Today", value: arrivalsTodayCount, href: "/dashboard/search?filter=arrivals_today", icon: <Ship className="h-6 w-6" /> },
     { label: "Departures", subtitle: "Today", value: departuresTodayCount, href: "/dashboard/search?filter=departures_today", icon: <Package className="h-6 w-6" /> },
     { label: "Deliveries", subtitle: "Today", value: deliveriesTodayCount, href: "/dashboard/deliveries", icon: <Truck className="h-6 w-6" /> },
     { label: "Collections", subtitle: "Today", value: collectionsTodayCount, href: "/dashboard/deliveries?filter=waiting", icon: <ClipboardList className="h-6 w-6" /> },
-    { label: "Vessel Operations", subtitle: "Today", value: vesselOpsTodayCount, href: "/dashboard/vessel-operations", icon: <Anchor className="h-6 w-6" /> },
+    { label: "Vessel Operations", subtitle: "Today", value: vesselOpsTodayCount, href: "/dashboard/vessel-operations?filter=today", icon: <Anchor className="h-6 w-6" /> },
   ];
 
   const rightAlerts = [
@@ -494,6 +685,45 @@ export function TrailerDashboard() {
         ]
       : []),
   ].slice(0, 5);
+
+  const intelligentKpis: Array<{ label: string; value: number; href: string }> = [
+    { label: "Awaiting Inspection", value: awaitingInspectionCount, href: "/dashboard/vessel-operations?filter=today" },
+    { label: "Active Export Allocations", value: activeExportAllocationsCount, href: "/dashboard/export-operations?status=all" },
+    {
+      label: "Missing Trailers",
+      value: missingTrailersCount,
+      href: latestStockCheckId
+        ? `/dashboard/compound/review-discrepancies?stockCheckId=${latestStockCheckId}&filter=missing`
+        : "/dashboard/compound/review-discrepancies?filter=missing",
+    },
+    {
+      label: "Unexpected Trailers",
+      value: unexpectedTrailersCount,
+      href: latestStockCheckId
+        ? `/dashboard/compound/review-discrepancies?stockCheckId=${latestStockCheckId}&filter=unexpected`
+        : "/dashboard/compound/review-discrepancies?filter=unexpected",
+    },
+    { label: "Operational Status Issues", value: operationalStatusIssuesCount, href: "/dashboard/maintenance" },
+  ];
+
+  const operationalHealthPenalty =
+    allocatedInCompoundCount +
+    missingTrailersCount +
+    waitingCollection24hCount +
+    temperatureAlertsCount +
+    damagePendingReviewCount +
+    awaitingInspectionCount +
+    operationalStatusIssuesCount;
+  const operationalHealthScore = Math.max(0, 100 - operationalHealthPenalty * 4 - Math.max(0, stats.occupancy - 85));
+  const healthLabel = operationalHealthScore >= 85 ? "Healthy" : operationalHealthScore >= 65 ? "Monitor" : "At Risk";
+
+  const quickActions: Array<{ label: string; href: string; icon: ReactNode }> = [
+    { label: "New Arrival", href: "/dashboard/new-arrival", icon: <PlusCircle className="h-4 w-4" /> },
+    { label: "New Allocation", href: "/dashboard/export-operations/new", icon: <Package className="h-4 w-4" /> },
+    { label: "Start Stock Check", href: "/dashboard/compound/stock-check", icon: <ScanSearch className="h-4 w-4" /> },
+    { label: "Create Vessel Operation", href: "/dashboard/vessel-operations/new", icon: <Ship className="h-4 w-4" /> },
+    { label: "Print Reports", href: "/dashboard/vessel-operations?report=print", icon: <ClipboardList className="h-4 w-4" /> },
+  ];
 
   const printedAt = getPrintedDateTime();
 
@@ -678,18 +908,58 @@ export function TrailerDashboard() {
               )}
             </div>
           </section>
+
+          <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-[0_12px_30px_rgba(15,23,42,0.05)]">
+            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-500">Operational Health Score</p>
+            <div className="mt-3 space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-slate-600">Current Score</span>
+                <span className="text-2xl font-semibold text-slate-950">{isLoading ? "..." : `${operationalHealthScore}%`}</span>
+              </div>
+              <div className="h-3 overflow-hidden rounded-full bg-slate-100">
+                <div
+                  className="h-full rounded-full bg-gradient-to-r from-rose-500 via-amber-500 to-emerald-500"
+                  style={{ width: `${Math.max(0, Math.min(100, operationalHealthScore))}%` }}
+                />
+              </div>
+              <div className="flex items-center justify-between text-xs uppercase tracking-[0.16em] text-slate-500">
+                <span>State</span>
+                <span>{healthLabel}</span>
+              </div>
+            </div>
+          </section>
         </div>
       </section>
 
       <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-[0_12px_30px_rgba(15,23,42,0.05)]">
-        <p className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-500">Quick Access</p>
-        <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
-          <Link href="/dashboard/vessel-operations" className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-100">Vessel Operations</Link>
-          <Link href="/dashboard/export-operations" className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-100">Export Operations</Link>
-          <Link href="/dashboard/deliveries" className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-100">Deliveries</Link>
-          <Link href="/dashboard/compound" className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-100">Compound</Link>
-          <Link href="/dashboard/search" className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-100">Search</Link>
-          <Link href="/dashboard/new-arrival" className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-100">Manual Arrival</Link>
+        <p className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-500">Intelligent KPIs</p>
+        <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+          {intelligentKpis.map((kpi) => (
+            <Link
+              key={kpi.label}
+              href={kpi.href}
+              className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-3 transition hover:bg-slate-100"
+            >
+              <p className="text-xs uppercase tracking-[0.18em] text-slate-500">{kpi.label}</p>
+              <p className="mt-2 text-2xl font-semibold text-slate-950">{isLoading ? "..." : kpi.value}</p>
+            </Link>
+          ))}
+        </div>
+      </section>
+
+      <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-[0_12px_30px_rgba(15,23,42,0.05)]">
+        <p className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-500">Quick Actions</p>
+        <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+          {quickActions.map((action) => (
+            <Link
+              key={action.label}
+              href={action.href}
+              className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-100"
+            >
+              {action.icon}
+              {action.label}
+            </Link>
+          ))}
         </div>
       </section>
 

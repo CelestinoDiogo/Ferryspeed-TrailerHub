@@ -4,8 +4,10 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { loadTrailerOperationalProfile, type TrailerOperationalProfile } from "@/lib/operations/trailer-operational-engine";
 import { buildActiveExportStatusByTrailerId, isExportAllocationOverdue, isTrailerEligibleForCompoundViews, isTrailerPresentInCompoundInventory, normalizeExportAllocationRecord, type ExportAllocationRecord } from "@/lib/export-allocation";
 import { getTrailerCurrentLocationLabel } from "@/lib/trailer-location";
+import { getLocalDateKey } from "@/lib/operational-readiness";
 import type { Database } from "@/lib/database.types";
 import { aiAssistantIntentSchema, allowedExportStatuses, type AiAssistantAlert, type AiAssistantIntent, type AiAssistantLink, type AiAssistantRecord, type AiAssistantResponse, type AiAssistantSection, type AiAssistantSummaryItem, type AiAssistantUiResultType } from "@/lib/ai-assistant-types";
+import { runAiAssistantFoundationQuery } from "@/lib/ai-assistant-foundation";
 
 type TrailerRow = Database["public"]["Tables"]["trailers"]["Row"];
 type VesselOperationRow = Database["public"]["Tables"]["vessel_operations"]["Row"];
@@ -42,13 +44,21 @@ const getDateKey = (value?: string | null) => {
   if (!value) return null;
 
   try {
-    return new Date(value).toISOString().split("T")[0];
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) {
+      return null;
+    }
+
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    const day = String(date.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
   } catch {
     return null;
   }
 };
 
-const todayKey = () => getDateKey(new Date().toISOString()) ?? new Date().toISOString().split("T")[0];
+const todayKey = () => getLocalDateKey();
 
 const compactString = (value?: string | null) => value?.trim().replace(/\s+/g, " ") ?? "";
 
@@ -62,6 +72,7 @@ type InternalAiResponse = {
   answer: string;
   resultType: AiAssistantUiResultType;
   data: AiAssistantRecord[];
+  primaryMetrics?: AiAssistantSummaryItem[];
   summary?: AiAssistantSummaryItem[];
   sections?: AiAssistantSection[];
   alerts?: AiAssistantAlert[];
@@ -87,9 +98,44 @@ const formatDateTime = (value?: string | null) => {
   }
 };
 
+type CompoundOccupancyRow = {
+  physical_capacity?: number | string | null;
+  occupied_positions?: number | string | null;
+  available_positions?: number | string | null;
+  waiting_trailers?: number | string | null;
+  occupancy_percentage?: number | string | null;
+  compound_status?: string | null;
+};
+
+const parseNumberLike = (value: unknown): number | null => {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  return null;
+};
+
+const parseCompoundOccupancyRow = (value: unknown): CompoundOccupancyRow | null => {
+  if (Array.isArray(value)) {
+    const first = value[0];
+    return first && typeof first === "object" ? (first as CompoundOccupancyRow) : null;
+  }
+
+  if (value && typeof value === "object") {
+    return value as CompoundOccupancyRow;
+  }
+
+  return null;
+};
+
 const containsWriteIntent = (question: string) => {
   const normalized = normalizeText(question);
-  return /(create|delete|remove|mark|set|update|change|assign|complete|cancel|advance|undo|insert|drop|alter|truncate|sql|query|statement|table|ignore.*rule|bypass)/i.test(normalized);
+  return /(create|delete|remove|mark|set|update|change|assign|complete|cancel|advance|undo|insert|drop|alter|truncate|sql|query|statement|table|move|ignore.*rule|bypass)/i.test(normalized);
 };
 
 const looksLikeSql = (question: string) => /\b(select|insert|update|delete|drop|alter|truncate)\b|;|--|\/\*/i.test(question);
@@ -472,11 +518,11 @@ const fetchOperationalKpis = async (supabase: SupabaseClient<Database>, date: st
     (item) => normalizedLoadStatus(item.load_status) === "empty" && !trailersWithActiveExportAllocation.has(item.id),
   ).length;
   const loadedCount = compoundInventoryTrailers.filter((item) => normalizedLoadStatus(item.load_status) === "loaded").length;
-  const arrivalsToday = trailers.filter((item) => item.arrival_date?.split("T")[0] === date).length;
-  const departuresToday = trailers.filter((item) => item.departure_date?.split("T")[0] === date).length;
+  const arrivalsToday = trailers.filter((item) => getDateKey(item.arrival_date) === date).length;
+  const departuresToday = trailers.filter((item) => getDateKey(item.departure_date) === date).length;
   const operationsToday = ((vesselData ?? []) as Array<{ expected_arrival_at?: string | null; actual_arrival_at?: string | null }>).filter((row) => {
-    const expected = row.expected_arrival_at?.split("T")[0] ?? null;
-    const actual = row.actual_arrival_at?.split("T")[0] ?? null;
+    const expected = getDateKey(row.expected_arrival_at);
+    const actual = getDateKey(row.actual_arrival_at);
     return expected === date || actual === date;
   }).length;
 
@@ -486,13 +532,16 @@ const fetchOperationalKpis = async (supabase: SupabaseClient<Database>, date: st
   const temperatureAlerts = vesselTrailerRows.filter((row) => row.has_temperature_alert === true).length;
   const exportWaitingCollection = activeExportAllocations.filter((row) => row.status === "delivered_empty").length;
 
+  const occupancyRow = parseCompoundOccupancyRow(occupancyResult.data);
+  const occupancyPercentage = parseNumberLike(occupancyRow?.occupancy_percentage);
+
   return {
     arrivalsToday,
     departuresToday,
     emptyAvailable,
     loadedCount,
     waitingForCompound: waitingCount ?? 0,
-    compoundOccupancy: typeof occupancyResult.data === "number" ? occupancyResult.data : null,
+    compoundOccupancy: occupancyPercentage === null ? null : Math.round(occupancyPercentage),
     operationsToday,
     inspectionsPending,
     damageAlerts,
@@ -557,7 +606,11 @@ const fetchOperationsSummaryData = async (supabase: SupabaseClient<Database>, da
   const emptyAvailable = compoundInventoryTrailers.filter((item) => normalizedLoadStatus(item.load_status) === "empty" && !trailersWithActiveExportAllocation.has(item.id)).length;
   const loadedCount = compoundInventoryTrailers.filter((item) => normalizedLoadStatus(item.load_status) === "loaded").length;
   const waitingForCompound = waitingCount ?? 0;
-  const compoundOccupancy = typeof occupancyResult.data === "number" ? occupancyResult.data : null;
+  const occupancyRow = parseCompoundOccupancyRow(occupancyResult.data);
+  const compoundCapacity = parseNumberLike(occupancyRow?.physical_capacity) ?? 50;
+  const occupiedPositions = parseNumberLike(occupancyRow?.occupied_positions) ?? compoundInventoryTrailers.length;
+  const occupancyPercentRaw = parseNumberLike(occupancyRow?.occupancy_percentage);
+  const compoundOccupancy = occupancyPercentRaw === null ? Math.round((occupiedPositions / Math.max(compoundCapacity, 1)) * 100) : Math.round(occupancyPercentRaw);
 
   const todaysOperations = vesselOperations.filter((operation) => {
     const operationDate = getDateKey(operation.actual_arrival_at) ?? getDateKey(operation.expected_arrival_at);
@@ -567,7 +620,7 @@ const fetchOperationsSummaryData = async (supabase: SupabaseClient<Database>, da
   const vesselTrailersToday = vesselTrailers.filter((row) => todaysOperationIds.has(row.vessel_operation_id));
   const expectedTrailersToday = vesselTrailersToday.length;
   const arrivedTrailersToday = vesselTrailersToday.filter((row) => normalizeText(row.arrival_status) === "arrived").length;
-  const pendingTrailersToday = Math.max(expectedTrailersToday - arrivedTrailersToday, 0);
+  const pendingTrailersToday = vesselTrailersToday.filter((row) => normalizeText(row.arrival_status) !== "arrived").length;
   const inspectionsPendingInVesselToday = vesselTrailersToday.filter((row) => normalizeText(row.arrival_status) === "arrived" && !row.inspection_completed_at).length;
 
   const inspectionsCompletedToday = vesselTrailers.filter((row) => getDateKey(row.inspection_completed_at) === date).length;
@@ -582,8 +635,7 @@ const fetchOperationsSummaryData = async (supabase: SupabaseClient<Database>, da
   const collectedLoaded = allocations.filter((row) => row.status === "collected_loaded").length;
   const completedToday = allocations.filter((row) => getDateKey(row.completed_at) === date).length;
   const cancelledToday = allocations.filter((row) => getDateKey(row.cancelled_at) === date).length;
-  const waitingForCollection = deliveredEmpty;
-  const overdueOrWaitingCollection = allocations.filter((row) => row.status === "delivered_empty" || isExportAllocationOverdue(row)).length;
+  const waitingForCollection = allocations.filter((row) => row.status === "delivered_empty" || row.status === "waiting_loading").length;
 
   return {
     arrivalsToday,
@@ -591,6 +643,8 @@ const fetchOperationsSummaryData = async (supabase: SupabaseClient<Database>, da
     emptyAvailable,
     loadedCount,
     waitingForCompound,
+    compoundCapacity,
+    occupiedPositions,
     compoundOccupancy,
     vesselOperationsToday: todaysOperations.length,
     expectedTrailersToday,
@@ -609,7 +663,6 @@ const fetchOperationsSummaryData = async (supabase: SupabaseClient<Database>, da
     completedToday,
     cancelledToday,
     waitingForCollection,
-    overdueOrWaitingCollection,
   };
 };
 
@@ -1261,10 +1314,74 @@ async function queryUnknown() {
   };
 }
 
-async function queryOperationsSummaryToday(supabase: SupabaseClient<Database>, date: string) {
+async function queryOperationsSummaryToday(
+  supabase: SupabaseClient<Database>,
+  date: string,
+  prioritizeAttention: boolean,
+) {
   const data = await fetchOperationsSummaryData(supabase, date);
 
-  const sections: AiAssistantSection[] = [
+  const attentionItems: Array<{ severity: AiAssistantAlert["severity"]; message: string; label: string; value: number }> = [];
+
+  if (data.temperatureAlerts > 0) {
+    attentionItems.push({
+      severity: "critical",
+      message: `${data.temperatureAlerts} trailer${data.temperatureAlerts === 1 ? " has" : "s have"} temperature alerts.`,
+      label: "Temperature alerts",
+      value: data.temperatureAlerts,
+    });
+  }
+  if (data.damageAlerts > 0) {
+    attentionItems.push({
+      severity: "warning",
+      message: `${data.damageAlerts} trailer${data.damageAlerts === 1 ? " has" : "s have"} reported damage.`,
+      label: "Damage alerts",
+      value: data.damageAlerts,
+    });
+  }
+  if (data.waitingForCompound > 0) {
+    attentionItems.push({
+      severity: "warning",
+      message: `${data.waitingForCompound} trailer${data.waitingForCompound === 1 ? " is" : "s are"} waiting for a compound position.`,
+      label: "Waiting for compound",
+      value: data.waitingForCompound,
+    });
+  }
+  if (data.inspectionsPending > 0) {
+    attentionItems.push({
+      severity: "warning",
+      message: `${data.inspectionsPending} inspection${data.inspectionsPending === 1 ? " is" : "s are"} still pending.`,
+      label: "Pending inspections",
+      value: data.inspectionsPending,
+    });
+  }
+  if (data.pendingTrailersToday > 0) {
+    attentionItems.push({
+      severity: "warning",
+      message: `${data.pendingTrailersToday} vessel trailer${data.pendingTrailersToday === 1 ? " is" : "s are"} still pending arrival today.`,
+      label: "Pending vessel arrivals",
+      value: data.pendingTrailersToday,
+    });
+  }
+  if (data.waitingForCollection > 0) {
+    attentionItems.push({
+      severity: "warning",
+      message: `${data.waitingForCollection} export operation${data.waitingForCollection === 1 ? " is" : "s are"} waiting for collection.`,
+      label: "Export waiting for collection",
+      value: data.waitingForCollection,
+    });
+  }
+
+  const alerts: AiAssistantAlert[] = attentionItems.map((item) => ({
+    severity: item.severity,
+    message: item.message,
+  }));
+
+  if (alerts.length === 0) {
+    alerts.push({ severity: "success", message: "No immediate operational alerts were identified." });
+  }
+
+  const operationalSections: AiAssistantSection[] = [
     {
       key: "arrivals",
       title: "Arrivals",
@@ -1273,6 +1390,7 @@ async function queryOperationsSummaryToday(supabase: SupabaseClient<Database>, d
             { label: "Arrived today", value: `${data.arrivalsToday} trailers arrived today.` },
             { label: "Inspections completed", value: `${data.inspectionsCompletedToday} inspections completed.` },
             { label: "Inspections pending", value: `${data.inspectionsPending} inspections pending.` },
+            { label: "Waiting for compound position", value: `${data.waitingForCompound} trailers waiting for a compound position.` },
           ]
         : [{ label: "Arrivals", value: "No trailers have arrived today." }],
     },
@@ -1287,10 +1405,12 @@ async function queryOperationsSummaryToday(supabase: SupabaseClient<Database>, d
       key: "compound",
       title: "Compound",
       items: [
-        { label: "Empty available", value: `${data.emptyAvailable} empty trailers available.` },
-        { label: "Loaded", value: `${data.loadedCount} loaded trailers currently in the operation.` },
-        { label: "Occupancy", value: data.compoundOccupancy === null ? "Occupancy: —." : `Occupancy: ${data.compoundOccupancy}%.` },
-        { label: "Waiting for position", value: `${data.waitingForCompound} trailers waiting for a position.` },
+        { label: "Capacity", value: `${data.compoundCapacity} positions.` },
+        { label: "Occupied positions", value: `${data.occupiedPositions} positions occupied.` },
+        { label: "Occupancy", value: `${data.compoundOccupancy}% occupancy.` },
+        { label: "Empty trailers available", value: `${data.emptyAvailable} empty trailers available.` },
+        { label: "Loaded trailers", value: `${data.loadedCount} loaded trailers in compound inventory.` },
+        { label: "Waiting for compound", value: `${data.waitingForCompound} trailers waiting for a compound position.` },
       ],
     },
     {
@@ -1310,13 +1430,13 @@ async function queryOperationsSummaryToday(supabase: SupabaseClient<Database>, d
       key: "export_operations",
       title: "Export Operations",
       items: [
-        { label: "Allocated", value: data.allocated },
-        { label: "Delivered empty", value: data.deliveredEmpty },
-        { label: "Waiting loading", value: data.waitingLoading },
-        { label: "Collected loaded", value: data.collectedLoaded },
-        { label: "Completed today", value: data.completedToday },
-        { label: "Cancelled today", value: data.cancelledToday },
-        { label: "Waiting for collection", value: data.waitingForCollection },
+        { label: "Allocated trailers", value: `${data.allocated} allocations.` },
+        { label: "Delivered empty", value: `${data.deliveredEmpty} allocations.` },
+        { label: "Waiting for loading", value: `${data.waitingLoading} allocations.` },
+        { label: "Collected loaded", value: `${data.collectedLoaded} allocations.` },
+        { label: "Completed today", value: `${data.completedToday} allocations completed today.` },
+        { label: "Cancelled today", value: `${data.cancelledToday} allocations cancelled today.` },
+        { label: "Waiting for collection", value: `${data.waitingForCollection} allocations waiting for collection.` },
       ],
     },
     {
@@ -1326,52 +1446,43 @@ async function queryOperationsSummaryToday(supabase: SupabaseClient<Database>, d
         { label: "Completed today", value: `${data.inspectionsCompletedToday} completed today.` },
         { label: "Pending", value: `${data.inspectionsPending} pending.` },
         { label: "In progress", value: `${data.inspectionsInProgress} in progress.` },
+        { label: "Damage alerts", value: `${data.damageAlerts} damage alert${data.damageAlerts === 1 ? "" : "s"}.` },
+        { label: "Temperature alerts", value: `${data.temperatureAlerts} temperature alert${data.temperatureAlerts === 1 ? "" : "s"}.` },
       ],
     },
   ];
 
-  const alerts: AiAssistantAlert[] = [];
-  if (data.temperatureAlerts > 0) {
-    alerts.push({ severity: "critical", message: `${data.temperatureAlerts} trailers have temperature alerts.` });
-  }
-  if (data.damageAlerts > 0) {
-    alerts.push({ severity: "warning", message: `${data.damageAlerts} trailer${data.damageAlerts === 1 ? "" : "s"} have reported damage.` });
-  }
-  if (data.waitingForCompound > 0) {
-    alerts.push({ severity: "warning", message: `${data.waitingForCompound} trailers are waiting for a compound position.` });
-  }
-  if (data.inspectionsPending > 0) {
-    alerts.push({ severity: "warning", message: `${data.inspectionsPending} inspections are pending.` });
-  }
-  if (data.pendingTrailersToday > 0) {
-    alerts.push({ severity: "warning", message: `${data.pendingTrailersToday} vessel trailers are still pending arrival today.` });
-  }
-  if (data.overdueOrWaitingCollection > 0) {
-    alerts.push({ severity: "warning", message: `${data.overdueOrWaitingCollection} export trailers are overdue or waiting for collection.` });
-  }
-
-  sections.push({
+  const attentionSection: AiAssistantSection = {
     key: "attention_required",
     title: "Attention Required",
-    items: alerts.length > 0
-      ? alerts.map((alert, index) => ({ label: `Alert ${index + 1}`, value: alert.message }))
+    items: attentionItems.length > 0
+      ? attentionItems.map((item) => ({ label: item.label, value: item.message }))
       : [{ label: "Status", value: "No immediate operational alerts were identified." }],
-  });
+  };
+
+  const sections = prioritizeAttention
+    ? [attentionSection, ...operationalSections]
+    : [...operationalSections, attentionSection];
+
+  const primaryMetrics: AiAssistantSummaryItem[] = [
+    { label: "Arrivals Today", value: data.arrivalsToday },
+    { label: "Departures Today", value: data.departuresToday },
+    { label: "Empty Available", value: data.emptyAvailable },
+    { label: "Compound Occupancy", value: `${data.compoundOccupancy}%` },
+    { label: "Waiting for Compound", value: data.waitingForCompound },
+    { label: "Vessel Operations Today", value: data.vesselOperationsToday },
+  ];
 
   return {
     intent: "operations_summary_today" as const,
     title: "Today's Operational Summary",
-    answer: "Overview of today's live operation.",
+    answer: prioritizeAttention && attentionItems.length > 0
+      ? "Attention-first view of today's live operation."
+      : "Overview of today's live operation.",
     resultType: "operations_summary" as const,
     data: [],
-    summary: [
-      { label: "Arrivals Today", value: data.arrivalsToday },
-      { label: "Departures Today", value: data.departuresToday },
-      { label: "Empty Available", value: data.emptyAvailable },
-      { label: "Compound Occupancy", value: data.compoundOccupancy === null ? "—" : `${data.compoundOccupancy}%` },
-      { label: "Waiting for Compound", value: data.waitingForCompound },
-      { label: "Vessel Operations Today", value: data.vesselOperationsToday },
-    ],
+    primaryMetrics,
+    summary: primaryMetrics,
     sections,
     alerts,
     links: [],
@@ -1380,115 +1491,7 @@ async function queryOperationsSummaryToday(supabase: SupabaseClient<Database>, d
 }
 
 export async function runAiAssistantQuery(supabase: SupabaseClient<Database>, question: string) {
-  const parsed = promptRequestSchema.parse({ question });
-  const normalizedQuestion = parsed.question.trim();
-
-  if (!normalizedQuestion) {
-    throw new Error("Question is required.");
-  }
-
-  if (normalizedQuestion.length > QUESTION_MAX_LENGTH) {
-    throw new Error(`Question must be ${QUESTION_MAX_LENGTH} characters or fewer.`);
-  }
-
-  if (containsWriteIntent(normalizedQuestion) || looksLikeSql(normalizedQuestion)) {
-    return {
-      title: "Read-only assistant",
-      answer: "This assistant is read-only. Please use the relevant operational module to make changes.",
-      resultType: "text" as const,
-      data: [],
-      summary: [{ label: "Access", value: "Read-only" }],
-      links: [],
-      queriedAt: new Date().toISOString(),
-      truncated: false,
-    } satisfies AiAssistantResponse;
-  }
-
-  const { intent } = await callOpenAiInterpreter(normalizedQuestion);
-  const limit = sanitizeLimit(intent.limit);
-  const queriedAt = new Date().toISOString();
-
-  let response: InternalAiResponse;
-  switch (intent.intent) {
-    case "find_trailer":
-      response = intent.trailerNumber ? await queryFindTrailer(supabase, intent.trailerNumber) : await queryUnknown();
-      break;
-    case "count_compound":
-      response = await queryCompound(supabase, 1, false, false);
-      break;
-    case "list_compound":
-      response = await queryCompound(supabase, limit, false, false);
-      break;
-    case "count_empty":
-      response = await queryCompound(supabase, 1, true, false);
-      break;
-    case "list_empty":
-      response = await queryCompound(supabase, limit, true, false);
-      break;
-    case "count_loaded":
-      response = await queryCompound(supabase, 1, false, true);
-      break;
-    case "list_loaded":
-      response = await queryCompound(supabase, limit, false, true);
-      break;
-    case "list_waiting_compound":
-      response = await queryWaitingCompound(supabase, limit);
-      break;
-    case "arrivals_today":
-      response = await queryArrivalsOrDepartures(supabase, intent.date ?? todayKey(), "arrivals_today", limit);
-      break;
-    case "departures_today":
-      response = await queryArrivalsOrDepartures(supabase, intent.date ?? todayKey(), "departures_today", limit);
-      break;
-    case "count_arrivals_today":
-      response = await queryArrivalsOrDepartures(supabase, intent.date ?? todayKey(), "count_arrivals_today", 1);
-      break;
-    case "count_departures_today":
-      response = await queryArrivalsOrDepartures(supabase, intent.date ?? todayKey(), "count_departures_today", 1);
-      break;
-    case "vessel_operations_today":
-      response = await queryVesselOperationsToday(supabase, intent.date ?? todayKey(), limit);
-      break;
-    case "operations_summary_today":
-      response = await queryOperationsSummaryToday(supabase, intent.date ?? todayKey());
-      break;
-    case "export_by_status":
-      response = await queryExportByStatus(supabase, intent.status ?? "delivered_empty", limit);
-      break;
-    case "trailers_by_customer":
-      response = intent.customer ? await queryTrailersByCustomer(supabase, intent.customer, limit) : await queryUnknown();
-      break;
-    case "trailers_with_damage":
-      response = await queryDamageOrTemperatureAlerts(supabase, limit, "trailers_with_damage");
-      break;
-    case "trailers_with_temperature_alert":
-      response = await queryDamageOrTemperatureAlerts(supabase, limit, "trailers_with_temperature_alert");
-      break;
-    case "latest_inspection":
-      response = intent.trailerNumber ? await queryLatestInspection(supabase, intent.trailerNumber) : await queryUnknown();
-      break;
-    case "trailer_history":
-      response = intent.trailerNumber ? await queryTrailerHistory(supabase, intent.trailerNumber, limit) : await queryUnknown();
-      break;
-    default:
-      response = await queryUnknown();
-      break;
-  }
-
-  const result: AiAssistantResponse = {
-    title: response.title,
-    answer: response.answer,
-    resultType: response.resultType,
-    data: response.data,
-    summary: response.summary,
-    sections: response.sections,
-    alerts: response.alerts,
-    links: response.links,
-    queriedAt,
-    truncated: response.truncated,
-  };
-
-  return result;
+  return runAiAssistantFoundationQuery(supabase, question);
 }
 
 export function getFallbackAiAssistantIntent(question: string): AiAssistantIntent {

@@ -171,7 +171,9 @@ export type VesselOperationAiReportDraft = {
   aiModel: string | null;
   generatedAt: string;
   generatedBy: string | null;
-  status: "draft";
+  status: "draft" | "final" | "sent";
+  sentAt?: string | null;
+  sentBy?: string | null;
 };
 
 export type VesselOperationAiReportHistoryItem = {
@@ -182,7 +184,7 @@ export type VesselOperationAiReportHistoryItem = {
   recipients: string[];
   cc: string[];
   generationMode: "ai" | "template";
-  status: "draft";
+  status: "draft" | "final" | "sent";
 };
 
 export type VesselOperationAiReportResponse = {
@@ -190,6 +192,7 @@ export type VesselOperationAiReportResponse = {
   reportData?: VesselOperationalReportData | null;
   reportDraft: VesselOperationAiReportDraft | null;
   draftHistory?: VesselOperationAiReportHistoryItem[];
+  emailProviderConfigured?: boolean;
   usedFallback: boolean;
   message: string | null;
 };

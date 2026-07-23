@@ -68,6 +68,8 @@ const groupedItems: MenuGroup[] = [
     title: "YARD",
     items: [
       { label: "Compound", href: "/dashboard/compound", icon: Warehouse },
+      { label: "Stock Check", href: "/dashboard/compound/stock-check", icon: ClipboardList },
+      { label: "Review Discrepancies", href: "/dashboard/compound/review-discrepancies", icon: ScanSearch },
       { label: "Waiting for Compound", href: "/dashboard/compound/waiting", icon: ClipboardList },
       { label: "Local Trailers", href: "/dashboard/local-trailers", icon: Truck },
       { label: "Trailer Search", href: "/dashboard/search", icon: ScanSearch },
@@ -78,6 +80,7 @@ const groupedItems: MenuGroup[] = [
     title: "INTELLIGENCE & REPORTS",
     items: [
       { label: "Operations Summary", href: "/dashboard/operations", icon: FileBarChart2 },
+      { label: "Trailer Timeline", href: "/dashboard/trailer-timeline", icon: ClipboardList },
       { label: "AI Assistant", href: "/dashboard/ai-assistant", icon: Bot },
       { label: "AI Reports", href: "/dashboard/vessel-operations?report=ai", icon: FileText },
       { label: "Print Reports", href: "/dashboard/vessel-operations?report=print", icon: Printer },
@@ -88,7 +91,11 @@ const groupedItems: MenuGroup[] = [
     items: [
       { label: "Manual Arrival", href: "/dashboard/new-arrival", icon: BarChart3 },
       { label: "Trailer Fleet", href: "/dashboard/company-trailers", icon: Container },
-      { label: "Settings", href: "/dashboard/operations-centre", icon: Settings },
+      { label: "Settings", href: "/dashboard/settings", icon: Settings },
+      { label: "Users", href: "/dashboard/settings/users", icon: Settings },
+      { label: "Roles", href: "/dashboard/settings/roles", icon: Settings },
+      { label: "Permissions", href: "/dashboard/settings/permissions", icon: Settings },
+      { label: "Operations Centre", href: "/dashboard/operations-centre", icon: Settings },
     ],
   },
 ];

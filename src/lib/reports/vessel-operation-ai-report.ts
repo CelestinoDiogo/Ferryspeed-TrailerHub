@@ -1,6 +1,12 @@
 import "server-only";
 import { z } from "zod";
 import type { VesselOperationalReportData, VesselOperationAiReportDraft, VesselOperationAiReportSections } from "@/lib/reports/types";
+import {
+  buildDeterministicVesselOperationAiReportDraft as buildDeterministicVesselOperationAiReportDraftShared,
+  buildDeterministicVesselOperationAiReportSections as buildDeterministicVesselOperationAiReportSectionsShared,
+  buildVesselOperationAiReportBody as buildVesselOperationAiReportBodyShared,
+  buildVesselOperationAiReportSubject as buildVesselOperationAiReportSubjectShared,
+} from "@/lib/reports/vessel-operation-ai-report-shared";
 
 const aiSectionsSchema = z.object({
   operationOverview: z.string().trim().min(1),
@@ -14,240 +20,20 @@ const aiSectionsSchema = z.object({
 
 const modelName = process.env.OPENAI_MODEL || "gpt-4o-mini";
 
-const humanize = (value?: string | null) => {
-  if (!value) {
-    return "-";
-  }
-
-  return value.replace(/_/g, " ").replace(/\b\w/g, (char) => char.toUpperCase());
-};
-
-const formatDate = (value?: string | null) => {
-  if (!value) {
-    return "-";
-  }
-
-  try {
-    return new Date(value).toLocaleDateString("en-GB", {
-      day: "2-digit",
-      month: "short",
-      year: "numeric",
-    });
-  } catch {
-    return "-";
-  }
-};
-
-const formatDateTime = (value?: string | null) => {
-  if (!value) {
-    return "-";
-  }
-
-  try {
-    return new Date(value).toLocaleString("en-GB", {
-      day: "2-digit",
-      month: "short",
-      year: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  } catch {
-    return "-";
-  }
-};
-
-const normalizeTrailerNumber = (value?: string | null) => (value ?? "").trim().toUpperCase() || "UNKNOWN";
-
-const formatTemperature = (value: number | null, unit: string) => (value === null ? "not recorded" : `${value} ${unit}`);
-
-const formatPhotoCount = (count: number) => `${count} photo${count === 1 ? "" : "s"}`;
-
-const buildTrailerRegisterLine = (trailer: VesselOperationalReportData["trailers"][number]) => {
-  const trailerNumber = trailer.trailerNumber || "UNKNOWN";
-  const frontTemperature = formatTemperature(trailer.frontTemperature, trailer.temperatureUnit);
-  const rearTemperature = formatTemperature(trailer.rearTemperature, trailer.temperatureUnit);
-  const damageText = trailer.hasDamage
-    ? trailer.damageDetails
-      ? [
-          `damage recorded`,
-          trailer.damageDetails.category ? `type ${trailer.damageDetails.category}` : null,
-          trailer.damageDetails.damageLocation ? `location ${trailer.damageDetails.damageLocation}` : null,
-          trailer.damageDetails.severity ? `severity ${trailer.damageDetails.severity}` : null,
-        ]
-        .filter(Boolean)
-        .join(", ")
-      : "damage recorded"
-    : "no damage recorded";
-  const notesText = trailer.notes?.trim() ? trailer.notes.trim() : "no notes recorded";
-
-  return `- Trailer ${trailerNumber}: ${trailer.arrivalStatus}; ${humanize(trailer.inspectionStatus)}; front ${frontTemperature}; rear ${rearTemperature}; ${damageText}; ${notesText}; ${formatPhotoCount(trailer.photos.length)}.`;
-};
-
-const buildOperationOverview = (data: VesselOperationalReportData) => {
-  const arrivalDate = formatDate(data.operation.actualArrivalAt ?? data.operation.operationCompletedAt ?? data.operation.expectedArrivalAt);
-  return [
-    `Vessel ${data.operation.vesselName} operated on voyage reference ${data.operation.voyageReference ?? "-"} from ${data.operation.port ?? "-"} to berth ${data.operation.berth ?? "-"}.`,
-    `The operation record covers ${data.statistics.totalTrailers} trailers, with ${data.statistics.arrivedTrailers} arrived, ${data.statistics.notDischargedTrailers} not discharged, ${data.statistics.inspectedTrailers} inspected, and ${data.statistics.pendingInspections} pending inspection.`,
-    `Expected arrival was ${formatDateTime(data.operation.expectedArrivalAt)}, actual arrival was ${formatDateTime(data.operation.actualArrivalAt)}, and the report date is ${arrivalDate}.`,
-  ].join(" ");
-};
-
-const buildTrailerDischargeSummary = (data: VesselOperationalReportData) => {
-  const notDischargedTrailers = data.trailers.filter((trailer) => trailer.arrivalStatusRaw === "not_discharged").map((trailer) => trailer.trailerNumber);
-  const arrivedTrailers = data.trailers.filter((trailer) => trailer.arrivalStatusRaw === "arrived").map((trailer) => trailer.trailerNumber);
-
-  const notDischargedText = notDischargedTrailers.length > 0 ? notDischargedTrailers.map(normalizeTrailerNumber).join(", ") : "none";
-  const arrivedText = arrivedTrailers.length > 0 ? arrivedTrailers.map(normalizeTrailerNumber).join(", ") : "none";
-
-  return [
-    `Arrivals were recorded for ${data.statistics.arrivedTrailers} trailers, including ${arrivedText}.`,
-    data.statistics.notDischargedTrailers > 0
-      ? `Trailers remaining not discharged are ${notDischargedText}.`
-      : "No trailers remain in a not-discharged state.",
-  ].join(" ");
-};
-
-const buildInspectionSummary = (data: VesselOperationalReportData) => {
-  const trailerRegister = data.trailers.map(buildTrailerRegisterLine).join("\n");
-  return [
-    `Inspection progress is ${data.statistics.inspectedTrailers} inspected and ${data.statistics.pendingInspections} pending. Priority trailers recorded in the operation total ${data.statistics.priorityTrailers}.`,
-    `Trailer register:\n${trailerRegister}`,
-  ].join("\n\n");
-};
-
-const buildDamageFindings = (data: VesselOperationalReportData) => {
-  const damagedTrailers = data.trailers.filter((trailer) => trailer.hasDamage);
-
-  if (damagedTrailers.length === 0) {
-    return "No damage was recorded for any trailer in this operation.";
-  }
-
-  return [
-    `Damage was recorded for ${damagedTrailers.length} trailer${damagedTrailers.length === 1 ? "" : "s"}: ${damagedTrailers.map((trailer) => normalizeTrailerNumber(trailer.trailerNumber)).join(", ")}.`,
-    ...damagedTrailers.map((trailer) => {
-      const parts = [
-        `Trailer ${normalizeTrailerNumber(trailer.trailerNumber)}`,
-        trailer.damageDetails?.category ? `type ${trailer.damageDetails.category}` : "type not stated",
-        trailer.damageDetails?.damageLocation ? `location ${trailer.damageDetails.damageLocation}` : "location not stated",
-        trailer.damageDetails?.severity ? `severity ${trailer.damageDetails.severity}` : "severity not stated",
-        trailer.damageDetails?.description ? `description ${trailer.damageDetails.description}` : "description not stated",
-        `photos ${formatPhotoCount(trailer.photos.length)}`,
-      ];
-
-      return `- ${parts.join(", ")}.`;
-    }),
-  ].join("\n");
-};
-
-const buildTemperatureFindings = (data: VesselOperationalReportData) => {
-  const alertTrailers = data.trailers.filter((trailer) => trailer.hasTemperatureAlert);
-
-  if (alertTrailers.length === 0) {
-    return "No temperature alerts were recorded for any trailer in this operation.";
-  }
-
-  return [
-    `Temperature alerts were recorded for ${alertTrailers.length} trailer${alertTrailers.length === 1 ? "" : "s"}: ${alertTrailers.map((trailer) => normalizeTrailerNumber(trailer.trailerNumber)).join(", ")}.`,
-    ...alertTrailers.map((trailer) => `- Trailer ${normalizeTrailerNumber(trailer.trailerNumber)}: front ${formatTemperature(trailer.frontTemperature, trailer.temperatureUnit)}, rear ${formatTemperature(trailer.rearTemperature, trailer.temperatureUnit)}.`),
-  ].join("\n");
-};
-
-const buildOutstandingItems = (data: VesselOperationalReportData) => {
-  const notDischargedTrailers = data.trailers.filter((trailer) => trailer.arrivalStatusRaw === "not_discharged").map((trailer) => normalizeTrailerNumber(trailer.trailerNumber));
-  const pendingInspections = data.trailers.filter((trailer) => trailer.arrivalStatusRaw === "arrived" && trailer.inspectionStatus !== "inspected").map((trailer) => normalizeTrailerNumber(trailer.trailerNumber));
-
-  const items: string[] = [];
-
-  if (notDischargedTrailers.length > 0) {
-    items.push(`Not-discharged trailers remain: ${notDischargedTrailers.join(", ")}.`);
-  } else {
-    items.push("No trailers remain in a not-discharged state.");
-  }
-
-  if (pendingInspections.length > 0) {
-    items.push(`Pending inspections remain for trailers: ${pendingInspections.join(", ")}.`);
-  } else {
-    items.push("No pending inspections remain.");
-  }
-
-  if (data.operation.notes?.trim()) {
-    items.push(`Operation notes were recorded: ${data.operation.notes.trim()}.`);
-  } else {
-    items.push("No additional operation notes were recorded.");
-  }
-
-  return items.join(" ");
-};
-
-const buildFinalOperationalStatus = (data: VesselOperationalReportData) => {
-  if (data.operation.status === "completed") {
-    return "The vessel operation is recorded as completed and the report reflects the current live operational data.";
-  }
-
-  return `The vessel operation remains in ${humanize(data.operation.status)} status and the report reflects the current live operational data.`;
-};
-
 export function buildDeterministicVesselOperationAiReportSections(data: VesselOperationalReportData): VesselOperationAiReportSections {
-  return {
-    operationOverview: buildOperationOverview(data),
-    trailerDischargeSummary: buildTrailerDischargeSummary(data),
-    inspectionSummary: buildInspectionSummary(data),
-    damageFindings: buildDamageFindings(data),
-    temperatureFindings: buildTemperatureFindings(data),
-    outstandingItems: buildOutstandingItems(data),
-    finalOperationalStatus: buildFinalOperationalStatus(data),
-  };
+  return buildDeterministicVesselOperationAiReportSectionsShared(data);
 }
 
 export function buildVesselOperationAiReportSubject(data: VesselOperationalReportData): string {
-  return `Vessel Operations Report - ${data.operation.vesselName} - ${formatDate(data.operation.operationCompletedAt ?? data.operation.actualArrivalAt ?? new Date().toISOString())}`;
+  return buildVesselOperationAiReportSubjectShared(data);
 }
 
 export function buildVesselOperationAiReportBody(sections: VesselOperationAiReportSections): string {
-  return [
-    "Operation Overview",
-    sections.operationOverview,
-    "",
-    "Trailer Discharge Summary",
-    sections.trailerDischargeSummary,
-    "",
-    "Inspection Summary",
-    sections.inspectionSummary,
-    "",
-    "Damage Findings",
-    sections.damageFindings,
-    "",
-    "Temperature Findings",
-    sections.temperatureFindings,
-    "",
-    "Outstanding Items",
-    sections.outstandingItems,
-    "",
-    "Final Operational Status",
-    sections.finalOperationalStatus,
-  ].join("\n");
+  return buildVesselOperationAiReportBodyShared(sections);
 }
 
 export function buildDeterministicVesselOperationAiReportDraft(data: VesselOperationalReportData): VesselOperationAiReportDraft {
-  const sections = buildDeterministicVesselOperationAiReportSections(data);
-  const body = buildVesselOperationAiReportBody(sections);
-
-  return {
-    reportId: null,
-    subject: buildVesselOperationAiReportSubject(data),
-    recipients: [],
-    cc: [],
-    body,
-    generatedContent: body,
-    editedContent: body,
-    sections,
-    generationMode: "template",
-    usedFallback: true,
-    aiModel: null,
-    generatedAt: new Date().toISOString(),
-    generatedBy: null,
-    status: "draft",
-  };
+  return buildDeterministicVesselOperationAiReportDraftShared(data);
 }
 
 export async function generateVesselOperationAiSections(data: VesselOperationalReportData): Promise<{ sections: VesselOperationAiReportSections; model: string }> {
@@ -267,6 +53,16 @@ export async function generateVesselOperationAiSections(data: VesselOperationalR
           "Write in professional British English.",
           "Use only the facts supplied in the structured operation data.",
           "Never invent trailer numbers, customer names, bookings, incidents, times, quantities, temperatures, causes of damage, actions taken, or conclusions not supported by the data.",
+          "Never use hyphen placeholders in prose such as from - to berth -, actual arrival was -, customer -, or expected temperature -.",
+          "When a field is missing, omit that phrase or write a clear sentence such as Actual arrival was not recorded.",
+          "Use natural grammar and correct pluralisation: 1 trailer vs 2 trailers, 1 inspection vs 2 inspections, 1 damage record vs 2 damage records, 1 temperature alert vs 2 temperature alerts.",
+          "For long trailer lists, show at most 10 trailer numbers in prose and then state how many additional trailers exist.",
+          "Provide concise professional language and avoid robotic metric strings.",
+          "The first paragraph in operationOverview must be a short executive summary and must not include a full trailer list.",
+          "For damageFindings, return exactly No damage was recorded for this vessel operation. when there are no damages.",
+          "For outstandingItems, include only non-zero pending items. If none exist, return exactly All expected trailers have been accounted for and no inspection items remain outstanding.",
+          "For temperatureFindings, do not claim alerts when expected temperatures are not defined.",
+          "Use compact markdown tables in inspectionSummary, damageFindings, and temperatureFindings when helpful.",
           "Do not claim damage occurred unless explicitly recorded in the data.",
           "Do not claim temperature compliance or non-compliance unless the data supports it.",
           "Clearly state when no damage or alert exists.",

@@ -6,6 +6,7 @@ import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
+import { logTrailerEvent, resolveAuditOperatorName } from "@/lib/trailer-audit-log";
 import { supabase } from "@/lib/supabase";
 
 const arrivalSchema = z.object({
@@ -439,6 +440,25 @@ function NewArrivalPageContent() {
       if (eventError) {
         console.error("Failed to save trailer arrival event:", eventError);
       }
+
+      const operatorName = await resolveAuditOperatorName();
+      await logTrailerEvent({
+        trailerId: data.id,
+        trailerNumber: data.trailer_number,
+        eventType: "arrival_registered",
+        description: eventDescription,
+        previousValue: null,
+        newValue: {
+          trailer_source: payload.trailer_source,
+          external_company: payload.external_company,
+          external_reference: payload.external_reference,
+          is_local: payload.is_local,
+          compound_position: payload.compound_position,
+          load_status: payload.load_status,
+        },
+        sourceModule: "arrival",
+        performedBy: operatorName,
+      });
 
       reset();
       setTrailerSource("company");

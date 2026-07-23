@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import { logTrailerEvent, resolveAuditOperatorName } from "@/lib/trailer-audit-log";
 import { supabase } from "@/lib/supabase";
 
 type TrailerRecord = {
@@ -163,6 +164,28 @@ export default function DeparturePage() {
         console.error("Departure saved but trailer event creation failed:", eventError);
         alert("Departure saved, but history event could not be recorded.");
       }
+
+      const operatorName = await resolveAuditOperatorName();
+      await logTrailerEvent({
+        trailerId: currentTrailer.id,
+        trailerNumber: currentTrailer.trailer_number,
+        eventType: "departure_registered",
+        description: "Trailer departure registered.",
+        previousValue: {
+          departure_date: currentTrailer.departure_date ?? null,
+          departure_time: currentTrailer.departure_time ?? null,
+          compound_position: currentTrailer.compound_position ?? null,
+          operational_status: currentTrailer.operational_status ?? null,
+        },
+        newValue: {
+          departure_date: updatePayload.departure_date,
+          departure_time: updatePayload.departure_time,
+          compound_position: updatePayload.compound_position,
+          operational_status: updatePayload.operational_status,
+        },
+        sourceModule: "departure",
+        performedBy: operatorName,
+      });
 
       router.push("/dashboard?saved=1");
     } catch (err) {

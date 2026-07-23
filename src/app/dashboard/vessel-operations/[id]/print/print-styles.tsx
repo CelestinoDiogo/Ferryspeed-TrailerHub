@@ -34,6 +34,19 @@ export function VesselPrintStyles() {
           break-inside: avoid !important;
           page-break-inside: avoid !important;
         }
+
+        .vessel-print-report table {
+          width: 100% !important;
+          table-layout: fixed;
+        }
+
+        .vessel-print-report th,
+        .vessel-print-report td {
+          white-space: normal !important;
+          word-break: break-word;
+          overflow-wrap: anywhere;
+          vertical-align: top;
+        }
       }
     `}</style>
   );

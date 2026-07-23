@@ -7,20 +7,58 @@ import { useEffect, useState } from "react";
 import { PrintButton } from "@/components/print/print-button";
 import { loadVesselOperationSummaryAndPrintReportData } from "@/lib/reports/report-data";
 import { supabase } from "@/lib/supabase";
+import { getAcceptedTemperatureRange, getDefaultTemperatureToleranceSettings, isTemperatureOutOfRange } from "@/lib/temperature-tolerance";
 import { formatVesselDateTime } from "@/lib/vessel-operations";
 import type { VesselOperationalReportData } from "@/lib/reports/types";
 import { VesselPrintStyles } from "./print-styles";
 
 const formatStatusLabel = (value?: string | null) => {
-  if (!value) {
-    return "-";
-  }
+  if (!value) return "Unknown";
 
   return value.replace(/_/g, " ").replace(/\b\w/g, (char) => char.toUpperCase());
 };
 
 const formatTemperature = (value: number | null, unit: string) => {
-  return value === null ? "-" : `${value} ${unit}`;
+  return value === null ? "Not recorded" : `${value} ${unit}`;
+};
+
+const getTemperatureResultLabel = (trailer: VesselOperationalReportData["trailers"][number]) => {
+  const tolerance = getDefaultTemperatureToleranceSettings();
+  const expectedFront = trailer.expectedFrontTemperature;
+  const expectedRear = trailer.expectedRearTemperature;
+  const measuredFront = trailer.frontTemperature;
+  const measuredRear = trailer.rearTemperature;
+
+  if (expectedFront === null && expectedRear === null) {
+    return "No expected temperature recorded";
+  }
+
+  const frontOut = expectedFront === null ? false : isTemperatureOutOfRange(measuredFront, expectedFront, tolerance);
+  const rearOut = expectedRear === null ? false : isTemperatureOutOfRange(measuredRear, expectedRear, tolerance);
+
+  if (frontOut || rearOut) {
+    return "Out of accepted range";
+  }
+
+  if ((expectedFront !== null && measuredFront === null) || (expectedRear !== null && measuredRear === null)) {
+    return "Pending measurement";
+  }
+
+  return "Within accepted range";
+};
+
+const getAcceptedRangeLabel = (trailer: VesselOperationalReportData["trailers"][number]) => {
+  const tolerance = getDefaultTemperatureToleranceSettings();
+  const unit = trailer.temperatureUnit || "C";
+  const frontRange = trailer.expectedFrontTemperature === null ? null : getAcceptedTemperatureRange(trailer.expectedFrontTemperature, tolerance);
+  const rearRange = trailer.expectedRearTemperature === null ? null : getAcceptedTemperatureRange(trailer.expectedRearTemperature, tolerance);
+
+  const segments = [
+    frontRange ? `Front ${frontRange.minimumAcceptedTemperature} to ${frontRange.maximumAcceptedTemperature} ${unit}` : null,
+    rearRange ? `Rear ${rearRange.minimumAcceptedTemperature} to ${rearRange.maximumAcceptedTemperature} ${unit}` : null,
+  ].filter(Boolean);
+
+  return segments.length > 0 ? segments.join("; ") : "Not applicable";
 };
 
 const getInspectionStatusLabel = (trailer: VesselOperationalReportData["trailers"][number]) => {
@@ -114,9 +152,18 @@ export default function VesselOperationPrintPage() {
 
   const generatedAt = new Date().toISOString();
   const damagedTrailers = reportData.trailers.filter((trailer) => trailer.hasDamage);
-  const temperatureAlertTrailers = reportData.trailers.filter((trailer) => trailer.hasTemperatureAlert);
   const operationNotes = reportData.operation.notes?.trim() ?? "";
   const hasNoTrailers = reportData.trailers.length === 0;
+  const overviewRows = [
+    { label: "Vessel", value: reportData.operation.vesselName?.trim() || null },
+    { label: "Voyage / Sailing Reference", value: reportData.operation.voyageReference?.trim() || null },
+    { label: "Origin Port", value: reportData.operation.port?.trim() || null },
+    { label: "Berth", value: reportData.operation.berth?.trim() || null },
+    { label: "Expected Arrival", value: reportData.operation.expectedArrivalAt ? formatVesselDateTime(reportData.operation.expectedArrivalAt) : null },
+    { label: "Actual Arrival", value: reportData.operation.actualArrivalAt ? formatVesselDateTime(reportData.operation.actualArrivalAt) : null },
+    { label: "Status", value: formatStatusLabel(reportData.operation.status) },
+    { label: "Report Date", value: formatVesselDateTime(reportData.operation.operationCompletedAt ?? reportData.operation.actualArrivalAt ?? generatedAt) },
+  ].filter((item) => item.value);
 
   return (
     <main className="min-h-screen bg-slate-100 px-4 py-6 text-slate-900 sm:px-6 lg:px-8">
@@ -158,14 +205,12 @@ export default function VesselOperationPrintPage() {
               </div>
 
               <div className="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                <div><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Vessel Name</p><p className="mt-1 font-semibold text-slate-950">{reportData.operation.vesselName}</p></div>
-                <div><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Voyage / Sailing Ref</p><p className="mt-1 font-semibold text-slate-950">{reportData.operation.voyageReference ?? "-"}</p></div>
-                <div><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Origin Port</p><p className="mt-1 font-semibold text-slate-950">{reportData.operation.port ?? "-"}</p></div>
-                <div><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Berth</p><p className="mt-1 font-semibold text-slate-950">{reportData.operation.berth ?? "-"}</p></div>
-                <div><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Expected Arrival</p><p className="mt-1 font-semibold text-slate-950">{formatVesselDateTime(reportData.operation.expectedArrivalAt)}</p></div>
-                <div><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Actual Arrival</p><p className="mt-1 font-semibold text-slate-950">{formatVesselDateTime(reportData.operation.actualArrivalAt)}</p></div>
-                <div><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Operation Status</p><p className="mt-1 font-semibold text-slate-950">{formatStatusLabel(reportData.operation.status)}</p></div>
-                <div><p className="text-xs uppercase tracking-[0.2em] text-slate-500">List Status</p><p className="mt-1 font-semibold text-slate-950">{formatStatusLabel(reportData.operation.listStatus)}</p></div>
+                {overviewRows.map((row) => (
+                  <div key={row.label}>
+                    <p className="text-xs uppercase tracking-[0.2em] text-slate-500">{row.label}</p>
+                    <p className="mt-1 font-semibold text-slate-950">{row.value}</p>
+                  </div>
+                ))}
               </div>
             </header>
 
@@ -187,24 +232,17 @@ export default function VesselOperationPrintPage() {
             ) : null}
 
             <section className="avoid-print-break mt-8">
-              <h2 className="text-lg font-semibold text-slate-950">Trailer Report</h2>
+              <h2 className="text-lg font-semibold text-slate-950">Trailer Status Table</h2>
               <div className="mt-4 overflow-x-auto rounded-3xl border border-slate-200">
                 <table className="min-w-full border-collapse text-sm text-slate-800">
                   <thead className="bg-slate-100 text-slate-700">
                     <tr>
                       <th className="border border-slate-200 px-3 py-2 text-left">Trailer</th>
-                      <th className="border border-slate-200 px-3 py-2 text-left">Priority</th>
-                      <th className="border border-slate-200 px-3 py-2 text-left">Arrival Status</th>
-                      <th className="border border-slate-200 px-3 py-2 text-left">Reception Status</th>
-                      <th className="border border-slate-200 px-3 py-2 text-left">Arrival Time</th>
-                      <th className="border border-slate-200 px-3 py-2 text-left">Inspection Status</th>
-                      <th className="border border-slate-200 px-3 py-2 text-left">Expected Front Temp</th>
-                      <th className="border border-slate-200 px-3 py-2 text-left">Expected Rear Temp</th>
-                      <th className="border border-slate-200 px-3 py-2 text-left">Front Temperature</th>
-                      <th className="border border-slate-200 px-3 py-2 text-left">Rear Temperature</th>
+                      <th className="border border-slate-200 px-3 py-2 text-left">Arrival</th>
+                      <th className="border border-slate-200 px-3 py-2 text-left">Inspection</th>
                       <th className="border border-slate-200 px-3 py-2 text-left">Damage</th>
-                      <th className="border border-slate-200 px-3 py-2 text-left">Temperature Alert</th>
-                      <th className="border border-slate-200 px-3 py-2 text-left">Photos</th>
+                      <th className="border border-slate-200 px-3 py-2 text-left">Temperature</th>
+                      <th className="border border-slate-200 px-3 py-2 text-left">Position</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -212,23 +250,13 @@ export default function VesselOperationPrintPage() {
                       <tr key={trailer.id} className="trailer-print-card align-top">
                         <td className="border border-slate-200 px-3 py-3">
                           <p className="font-semibold text-slate-950">{trailer.trailerNumber}</p>
-                          {trailer.customer ? <p className="mt-1 text-xs text-slate-600">Customer: {trailer.customer}</p> : null}
                           {trailer.bookingReference ? <p className="text-xs text-slate-600">Booking: {trailer.bookingReference}</p> : null}
-                          {trailer.loadStatus ? <p className="text-xs text-slate-600">Load: {trailer.loadStatus}</p> : null}
-                          {trailer.notes ? <p className="mt-1 text-xs text-slate-600">Notes: {trailer.notes}</p> : null}
                         </td>
-                        <td className="border border-slate-200 px-3 py-3">{formatStatusLabel(trailer.priority)}</td>
                         <td className="border border-slate-200 px-3 py-3">{trailer.arrivalStatus}</td>
-                        <td className="border border-slate-200 px-3 py-3">{trailer.receptionStatus}</td>
-                        <td className="border border-slate-200 px-3 py-3">{formatVesselDateTime(trailer.arrivedAt)}</td>
                         <td className="border border-slate-200 px-3 py-3">{getInspectionStatusLabel(trailer)}</td>
-                        <td className="border border-slate-200 px-3 py-3">{formatTemperature(trailer.expectedFrontTemperature, trailer.temperatureUnit)}</td>
-                        <td className="border border-slate-200 px-3 py-3">{formatTemperature(trailer.expectedRearTemperature, trailer.temperatureUnit)}</td>
-                        <td className="border border-slate-200 px-3 py-3">{formatTemperature(trailer.frontTemperature, trailer.temperatureUnit)}</td>
-                        <td className="border border-slate-200 px-3 py-3">{formatTemperature(trailer.rearTemperature, trailer.temperatureUnit)}</td>
                         <td className="border border-slate-200 px-3 py-3">{trailer.hasDamage ? "Yes" : "No"}</td>
-                        <td className="border border-slate-200 px-3 py-3">{trailer.hasTemperatureAlert ? "Yes" : "No"}</td>
-                        <td className="border border-slate-200 px-3 py-3">{trailer.photos.length}</td>
+                        <td className="border border-slate-200 px-3 py-3">{getTemperatureResultLabel(trailer)}</td>
+                        <td className="border border-slate-200 px-3 py-3">{trailer.compoundPosition?.trim() ? trailer.compoundPosition : "Not assigned"}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -236,65 +264,69 @@ export default function VesselOperationPrintPage() {
               </div>
             </section>
 
-            {damagedTrailers.length > 0 ? (
-              <section className="mt-8">
-                <h2 className="text-lg font-semibold text-slate-950">Damage Details</h2>
-                <div className="mt-4 space-y-4">
-                  {damagedTrailers.map((trailer) => (
-                    <div key={trailer.id} className="detail-print-card rounded-3xl border border-rose-200 bg-rose-50 p-4">
-                      <p className="text-base font-semibold text-slate-950">{trailer.trailerNumber}</p>
-                      <div className="mt-3 grid gap-2 text-sm text-slate-700 sm:grid-cols-2">
-                        <p>Damage Type: <span className="font-semibold text-slate-950">{trailer.damageDetails?.category ?? "-"}</span></p>
-                        <p>Damage Location: <span className="font-semibold text-slate-950">{trailer.damageDetails?.damageLocation ?? "-"}</span></p>
-                        <p>Severity: <span className="font-semibold text-slate-950">{trailer.damageDetails?.severity ?? "-"}</span></p>
-                        <p>Description: <span className="font-semibold text-slate-950">{trailer.damageDetails?.description || "-"}</span></p>
-                        <p>Recorded Date/Time: <span className="font-semibold text-slate-950">{formatVesselDateTime(reportData.damages.find((damage) => damage.trailerId === trailer.id)?.recordedAt)}</span></p>
-                        <p>Recorded By: <span className="font-semibold text-slate-950">{reportData.damages.find((damage) => damage.trailerId === trailer.id)?.inspectedBy ?? "-"}</span></p>
-                      </div>
-                    </div>
-                  ))}
+            <section className="mt-8">
+              <h2 className="text-lg font-semibold text-slate-950">Damage Details</h2>
+              {damagedTrailers.length === 0 ? (
+                <p className="mt-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">No damage was recorded for this vessel operation.</p>
+              ) : (
+                <div className="mt-4 overflow-x-auto rounded-3xl border border-slate-200">
+                  <table className="min-w-full border-collapse text-sm text-slate-800">
+                    <thead className="bg-slate-100 text-slate-700">
+                      <tr>
+                        <th className="border border-slate-200 px-3 py-2 text-left">Trailer</th>
+                        <th className="border border-slate-200 px-3 py-2 text-left">Type</th>
+                        <th className="border border-slate-200 px-3 py-2 text-left">Location</th>
+                        <th className="border border-slate-200 px-3 py-2 text-left">Severity</th>
+                        <th className="border border-slate-200 px-3 py-2 text-left">Description</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {damagedTrailers.map((trailer) => (
+                        <tr key={trailer.id} className="trailer-print-card align-top">
+                          <td className="border border-slate-200 px-3 py-3 font-semibold text-slate-950">{trailer.trailerNumber}</td>
+                          <td className="border border-slate-200 px-3 py-3">{trailer.damageDetails?.category ?? "Recorded"}</td>
+                          <td className="border border-slate-200 px-3 py-3">{trailer.damageDetails?.damageLocation ?? "Recorded"}</td>
+                          <td className="border border-slate-200 px-3 py-3">{trailer.damageDetails?.severity ?? "Recorded"}</td>
+                          <td className="border border-slate-200 px-3 py-3">{trailer.damageDetails?.description || "No description provided"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
-              </section>
-            ) : null}
+              )}
+            </section>
 
-            {temperatureAlertTrailers.length > 0 ? (
-              <section className="mt-8">
-                <h2 className="text-lg font-semibold text-slate-950">Temperature Alert Details</h2>
-                <div className="mt-4 space-y-4">
-                  {temperatureAlertTrailers.map((trailer) => {
-                    const frontAlert = reportData.temperatures.find((row) => row.trailerId === trailer.id && row.readingPoint === "front" && row.result === "fail");
-                    const rearAlert = reportData.temperatures.find((row) => row.trailerId === trailer.id && row.readingPoint === "rear" && row.result === "fail");
-                    const alertSource = frontAlert && rearAlert ? "Front and Rear" : frontAlert ? "Front" : rearAlert ? "Rear" : "Unknown";
-                    const notes = [frontAlert?.notes, rearAlert?.notes].filter(Boolean).join(" / ");
-                    const requiredRange = (() => {
-                      const frontRange = frontAlert ?? reportData.temperatures.find((row) => row.trailerId === trailer.id && row.readingPoint === "front");
-                      const rearRange = rearAlert ?? reportData.temperatures.find((row) => row.trailerId === trailer.id && row.readingPoint === "rear");
-                      const min = frontRange?.requiredMin ?? rearRange?.requiredMin;
-                      const max = frontRange?.requiredMax ?? rearRange?.requiredMax;
-                      if (min === null || min === undefined || max === null || max === undefined) {
-                        return "-";
-                      }
-                      return `${min} to ${max} C`;
-                    })();
-
-                    return (
-                      <div key={trailer.id} className="detail-print-card rounded-3xl border border-orange-200 bg-orange-50 p-4">
-                        <p className="text-base font-semibold text-slate-950">{trailer.trailerNumber}</p>
-                        <div className="mt-3 grid gap-2 text-sm text-slate-700 sm:grid-cols-2">
-                          <p>Expected Front: <span className="font-semibold text-slate-950">{formatTemperature(trailer.expectedFrontTemperature, trailer.temperatureUnit)}</span></p>
-                          <p>Expected Rear: <span className="font-semibold text-slate-950">{formatTemperature(trailer.expectedRearTemperature, trailer.temperatureUnit)}</span></p>
-                          <p>Front Temperature: <span className="font-semibold text-slate-950">{formatTemperature(trailer.frontTemperature, trailer.temperatureUnit)}</span></p>
-                          <p>Rear Temperature: <span className="font-semibold text-slate-950">{formatTemperature(trailer.rearTemperature, trailer.temperatureUnit)}</span></p>
-                          <p>Alert Source: <span className="font-semibold text-slate-950">{alertSource}</span></p>
-                          <p>Required Temperature: <span className="font-semibold text-slate-950">{requiredRange}</span></p>
-                          {notes ? <p className="sm:col-span-2">Notes: <span className="font-semibold text-slate-950">{notes}</span></p> : null}
-                        </div>
-                      </div>
-                    );
-                  })}
+            <section className="mt-8">
+              <h2 className="text-lg font-semibold text-slate-950">Temperature Details</h2>
+              <div className="mt-4 overflow-x-auto rounded-3xl border border-slate-200">
+                <table className="min-w-full border-collapse text-sm text-slate-800">
+                  <thead className="bg-slate-100 text-slate-700">
+                    <tr>
+                      <th className="border border-slate-200 px-3 py-2 text-left">Trailer</th>
+                      <th className="border border-slate-200 px-3 py-2 text-left">Expected Front</th>
+                      <th className="border border-slate-200 px-3 py-2 text-left">Measured Front</th>
+                      <th className="border border-slate-200 px-3 py-2 text-left">Expected Rear</th>
+                      <th className="border border-slate-200 px-3 py-2 text-left">Measured Rear</th>
+                      <th className="border border-slate-200 px-3 py-2 text-left">Accepted Range</th>
+                      <th className="border border-slate-200 px-3 py-2 text-left">Result</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {reportData.trailers.map((trailer) => (
+                      <tr key={trailer.id} className="trailer-print-card align-top">
+                        <td className="border border-slate-200 px-3 py-3 font-semibold text-slate-950">{trailer.trailerNumber}</td>
+                        <td className="border border-slate-200 px-3 py-3">{formatTemperature(trailer.expectedFrontTemperature, trailer.temperatureUnit)}</td>
+                        <td className="border border-slate-200 px-3 py-3">{formatTemperature(trailer.frontTemperature, trailer.temperatureUnit)}</td>
+                        <td className="border border-slate-200 px-3 py-3">{formatTemperature(trailer.expectedRearTemperature, trailer.temperatureUnit)}</td>
+                        <td className="border border-slate-200 px-3 py-3">{formatTemperature(trailer.rearTemperature, trailer.temperatureUnit)}</td>
+                        <td className="border border-slate-200 px-3 py-3">{getAcceptedRangeLabel(trailer)}</td>
+                        <td className="border border-slate-200 px-3 py-3">{getTemperatureResultLabel(trailer)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
                 </div>
-              </section>
-            ) : null}
+            </section>
 
             {reportData.photos.some((photo) => photo.url) ? (
               <section className="mt-8">

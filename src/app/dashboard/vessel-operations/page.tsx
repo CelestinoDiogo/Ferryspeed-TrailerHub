@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { PrintButton } from "@/components/print/print-button";
 import { PrintFilters } from "@/components/print/print-filters";
@@ -76,11 +77,27 @@ const getPrintedDateTime = () =>
     minute: "2-digit",
   });
 
+const isVesselOperationFilter = (value: string | null): value is (typeof VESSEL_OPERATION_FILTERS)[number] => {
+  if (!value) {
+    return false;
+  }
+
+  return (VESSEL_OPERATION_FILTERS as readonly string[]).includes(value);
+};
+
 function VesselOperationsPageContent() {
+  const searchParams = useSearchParams();
+  const urlFilter = searchParams.get("filter");
   const [operations, setOperations] = useState<VesselOperationView[]>([]);
-  const [activeFilter, setActiveFilter] = useState<(typeof VESSEL_OPERATION_FILTERS)[number]>("all");
+  const [activeFilter, setActiveFilter] = useState<(typeof VESSEL_OPERATION_FILTERS)[number]>(
+    isVesselOperationFilter(urlFilter) ? urlFilter : "all",
+  );
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setActiveFilter(isVesselOperationFilter(urlFilter) ? urlFilter : "all");
+  }, [urlFilter]);
 
   const loadOperations = useCallback(async () => {
     setIsLoading(true);

@@ -30,6 +30,60 @@ export type Database = {
         Update: Partial<Database["public"]["Tables"]["trailers"]["Row"]>;
         Relationships: [];
       };
+      app_roles: {
+        Row: {
+          role_key: string;
+          label: string;
+          description: string | null;
+          is_system: boolean;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: Partial<Database["public"]["Tables"]["app_roles"]["Row"]>;
+        Update: Partial<Database["public"]["Tables"]["app_roles"]["Row"]>;
+        Relationships: [];
+      };
+      app_permission_modules: {
+        Row: {
+          module_key: string;
+          label: string;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: Partial<Database["public"]["Tables"]["app_permission_modules"]["Row"]>;
+        Update: Partial<Database["public"]["Tables"]["app_permission_modules"]["Row"]>;
+        Relationships: [];
+      };
+      app_role_permissions: {
+        Row: {
+          role_key: string;
+          module_key: string;
+          can_view: boolean;
+          can_create: boolean;
+          can_edit: boolean;
+          can_delete: boolean;
+          can_reports: boolean;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: Partial<Database["public"]["Tables"]["app_role_permissions"]["Row"]>;
+        Update: Partial<Database["public"]["Tables"]["app_role_permissions"]["Row"]>;
+        Relationships: [];
+      };
+      app_user_roles: {
+        Row: {
+          user_id: string;
+          email: string | null;
+          display_name: string | null;
+          role_key: string;
+          is_active: boolean;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: Partial<Database["public"]["Tables"]["app_user_roles"]["Row"]>;
+        Update: Partial<Database["public"]["Tables"]["app_user_roles"]["Row"]>;
+        Relationships: [];
+      };
       company_trailers: {
         Row: {
           id: string;
@@ -60,6 +114,24 @@ export type Database = {
         };
         Insert: Partial<Database["public"]["Tables"]["trailer_events"]["Row"]>;
         Update: Partial<Database["public"]["Tables"]["trailer_events"]["Row"]>;
+        Relationships: [];
+      };
+      trailer_audit_log: {
+        Row: {
+          id: string;
+          trailer_id: string | null;
+          trailer_number: string | null;
+          event_type: string;
+          description: string | null;
+          previous_value: Json | null;
+          new_value: Json | null;
+          source_module: string | null;
+          performed_by: string | null;
+          performed_at: string | null;
+          created_at: string | null;
+        };
+        Insert: Partial<Database["public"]["Tables"]["trailer_audit_log"]["Row"]>;
+        Update: Partial<Database["public"]["Tables"]["trailer_audit_log"]["Row"]>;
         Relationships: [];
       };
       delivery_bookings: {
@@ -122,6 +194,57 @@ export type Database = {
         };
         Insert: Partial<Database["public"]["Tables"]["export_allocations"]["Row"]>;
         Update: Partial<Database["public"]["Tables"]["export_allocations"]["Row"]>;
+        Relationships: [];
+      };
+      compound_stock_checks: {
+        Row: {
+          id: string;
+          status: string;
+          started_at: string | null;
+          completed_at: string | null;
+          cancelled_at: string | null;
+          started_by: string | null;
+          completed_by: string | null;
+          expected_total: number | null;
+          checked_total: number | null;
+          present_total: number | null;
+          missing_total: number | null;
+          unexpected_total: number | null;
+          wrong_position_total: number | null;
+          wrong_status_total: number | null;
+          notes: string | null;
+          created_at: string | null;
+          updated_at: string | null;
+        };
+        Insert: Partial<Database["public"]["Tables"]["compound_stock_checks"]["Row"]>;
+        Update: Partial<Database["public"]["Tables"]["compound_stock_checks"]["Row"]>;
+        Relationships: [];
+      };
+      compound_stock_check_items: {
+        Row: {
+          id: string;
+          stock_check_id: string;
+          trailer_id: string | null;
+          trailer_number: string | null;
+          expected_in_compound: boolean | null;
+          physically_present: boolean | null;
+          expected_position: string | null;
+          actual_position: string | null;
+          system_load_status: string | null;
+          system_operational_status: string | null;
+          discrepancy_type: string | null;
+          checked_at: string | null;
+          checked_by: string | null;
+          resolution_status: string | null;
+          resolution_action: string | null;
+          resolved_at: string | null;
+          resolved_by: string | null;
+          notes: string | null;
+          created_at: string | null;
+          updated_at: string | null;
+        };
+        Insert: Partial<Database["public"]["Tables"]["compound_stock_check_items"]["Row"]>;
+        Update: Partial<Database["public"]["Tables"]["compound_stock_check_items"]["Row"]>;
         Relationships: [];
       };
       vessel_operations: {
@@ -234,6 +357,40 @@ export type Database = {
         Update: Partial<Database["public"]["Tables"]["vessel_inspection_photos"]["Row"]>;
         Relationships: [];
       };
+      vessel_operation_reports: {
+        Row: {
+          id: string;
+          vessel_operation_id: string;
+          report_type: string;
+          report_status: string;
+          report_number: string | null;
+          title: string;
+          subject: string | null;
+          recipients: string[];
+          cc: string[];
+          executive_summary: string | null;
+          operational_analysis: string | null;
+          recommendations: string | null;
+          conclusion: string | null;
+          generated_content: string | null;
+          edited_content: string | null;
+          structured_snapshot: Json;
+          structured_data_snapshot: Json;
+          generated_by_ai: boolean;
+          ai_model: string | null;
+          generated_at: string | null;
+          generated_by: string | null;
+          approved_at: string | null;
+          approved_by: string | null;
+          sent_at: string | null;
+          sent_by: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: Partial<Database["public"]["Tables"]["vessel_operation_reports"]["Row"]>;
+        Update: Partial<Database["public"]["Tables"]["vessel_operation_reports"]["Row"]>;
+        Relationships: [];
+      };
     };
     Views: Record<string, never>;
     Functions: {
@@ -255,6 +412,57 @@ export type Database = {
           p_confirmed_by?: string | null;
         };
         Returns: string;
+      };
+      start_compound_stock_check: {
+        Args: { p_started_by: string };
+        Returns: Database["public"]["Tables"]["compound_stock_checks"]["Row"][];
+      };
+      mark_compound_stock_check_present: {
+        Args: { p_stock_check_id: string; p_trailer_number: string; p_checked_by: string };
+        Returns: {
+          stock_check_id: string;
+          stock_check_item_id: string | null;
+          trailer_number: string;
+          result: "marked_present" | "already_present" | "unexpected";
+          checked_total: number | null;
+          present_total: number | null;
+          expected_total: number | null;
+          remaining_total: number | null;
+        }[];
+      };
+      change_stock_check_trailer_load_status: {
+        Args: {
+          p_stock_check_id: string;
+          p_stock_check_item_id: string;
+          p_new_load_status: string;
+          p_changed_by: string;
+        };
+        Returns: {
+          stock_check_item_id: string;
+          trailer_id: string;
+          trailer_number: string;
+          previous_load_status: string | null;
+          new_load_status: string | null;
+          discrepancy_type: string | null;
+          resolution_status: string | null;
+        }[];
+      };
+      change_stock_check_trailer_position: {
+        Args: {
+          p_stock_check_id: string;
+          p_stock_check_item_id: string;
+          p_new_position: string;
+          p_changed_by: string;
+        };
+        Returns: {
+          stock_check_item_id: string;
+          trailer_id: string;
+          trailer_number: string;
+          previous_position: string | null;
+          new_position: string | null;
+          discrepancy_type: string | null;
+          resolution_status: string | null;
+        }[];
       };
     };
     Enums: Record<string, never>;

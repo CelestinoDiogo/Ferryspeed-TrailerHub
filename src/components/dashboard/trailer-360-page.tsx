@@ -5,9 +5,11 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ArrowLeft } from "lucide-react";
 import { PrintButton } from "@/components/print/print-button";
+import { TrailerAuditLogTable } from "@/components/trailers/trailer-audit-log-table";
 import { TrailerTimeline } from "@/components/trailers/trailer-timeline";
 import { supabase } from "@/lib/supabase";
 import type { Database } from "@/lib/database.types";
+import { loadTrailerAuditLog, type TrailerAuditRow } from "@/lib/trailer-audit-log";
 import { getTrailerCurrentLocationLabel } from "@/lib/trailer-location";
 import {
   getExportAllocationStatusClasses,
@@ -182,7 +184,10 @@ const buildInspectionSummary = (
 };
 
 export function Trailer360Page({ trailerId }: Trailer360PageProps) {
+  const [activeTab, setActiveTab] = useState<"overview" | "timeline">("timeline");
   const [profile, setProfile] = useState<TrailerOperationalProfile | null>(null);
+  const [auditRows, setAuditRows] = useState<TrailerAuditRow[]>([]);
+  const [auditError, setAuditError] = useState<string | null>(null);
   const [exportAllocations, setExportAllocations] = useState<ExportAllocationView[]>([]);
   const [photos, setPhotos] = useState<PhotoView[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -219,6 +224,13 @@ export function Trailer360Page({ trailerId }: Trailer360PageProps) {
 
     try {
       const loadedProfile = await loadTrailerOperationalProfile(supabase, trailerId);
+      const loadedAuditRows = await loadTrailerAuditLog({
+        trailerId,
+        timeFilter: "all",
+        limit: 1200,
+      });
+      setAuditRows(loadedAuditRows);
+      setAuditError(null);
 
       const allocationRows = loadedProfile.exportAllocations
         .map((row) => ({
@@ -376,6 +388,8 @@ export function Trailer360Page({ trailerId }: Trailer360PageProps) {
       console.error("Unable to load trailer 360 view:", error);
       setPageError(genericPageError);
       setProfile(null);
+      setAuditRows([]);
+      setAuditError("Unable to load trailer timeline.");
       setExportAllocations([]);
       setPhotos([]);
     } finally {
@@ -553,6 +567,51 @@ export function Trailer360Page({ trailerId }: Trailer360PageProps) {
             </div>
           </div>
         </header>
+
+        <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => setActiveTab("timeline")}
+              className={`rounded-full px-3 py-1.5 text-xs font-semibold transition ${
+                activeTab === "timeline"
+                  ? "bg-cyan-600 text-white"
+                  : "border border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+              }`}
+            >
+              Timeline
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab("overview")}
+              className={`rounded-full px-3 py-1.5 text-xs font-semibold transition ${
+                activeTab === "overview"
+                  ? "bg-cyan-600 text-white"
+                  : "border border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+              }`}
+            >
+              Overview
+            </button>
+          </div>
+        </section>
+
+        {activeTab === "timeline" ? (
+          <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+            <p className="text-xs font-semibold uppercase tracking-[0.3em] text-slate-500">Trailer Timeline</p>
+            <p className="mt-2 text-sm text-slate-600">Audit history for trailer {trailer.trailer_number ?? "-"}.</p>
+            <div className="mt-4">
+              <TrailerAuditLogTable
+                rows={auditRows}
+                isLoading={isLoading}
+                error={auditError}
+                emptyLabel="No timeline events found for this trailer."
+              />
+            </div>
+          </section>
+        ) : null}
+
+        {activeTab === "overview" ? (
+          <>
 
         <section className="grid gap-4 lg:grid-cols-[1.2fr_0.8fr]">
           <article className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
@@ -918,6 +977,8 @@ export function Trailer360Page({ trailerId }: Trailer360PageProps) {
             Combined trailer events, vessel milestones, export milestones, inspection findings and departure records are shown in the timeline above.
           </div>
         </section>
+          </>
+        ) : null}
 
         {selectedPreview ? (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4" role="dialog" aria-modal="true" onClick={() => setSelectedPreview(null)}>

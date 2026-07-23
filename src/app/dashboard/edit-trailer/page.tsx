@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabase";
+import { logTrailerEvent, resolveAuditOperatorName } from "@/lib/trailer-audit-log";
 
 type TrailerRecord = {
   id: string;
@@ -451,6 +452,71 @@ export default function EditTrailerPage() {
         if (eventError) {
           console.error("Failed to save edit trailer events:", eventError);
         }
+      }
+
+      const operatorName = await resolveAuditOperatorName();
+
+      await logTrailerEvent({
+        trailerId: selectedTrailer.id,
+        trailerNumber: selectedTrailer.trailer_number ?? null,
+        eventType: "trailer_updated",
+        description: "Trailer details updated.",
+        previousValue: {
+          trailer_type: currentTrailerSnapshot.trailer_type ?? null,
+          load_status: currentTrailerSnapshot.load_status ?? null,
+          load_description: currentTrailerSnapshot.load_description ?? null,
+          customer: currentTrailerSnapshot.customer ?? null,
+          consignee: currentTrailerSnapshot.consignee ?? null,
+          container_number: currentTrailerSnapshot.container_number ?? null,
+          compound_position: currentTrailerSnapshot.compound_position ?? null,
+          notes: currentTrailerSnapshot.notes ?? null,
+          trailer_source: currentTrailerSnapshot.trailer_source ?? "company",
+          external_company: currentTrailerSnapshot.external_company ?? null,
+          external_reference: currentTrailerSnapshot.external_reference ?? null,
+          is_local: currentTrailerSnapshot.is_local === true,
+        },
+        newValue: {
+          trailer_type: updatePayload.trailer_type,
+          load_status: updatePayload.load_status,
+          load_description: updatePayload.load_description,
+          customer: updatePayload.customer,
+          consignee: updatePayload.consignee,
+          container_number: updatePayload.container_number,
+          compound_position: updatePayload.compound_position,
+          notes: updatePayload.notes,
+          trailer_source: updatePayload.trailer_source,
+          external_company: updatePayload.external_company,
+          external_reference: updatePayload.external_reference,
+          is_local: updatePayload.is_local,
+        },
+        sourceModule: "compound",
+        performedBy: operatorName,
+      });
+
+      if ((currentTrailerSnapshot.compound_position ?? "") !== (updatePayload.compound_position ?? "")) {
+        await logTrailerEvent({
+          trailerId: selectedTrailer.id,
+          trailerNumber: selectedTrailer.trailer_number ?? null,
+          eventType: "compound_position_changed",
+          description: "Compound position updated.",
+          previousValue: { compound_position: currentTrailerSnapshot.compound_position ?? null },
+          newValue: { compound_position: updatePayload.compound_position ?? null },
+          sourceModule: "compound",
+          performedBy: operatorName,
+        });
+      }
+
+      if ((currentTrailerSnapshot.load_status ?? "") !== (updatePayload.load_status ?? "")) {
+        await logTrailerEvent({
+          trailerId: selectedTrailer.id,
+          trailerNumber: selectedTrailer.trailer_number ?? null,
+          eventType: "load_status_changed",
+          description: "Load status changed.",
+          previousValue: { load_status: currentTrailerSnapshot.load_status ?? null },
+          newValue: { load_status: updatePayload.load_status ?? null },
+          sourceModule: "compound",
+          performedBy: operatorName,
+        });
       }
 
       setTrailers((current) =>

@@ -1,17 +1,14 @@
-import type { AIReportNarrative, VesselOperationalReportData, VesselOperationAiReportDraft, VesselOperationAiReportSections } from "@/lib/reports/types";
+import type { VesselOperationalReportData, VesselOperationAiReportDraft, VesselOperationAiReportSections } from "@/lib/reports/types";
+import { getAcceptedTemperatureRange, getDefaultTemperatureToleranceSettings, isTemperatureOutOfRange } from "@/lib/temperature-tolerance";
 
 const humanize = (value?: string | null) => {
-  if (!value) {
-    return "-";
-  }
+  if (!value) return "Unknown";
 
   return value.replace(/_/g, " ").replace(/\b\w/g, (char) => char.toUpperCase());
 };
 
 const formatDate = (value?: string | null) => {
-  if (!value) {
-    return "-";
-  }
+  if (!value) return null;
 
   try {
     return new Date(value).toLocaleDateString("en-GB", {
@@ -20,14 +17,12 @@ const formatDate = (value?: string | null) => {
       year: "numeric",
     });
   } catch {
-    return "-";
+    return null;
   }
 };
 
 const formatDateTime = (value?: string | null) => {
-  if (!value) {
-    return "-";
-  }
+  if (!value) return null;
 
   try {
     return new Date(value).toLocaleString("en-GB", {
@@ -38,128 +33,237 @@ const formatDateTime = (value?: string | null) => {
       minute: "2-digit",
     });
   } catch {
-    return "-";
+    return null;
   }
 };
 
 const normalizeTrailerNumber = (value?: string | null) => (value ?? "").trim().toUpperCase() || "UNKNOWN";
 
-const formatTemperature = (value: number | null, unit: string) => (value === null ? "not recorded" : `${value} ${unit}`);
+const formatTemperature = (value: number | null, unit: string) => (value === null ? "Not recorded" : `${value} ${unit}`);
 
-const formatPhotoCount = (count: number) => `${count} photo${count === 1 ? "" : "s"}`;
+const pluralize = (count: number, singular: string, plural?: string) => `${count} ${count === 1 ? singular : plural ?? `${singular}s`}`;
 
-const buildTrailerRegisterLine = (trailer: VesselOperationalReportData["trailers"][number]) => {
-  const trailerNumber = trailer.trailerNumber || "UNKNOWN";
-  const frontTemperature = formatTemperature(trailer.frontTemperature, trailer.temperatureUnit);
-  const rearTemperature = formatTemperature(trailer.rearTemperature, trailer.temperatureUnit);
-  const damageText = trailer.hasDamage
-    ? trailer.damageDetails
-      ? [
-          "damage recorded",
-          trailer.damageDetails.category ? `type ${trailer.damageDetails.category}` : null,
-          trailer.damageDetails.damageLocation ? `location ${trailer.damageDetails.damageLocation}` : null,
-          trailer.damageDetails.severity ? `severity ${trailer.damageDetails.severity}` : null,
-        ]
-        .filter(Boolean)
-        .join(", ")
-      : "damage recorded"
-    : "no damage recorded";
-  const notesText = trailer.notes?.trim() ? trailer.notes.trim() : "no notes recorded";
+const summarizeTrailerList = (trailers: string[], limit = 10) => {
+  const normalized = [...new Set(trailers.map(normalizeTrailerNumber))];
+  if (normalized.length <= limit) {
+    return normalized.join(", ");
+  }
 
-  return `- Trailer ${trailerNumber}: ${trailer.arrivalStatus}; ${humanize(trailer.inspectionStatus)}; front ${frontTemperature}; rear ${rearTemperature}; ${damageText}; ${notesText}; ${formatPhotoCount(trailer.photos.length)}.`;
+  const shown = normalized.slice(0, limit).join(", ");
+  const remaining = normalized.length - limit;
+  return `${shown}, and ${remaining} additional trailer${remaining === 1 ? "" : "s"}`;
+};
+
+const countOutstandingTrailers = (data: VesselOperationalReportData) => {
+  return data.trailers.filter((trailer) => trailer.arrivalStatusRaw !== "arrived").length;
+};
+
+const buildCompactTrailerTable = (data: VesselOperationalReportData) => {
+  const rows = data.trailers.map((trailer) => {
+    const temperatureState = trailer.hasTemperatureAlert ? "Alert" : trailer.frontTemperature === null && trailer.rearTemperature === null ? "Not recorded" : "Recorded";
+    const position = trailer.compoundPosition?.trim() ? trailer.compoundPosition.trim() : "Not assigned";
+
+    return `| ${normalizeTrailerNumber(trailer.trailerNumber)} | ${trailer.arrivalStatus} | ${humanize(trailer.inspectionStatus)} | ${trailer.hasDamage ? "Yes" : "No"} | ${temperatureState} | ${position} |`;
+  });
+
+  return [
+    "| Trailer | Arrival | Inspection | Damage | Temperature | Position |",
+    "| --- | --- | --- | --- | --- | --- |",
+    ...rows,
+  ].join("\n");
+};
+
+const buildTemperatureRows = (data: VesselOperationalReportData) => {
+  const tolerance = getDefaultTemperatureToleranceSettings();
+
+  return data.trailers.map((trailer) => {
+    const expectedFront = trailer.expectedFrontTemperature;
+    const expectedRear = trailer.expectedRearTemperature;
+    const measuredFront = trailer.frontTemperature;
+    const measuredRear = trailer.rearTemperature;
+    const unit = trailer.temperatureUnit || "C";
+
+    const frontRange = expectedFront === null ? null : getAcceptedTemperatureRange(expectedFront, tolerance);
+    const rearRange = expectedRear === null ? null : getAcceptedTemperatureRange(expectedRear, tolerance);
+
+    const hasExpected = expectedFront !== null || expectedRear !== null;
+    const frontOut = expectedFront === null ? false : isTemperatureOutOfRange(measuredFront, expectedFront, tolerance);
+    const rearOut = expectedRear === null ? false : isTemperatureOutOfRange(measuredRear, expectedRear, tolerance);
+
+    let result = "Not assessed";
+    if (!hasExpected) {
+      result = "No expected temperature recorded";
+    } else if (frontOut || rearOut) {
+      result = "Out of accepted range";
+    } else if ((expectedFront !== null && measuredFront === null) || (expectedRear !== null && measuredRear === null)) {
+      result = "Pending measurement";
+    } else {
+      result = "Within accepted range";
+    }
+
+    const acceptedRange = [
+      frontRange ? `Front ${frontRange.minimumAcceptedTemperature} to ${frontRange.maximumAcceptedTemperature} ${unit}` : null,
+      rearRange ? `Rear ${rearRange.minimumAcceptedTemperature} to ${rearRange.maximumAcceptedTemperature} ${unit}` : null,
+    ]
+      .filter(Boolean)
+      .join("; ");
+
+    return {
+      trailerNumber: normalizeTrailerNumber(trailer.trailerNumber),
+      expectedFront: expectedFront === null ? "Not recorded" : `${expectedFront} ${unit}`,
+      measuredFront: formatTemperature(measuredFront, unit),
+      expectedRear: expectedRear === null ? "Not recorded" : `${expectedRear} ${unit}`,
+      measuredRear: formatTemperature(measuredRear, unit),
+      acceptedRange: acceptedRange || "Not applicable",
+      result,
+      hasExpected,
+      outOfRange: frontOut || rearOut,
+    };
+  });
+};
+
+const buildExecutiveSummary = (data: VesselOperationalReportData) => {
+  const reportDate = formatDate(data.operation.operationCompletedAt ?? data.operation.actualArrivalAt ?? data.operation.expectedArrivalAt) ?? "the report date";
+  const vessel = data.operation.vesselName;
+  const voyageText = data.operation.voyageReference?.trim() ? ` under voyage reference ${data.operation.voyageReference.trim()}` : "";
+  const expected = data.statistics.expectedTrailers;
+  const arrived = data.statistics.arrivedTrailers;
+  const outstanding = countOutstandingTrailers(data);
+
+  let arrivalsSentence = "";
+  if (expected > 0 && arrived === expected && outstanding === 0) {
+    arrivalsSentence = `All ${expected} expected trailers arrived.`;
+  } else if (expected > 0) {
+    arrivalsSentence = `Of the ${expected} expected trailers, ${arrived} arrived and ${outstanding} remain outstanding.`;
+  } else {
+    arrivalsSentence = "No expected trailer count was recorded.";
+  }
+
+  let inspectionSentence = "";
+  if (data.statistics.inspectedTrailers === expected && expected > 0) {
+    inspectionSentence = `All ${expected} expected trailers completed inspection.`;
+  } else {
+    inspectionSentence = `${pluralize(data.statistics.inspectedTrailers, "inspection")} completed and ${pluralize(data.statistics.pendingInspections, "inspection")} remain pending.`;
+  }
+
+  const outstandingSentence = data.statistics.notDischargedTrailers > 0
+    ? `${pluralize(data.statistics.notDischargedTrailers, "trailer")} remain not discharged.`
+    : "No outstanding discharge items were recorded.";
+
+  return `Vessel ${vessel} operated${voyageText} on ${reportDate}. ${arrivalsSentence} ${inspectionSentence} ${outstandingSentence}`;
 };
 
 const buildOperationOverview = (data: VesselOperationalReportData) => {
-  const arrivalDate = formatDate(data.operation.actualArrivalAt ?? data.operation.operationCompletedAt ?? data.operation.expectedArrivalAt);
-  return [
-    `Vessel ${data.operation.vesselName} operated on voyage reference ${data.operation.voyageReference ?? "-"} from ${data.operation.port ?? "-"} to berth ${data.operation.berth ?? "-"}.`,
-    `The operation record covers ${data.statistics.totalTrailers} trailers, with ${data.statistics.arrivedTrailers} arrived, ${data.statistics.notDischargedTrailers} not discharged, ${data.statistics.inspectedTrailers} inspected, and ${data.statistics.pendingInspections} pending inspection.`,
-    `Expected arrival was ${formatDateTime(data.operation.expectedArrivalAt)}, actual arrival was ${formatDateTime(data.operation.actualArrivalAt)}, and the report date is ${arrivalDate}.`,
-  ].join(" ");
+  const rows = [
+    { label: "Vessel", value: data.operation.vesselName?.trim() || null },
+    { label: "Voyage / Sailing Reference", value: data.operation.voyageReference?.trim() || null },
+    { label: "Origin Port", value: data.operation.port?.trim() || null },
+    { label: "Berth", value: data.operation.berth?.trim() || null },
+    { label: "Expected Arrival", value: formatDateTime(data.operation.expectedArrivalAt) },
+    { label: "Actual Arrival", value: formatDateTime(data.operation.actualArrivalAt) },
+    { label: "Status", value: humanize(data.operation.status) },
+    { label: "Report Date", value: formatDate(data.operation.operationCompletedAt ?? data.operation.actualArrivalAt ?? data.operation.expectedArrivalAt) },
+  ].filter((item) => item.value);
+
+  const details = rows.map((item) => `- ${item.label}: ${item.value}`).join("\n");
+  return `${buildExecutiveSummary(data)}\n\nOperation Details\n${details}`;
 };
 
 const buildTrailerDischargeSummary = (data: VesselOperationalReportData) => {
   const notDischargedTrailers = data.trailers.filter((trailer) => trailer.arrivalStatusRaw === "not_discharged").map((trailer) => trailer.trailerNumber);
-  const arrivedTrailers = data.trailers.filter((trailer) => trailer.arrivalStatusRaw === "arrived").map((trailer) => trailer.trailerNumber);
+  const expected = data.statistics.expectedTrailers;
+  const arrived = data.statistics.arrivedTrailers;
+  const outstanding = countOutstandingTrailers(data);
 
-  const notDischargedText = notDischargedTrailers.length > 0 ? notDischargedTrailers.map(normalizeTrailerNumber).join(", ") : "none";
-  const arrivedText = arrivedTrailers.length > 0 ? arrivedTrailers.map(normalizeTrailerNumber).join(", ") : "none";
+  const summary = expected > 0 && arrived === expected && outstanding === 0
+    ? `All ${expected} expected trailers arrived.`
+    : expected > 0
+      ? `Of the ${expected} expected trailers, ${arrived} arrived and ${outstanding} remain outstanding.`
+      : `${pluralize(arrived, "trailer")} arrived.`;
 
-  return [
-    `Arrivals were recorded for ${data.statistics.arrivedTrailers} trailers, including ${arrivedText}.`,
-    data.statistics.notDischargedTrailers > 0
-      ? `Trailers remaining not discharged are ${notDischargedText}.`
-      : "No trailers remain in a not-discharged state.",
-  ].join(" ");
+  if (notDischargedTrailers.length === 0) {
+    return `${summary} No trailers remain in a not-discharged state.`;
+  }
+
+  return `${summary} Not discharged trailers: ${summarizeTrailerList(notDischargedTrailers)}.`;
 };
 
 const buildInspectionSummary = (data: VesselOperationalReportData) => {
-  const trailerRegister = data.trailers.map(buildTrailerRegisterLine).join("\n");
-  return [
-    `Inspection progress is ${data.statistics.inspectedTrailers} inspected and ${data.statistics.pendingInspections} pending. Priority trailers recorded in the operation total ${data.statistics.priorityTrailers}.`,
-    `Trailer register:\n${trailerRegister}`,
-  ].join("\n\n");
+  const summary = `${pluralize(data.statistics.inspectedTrailers, "trailer")} inspected. ${pluralize(data.statistics.pendingInspections, "inspection")} pending. ${pluralize(data.statistics.priorityTrailers, "priority trailer")} flagged in planning.`;
+  return `${summary}\n\nTrailer Status Table\n${buildCompactTrailerTable(data)}`;
 };
 
 const buildDamageFindings = (data: VesselOperationalReportData) => {
   const damagedTrailers = data.trailers.filter((trailer) => trailer.hasDamage);
 
   if (damagedTrailers.length === 0) {
-    return "No damage was recorded for any trailer in this operation.";
+    return "No damage was recorded for this vessel operation.";
   }
 
-  return [
-    `Damage was recorded for ${damagedTrailers.length} trailer${damagedTrailers.length === 1 ? "" : "s"}: ${damagedTrailers.map((trailer) => normalizeTrailerNumber(trailer.trailerNumber)).join(", ")}.`,
-    ...damagedTrailers.map((trailer) => {
-      const parts = [
-        `Trailer ${normalizeTrailerNumber(trailer.trailerNumber)}`,
-        trailer.damageDetails?.category ? `type ${trailer.damageDetails.category}` : "type not stated",
-        trailer.damageDetails?.damageLocation ? `location ${trailer.damageDetails.damageLocation}` : "location not stated",
-        trailer.damageDetails?.severity ? `severity ${trailer.damageDetails.severity}` : "severity not stated",
-        trailer.damageDetails?.description ? `description ${trailer.damageDetails.description}` : "description not stated",
-        `photos ${formatPhotoCount(trailer.photos.length)}`,
-      ];
+  const trailerNumbers = damagedTrailers.map((trailer) => trailer.trailerNumber);
+  const summary = `Damage was recorded for ${pluralize(damagedTrailers.length, "trailer")}: ${summarizeTrailerList(trailerNumbers)}.`;
+  const rows = damagedTrailers.map((trailer) => {
+    const details = trailer.damageDetails;
+    return `| ${normalizeTrailerNumber(trailer.trailerNumber)} | ${details?.category ?? "Recorded"} | ${details?.damageLocation ?? "Recorded"} | ${details?.severity ?? "Recorded"} | ${(details?.description || "No description provided").replace(/\|/g, "\\|")} |`;
+  });
 
-      return `- ${parts.join(", ")}.`;
-    }),
+  return [
+    summary,
+    "",
+    "Damage Table",
+    "| Trailer | Type | Location | Severity | Description |",
+    "| --- | --- | --- | --- | --- |",
+    ...rows,
   ].join("\n");
 };
 
 const buildTemperatureFindings = (data: VesselOperationalReportData) => {
-  const alertTrailers = data.trailers.filter((trailer) => trailer.hasTemperatureAlert);
+  const temperatureRows = buildTemperatureRows(data);
+  const evaluatedRows = temperatureRows.filter((row) => row.hasExpected);
+  const alertRows = temperatureRows.filter((row) => row.hasExpected && row.outOfRange);
 
-  if (alertTrailers.length === 0) {
-    return "No temperature alerts were recorded for any trailer in this operation.";
+  if (evaluatedRows.length === 0) {
+    return "No expected temperature settings were recorded for this vessel operation.";
   }
 
+  const rows = temperatureRows.map((row) => {
+    return `| ${row.trailerNumber} | ${row.expectedFront} | ${row.measuredFront} | ${row.expectedRear} | ${row.measuredRear} | ${row.acceptedRange} | ${row.result} |`;
+  });
+
+  const summary = alertRows.length > 0
+    ? `${pluralize(alertRows.length, "temperature alert")} recorded where expected temperatures were defined.`
+    : "No temperature exceptions were recorded where expected temperatures were defined.";
+
   return [
-    `Temperature alerts were recorded for ${alertTrailers.length} trailer${alertTrailers.length === 1 ? "" : "s"}: ${alertTrailers.map((trailer) => normalizeTrailerNumber(trailer.trailerNumber)).join(", ")}.`,
-    ...alertTrailers.map((trailer) => `- Trailer ${normalizeTrailerNumber(trailer.trailerNumber)}: front ${formatTemperature(trailer.frontTemperature, trailer.temperatureUnit)}, rear ${formatTemperature(trailer.rearTemperature, trailer.temperatureUnit)}.`),
+    summary,
+    "",
+    "Temperature Table",
+    "| Trailer | Expected Front | Measured Front | Expected Rear | Measured Rear | Accepted Range | Result |",
+    "| --- | --- | --- | --- | --- | --- | --- |",
+    ...rows,
   ].join("\n");
 };
 
 const buildOutstandingItems = (data: VesselOperationalReportData) => {
-  const notDischargedTrailers = data.trailers.filter((trailer) => trailer.arrivalStatusRaw === "not_discharged").map((trailer) => normalizeTrailerNumber(trailer.trailerNumber));
-  const pendingInspections = data.trailers.filter((trailer) => trailer.arrivalStatusRaw === "arrived" && trailer.inspectionStatus !== "inspected").map((trailer) => normalizeTrailerNumber(trailer.trailerNumber));
-
   const items: string[] = [];
+  const notDischargedTrailers = data.trailers.filter((trailer) => trailer.arrivalStatusRaw === "not_discharged").map((trailer) => trailer.trailerNumber);
+  const pendingInspections = data.trailers.filter((trailer) => trailer.arrivalStatusRaw === "arrived" && trailer.inspectionStatus !== "inspected").map((trailer) => trailer.trailerNumber);
+  const waitingArrival = data.trailers.filter((trailer) => trailer.arrivalStatusRaw !== "arrived").map((trailer) => trailer.trailerNumber);
+
+  if (waitingArrival.length > 0) {
+    items.push(`${pluralize(waitingArrival.length, "trailer")} are still outstanding for arrival: ${summarizeTrailerList(waitingArrival)}.`);
+  }
 
   if (notDischargedTrailers.length > 0) {
-    items.push(`Not-discharged trailers remain: ${notDischargedTrailers.join(", ")}.`);
-  } else {
-    items.push("No trailers remain in a not-discharged state.");
+    items.push(`${pluralize(notDischargedTrailers.length, "trailer")} remain not discharged: ${summarizeTrailerList(notDischargedTrailers)}.`);
   }
 
   if (pendingInspections.length > 0) {
-    items.push(`Pending inspections remain for trailers: ${pendingInspections.join(", ")}.`);
-  } else {
-    items.push("No pending inspections remain.");
+    items.push(`${pluralize(pendingInspections.length, "inspection")} remain pending: ${summarizeTrailerList(pendingInspections)}.`);
   }
 
-  if (data.operation.notes?.trim()) {
-    items.push(`Operation notes were recorded: ${data.operation.notes.trim()}.`);
-  } else {
-    items.push("No additional operation notes were recorded.");
+  if (items.length === 0) {
+    return "All expected trailers have been accounted for and no inspection items remain outstanding.";
   }
 
   return items.join(" ");

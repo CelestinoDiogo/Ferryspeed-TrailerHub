@@ -177,6 +177,14 @@ const getAlertTone = (severity: AiAssistantAlert["severity"]) => {
     return "border-rose-500/30 bg-rose-500/10 text-rose-100";
   }
 
+  if (severity === "success") {
+    return "border-emerald-500/30 bg-emerald-500/10 text-emerald-100";
+  }
+
+  if (severity === "neutral") {
+    return "border-slate-500/30 bg-slate-500/10 text-slate-100";
+  }
+
   return "border-amber-500/30 bg-amber-500/10 text-amber-100";
 };
 
@@ -578,9 +586,9 @@ export default function AiAssistantPage() {
                             <p className="mt-2 text-xs text-slate-300">Queried at {formatTimestamp(item.response.queriedAt)}</p>
                           </div>
 
-                          {item.response.summary && item.response.summary.length > 0 ? (
+                          {(item.response.primaryMetrics ?? item.response.summary) && (item.response.primaryMetrics ?? item.response.summary)?.length ? (
                             <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-                              {item.response.summary.map((entry) => (
+                              {(item.response.primaryMetrics ?? item.response.summary ?? []).map((entry) => (
                                 <div key={`${item.id}-${entry.label}`} className="rounded-2xl border border-white/10 bg-slate-950/60 p-3">
                                   <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">{entry.label}</p>
                                   <p className="mt-1 text-base font-semibold text-white">{String(entry.value)}</p>

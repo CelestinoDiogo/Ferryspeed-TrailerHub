@@ -67,7 +67,7 @@ export type AiAssistantSection = {
 };
 
 export type AiAssistantAlert = {
-  severity: "warning" | "critical";
+  severity: "neutral" | "warning" | "critical" | "success";
   message: string;
 };
 
@@ -80,6 +80,7 @@ export type AiAssistantResponse = {
   answer: string;
   resultType: AiAssistantUiResultType;
   data: AiAssistantRecord[];
+  primaryMetrics?: AiAssistantSummaryItem[];
   summary?: AiAssistantSummaryItem[];
   sections?: AiAssistantSection[];
   alerts?: AiAssistantAlert[];
