@@ -112,6 +112,7 @@ export default function EditTrailerPage() {
   const [selectedTrailerId, setSelectedTrailerId] = useState("");
   const [requestedTrailerId, setRequestedTrailerId] = useState<string | null>(null);
   const [requestedAction, setRequestedAction] = useState<string | null>(null);
+  const [requestedPosition, setRequestedPosition] = useState<string | null>(null);
   const [formValues, setFormValues] = useState<TrailerFormValues>(initialFormValues);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
@@ -122,9 +123,11 @@ export default function EditTrailerPage() {
     const params = new URLSearchParams(window.location.search);
     const idFromQuery = params.get("id") || params.get("trailerId");
     const actionFromQuery = params.get("action");
+    const positionFromQuery = params.get("position");
 
     setRequestedTrailerId(idFromQuery);
     setRequestedAction(actionFromQuery);
+    setRequestedPosition(positionFromQuery);
   }, []);
 
   useEffect(() => {
@@ -177,6 +180,11 @@ export default function EditTrailerPage() {
             setFormValues((current) => ({ ...current, isLocal: false }));
             setNotice("Move to compound requested. Please assign or confirm a compound position and save.");
           }
+
+          const normalizedRequestedPosition = normalizeCompoundPosition(requestedPosition);
+          if (normalizedRequestedPosition) {
+            setFormValues((current) => ({ ...current, compoundPosition: normalizedRequestedPosition, isLocal: false }));
+          }
         } else {
           setSelectedTrailerId("");
           setFormValues(initialFormValues);
@@ -190,7 +198,7 @@ export default function EditTrailerPage() {
     };
 
     void loadTrailers();
-  }, [requestedAction, requestedTrailerId]);
+  }, [requestedAction, requestedPosition, requestedTrailerId]);
 
   const applyTrailerToForm = (trailerId: string) => {
     const trailer = trailers.find((item) => item.id === trailerId) ?? null;

@@ -1490,8 +1490,8 @@ async function queryOperationsSummaryToday(
   };
 }
 
-export async function runAiAssistantQuery(supabase: SupabaseClient<Database>, question: string) {
-  return runAiAssistantFoundationQuery(supabase, question);
+export async function runAiAssistantQuery(supabase: SupabaseClient<Database>, question: string, userId: string) {
+  return runAiAssistantFoundationQuery(supabase, question, userId);
 }
 
 export function getFallbackAiAssistantIntent(question: string): AiAssistantIntent {

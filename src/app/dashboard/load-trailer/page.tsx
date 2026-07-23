@@ -21,6 +21,9 @@ export default function LoadTrailerPage() {
   const router = useRouter();
   const [trailers, setTrailers] = useState<Trailer[]>([]);
   const [selectedId, setSelectedId] = useState("");
+  const [requestedTrailerId, setRequestedTrailerId] = useState<string | null>(null);
+  const [requestedTrailerNumber, setRequestedTrailerNumber] = useState<string | null>(null);
+  const [requestedLoadStatus, setRequestedLoadStatus] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [customer, setCustomer] = useState("");
   const [consignee, setConsignee] = useState("");
@@ -30,6 +33,13 @@ export default function LoadTrailerPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    setRequestedTrailerId(params.get("trailerId"));
+    setRequestedTrailerNumber(params.get("trailer"));
+    setRequestedLoadStatus(params.get("loadStatus"));
+  }, []);
 
   useEffect(() => {
     async function loadEmptyTrailers() {
@@ -65,13 +75,39 @@ export default function LoadTrailerPage() {
 
         const available = ((data ?? []) as Trailer[]).filter((item) => !blockedTrailerIds.has(item.id));
         setTrailers(available);
+
+        if (!selectedId && available.length > 0) {
+          const requestedById = requestedTrailerId
+            ? available.find((item) => item.id === requestedTrailerId)
+            : null;
+          const requestedByNumber = requestedTrailerNumber
+            ? available.find(
+                (item) => item.trailer_number?.trim().toUpperCase() === requestedTrailerNumber.trim().toUpperCase(),
+              )
+            : null;
+          const target = requestedById ?? requestedByNumber ?? available[0];
+          setSelectedId(target.id);
+          setSearch(target.trailer_number ?? "");
+        }
       }
 
       setLoading(false);
     }
 
     void loadEmptyTrailers();
-  }, []);
+  }, [requestedTrailerId, requestedTrailerNumber, selectedId]);
+
+  useEffect(() => {
+    if (!requestedLoadStatus) {
+      return;
+    }
+
+    if (requestedLoadStatus.trim().toLowerCase() !== "loaded") {
+      return;
+    }
+
+    setLoadDescription((current) => current || "Voice operation request");
+  }, [requestedLoadStatus]);
 
   const filteredTrailers = useMemo(() => {
     const term = search.trim().toLowerCase();

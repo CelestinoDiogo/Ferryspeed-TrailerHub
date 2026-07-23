@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { AiAssistantResponse } from "@/lib/ai-assistant-types";
 import { runAiAssistantQuery } from "@/lib/ai-assistant";
+import { bootstrapCurrentUserRole, RbacPermissionError, requireRbacPermission } from "@/lib/rbac/route";
 import {
   createAuthenticatedRouteSupabaseClient,
   getRouteBearerToken,
@@ -63,8 +64,11 @@ export async function POST(request: Request) {
       userId: user.id,
     });
 
+    await bootstrapCurrentUserRole(supabase, user);
+    await requireRbacPermission(supabase, user.id, "ai_assistant", "view");
+
     const payload = requestSchema.parse(await request.json().catch(() => ({})));
-    const response = await runAiAssistantQuery(supabase, payload.question);
+    const response = await runAiAssistantQuery(supabase, payload.question, user.id);
 
     const elapsedMs = Date.now() - startedAt;
     const questionHash = await hashQuestion(payload.question);
@@ -110,6 +114,10 @@ export async function POST(request: Request) {
         elapsedMs,
       });
 
+      return Response.json({ error: error.message }, { status: error.status });
+    }
+
+    if (error instanceof RbacPermissionError) {
       return Response.json({ error: error.message }, { status: error.status });
     }
 

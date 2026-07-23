@@ -4,7 +4,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import type { ReactNode } from "react";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { AlertTriangle, Anchor, ChevronRight, ClipboardList, Package, PlusCircle, ScanSearch, Ship, Truck, Wrench } from "lucide-react";
 import { PrintButton } from "@/components/print/print-button";
 import { PrintFilters } from "@/components/print/print-filters";
@@ -27,6 +27,7 @@ import {
   normalizeExportAllocationRecord,
   type ExportAllocationRecord,
 } from "@/lib/export-allocation";
+import { useOperationalRealtime } from "@/lib/realtime/operational-realtime";
 
 type DashboardStats = {
   totalTrailers: number;
@@ -224,8 +225,7 @@ export function TrailerDashboard() {
   const saved = searchParams.get("saved");
   const notice = saved === "1" ? "Operation saved successfully. Dashboard refreshed." : null;
 
-  useEffect(() => {
-    const loadStats = async () => {
+  const loadStats = useCallback(async () => {
       setIsLoading(true);
       setError(null);
 
@@ -625,10 +625,15 @@ export function TrailerDashboard() {
       } finally {
         setIsLoading(false);
       }
-    };
+    }, [saved]);
 
+  useEffect(() => {
     void loadStats();
-  }, [saved]);
+  }, [loadStats]);
+
+  useOperationalRealtime(["dashboard"], () => {
+    void loadStats();
+  }, { debounceMs: 900 });
 
   useEffect(() => {
     const handleStorage = (event: StorageEvent) => {

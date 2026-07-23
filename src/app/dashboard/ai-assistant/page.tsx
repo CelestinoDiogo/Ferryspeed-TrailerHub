@@ -1,8 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { Bot, Loader2, Sparkles, Send, Trash2, ArrowRight, Clock3, Search } from "lucide-react";
+import { useOperationalRealtime } from "@/lib/realtime/operational-realtime";
 import { supabase } from "@/lib/supabase";
 import type { AiAssistantResponse, AiAssistantAlert } from "@/lib/ai-assistant-types";
 
@@ -19,23 +20,22 @@ type FollowUpContext = {
   lastTrailerNumber: string | null;
   lastCustomer: string | null;
   lastStatus: string | null;
+  lastFilters: string[];
 };
 
 const exampleQuestions = [
-  "Where is trailer PFF1216?",
-  "Show its history.",
-  "How many empty trailers are available?",
-  "Which trailers are waiting for compound?",
-  "How many trailers arrived today?",
-  "Show me the list.",
-  "How many trailers departed today?",
-  "Give me today's operational summary.",
-  "How is the operation today?",
-  "What needs attention today?",
-  "What vessel operations are scheduled today?",
-  "Show export trailers waiting for collection.",
-  "Which trailers have damage alerts?",
-  "Which trailers have temperature alerts?",
+  "Where is PRO810?",
+  "What status is PRO810?",
+  "Is PRO810 empty or loaded?",
+  "Show trailers for customer ABC.",
+  "What is currently in P12?",
+  "Allocated trailers still in compound.",
+  "Trailers waiting collection overdue.",
+  "Arrivals pending inspection.",
+  "Temperature alerts.",
+  "Damage alerts.",
+  "Open discrepancies from latest stock check.",
+  "Give me today's operations summary.",
 ];
 
 const formatTimestamp = (value: string) => {
@@ -62,23 +62,17 @@ const inferIntentFromQuestion = (question: string) => {
   const normalized = normalizeText(question);
 
   if (/show\s+its\s+history|trailer history/.test(normalized)) return "trailer_history";
-  if (/where\s+is\s+trailer|where is/.test(normalized)) return "find_trailer";
-  if (/latest inspection/.test(normalized)) return "latest_inspection";
-  if (/how many.*arriv|count.*arriv/.test(normalized)) return "count_arrivals_today";
-  if (/how many.*depart|count.*depart/.test(normalized)) return "count_departures_today";
-  if (/arrived today|what arrived today|list.*arriv/.test(normalized)) return "arrivals_today";
-  if (/departed today|what departed today|list.*depart/.test(normalized)) return "departures_today";
-  if (/operational summary|daily summary|how is the operation today|situation today|operational overview|needs attention today/.test(normalized)) return "operations_summary_today";
-  if (/vessel operations/.test(normalized)) return "vessel_operations_today";
-  if (/waiting for compound/.test(normalized)) return "list_waiting_compound";
-  if (/empty trailers/.test(normalized)) return normalized.includes("how many") ? "count_empty" : "list_empty";
-  if (/loaded trailers/.test(normalized)) return normalized.includes("how many") ? "count_loaded" : "list_loaded";
-  if (/compound/.test(normalized) && /how many|count/.test(normalized)) return "count_compound";
-  if (/compound/.test(normalized)) return "list_compound";
-  if (/export/.test(normalized)) return "export_by_status";
-  if (/damage/.test(normalized)) return "trailers_with_damage";
-  if (/temperature/.test(normalized)) return "trailers_with_temperature_alert";
+  if (/where\s+is\s+trailer|where is/.test(normalized)) return "trailer_location";
+  if (/status\s+is|full\s+status|empty\s+or\s+loaded|is\s+it\s+loaded/.test(normalized)) return "trailer_full_status";
+  if (/operations summary|daily summary|what happened today/.test(normalized)) return "daily_operations_summary";
+  if (/allocated.*still.*compound/.test(normalized)) return "allocated_still_in_compound";
+  if (/waiting\s+collection.*overdue|overdue.*waiting\s+collection/.test(normalized)) return "waiting_collection_overdue";
+  if (/pending inspection/.test(normalized)) return "arrivals_pending_inspection";
+  if (/damage/.test(normalized)) return "damage_alerts";
+  if (/temperature/.test(normalized)) return "temperature_alerts";
+  if (/discrepanc/.test(normalized)) return "open_discrepancies";
   if (/customer/.test(normalized)) return "trailers_by_customer";
+  if (/\bin\s+p\d{1,2}\b/.test(normalized)) return "trailer_at_position";
   return "unknown";
 };
 
@@ -134,6 +128,18 @@ const resolveFollowUpQuestion = (raw: string, context: FollowUpContext) => {
 
   if ((normalized === "show its history." || normalized === "show its history") && context.lastTrailerNumber) {
     return `Show history for trailer ${context.lastTrailerNumber}.`;
+  }
+
+  if ((normalized === "is it loaded?" || normalized === "is it loaded" || normalized === "what status is it?" || normalized === "what status is it") && context.lastTrailerNumber) {
+    return `What status is ${context.lastTrailerNumber}?`;
+  }
+
+  if ((normalized === "where is it?" || normalized === "where is it") && context.lastTrailerNumber) {
+    return `Where is ${context.lastTrailerNumber}?`;
+  }
+
+  if ((normalized === "show customer trailers." || normalized === "show customer trailers") && context.lastCustomer) {
+    return `Show trailers for customer ${context.lastCustomer}.`;
   }
 
   return raw;
@@ -233,15 +239,42 @@ export default function AiAssistantPage() {
   const [question, setQuestion] = useState("");
   const [conversation, setConversation] = useState<ConversationItem[]>([]);
   const [isSending, setIsSending] = useState(false);
+  const [isLiveRefreshing, setIsLiveRefreshing] = useState(false);
+  const [lastLiveRefreshAt, setLastLiveRefreshAt] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [followUpContext, setFollowUpContext] = useState<FollowUpContext>({
     lastIntent: null,
     lastTrailerNumber: null,
     lastCustomer: null,
     lastStatus: null,
+    lastFilters: [],
   });
 
   const hasConversation = conversation.length > 0;
+
+  const requestAssistantQuery = useCallback(async (effectiveQuestion: string) => {
+    const token = await getSessionToken();
+    const response = await fetch("/api/ai-assistant", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ question: effectiveQuestion }),
+    });
+
+    const payload = (await response.json()) as AiAssistantResponse & { error?: string };
+
+    if (response.status === 401) {
+      throw new Error(SESSION_EXPIRED_MESSAGE);
+    }
+
+    if (!response.ok) {
+      throw new Error(payload.error ?? "Unable to answer that question right now.");
+    }
+
+    return payload;
+  }, []);
 
   const sendQuestion = async (value: string) => {
     const trimmed = value.trim();
@@ -272,25 +305,7 @@ export default function AiAssistantPage() {
     ]);
 
     try {
-      const token = await getSessionToken();
-      const response = await fetch("/api/ai-assistant", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ question: effectiveQuestion }),
-      });
-
-      const payload = (await response.json()) as AiAssistantResponse & { error?: string };
-
-      if (response.status === 401) {
-        throw new Error(SESSION_EXPIRED_MESSAGE);
-      }
-
-      if (!response.ok) {
-        throw new Error(payload.error ?? "Unable to answer that question right now.");
-      }
+      const payload = await requestAssistantQuery(effectiveQuestion);
 
       setConversation((current) =>
         current.map((item) => (item.id === entryId ? { ...item, response: payload, error: null } : item)),
@@ -301,6 +316,10 @@ export default function AiAssistantPage() {
         lastTrailerNumber: extractFirstTrailerNumber(payload) ?? current.lastTrailerNumber,
         lastCustomer: extractFirstCustomer(payload) ?? current.lastCustomer,
         lastStatus: extractStatusFromQuestion(effectiveQuestion) ?? current.lastStatus,
+        lastFilters: [
+          inferIntentFromQuestion(effectiveQuestion),
+          extractStatusFromQuestion(effectiveQuestion) ?? "",
+        ].filter((value) => value.length > 0),
       }));
     } catch (requestError) {
       const rawMessage = requestError instanceof Error ? requestError.message : "Unable to answer that question right now.";
@@ -313,6 +332,38 @@ export default function AiAssistantPage() {
       setIsSending(false);
     }
   };
+
+  const refreshLastAnsweredQuestion = useCallback(async () => {
+    if (isSending || isLiveRefreshing) {
+      return;
+    }
+
+    const latestAnswered = [...conversation].reverse().find((item) => item.response && !item.error);
+    if (!latestAnswered) {
+      return;
+    }
+
+    setIsLiveRefreshing(true);
+    try {
+      const payload = await requestAssistantQuery(latestAnswered.question);
+      setConversation((current) =>
+        current.map((item) =>
+          item.id === latestAnswered.id
+            ? { ...item, response: payload, error: null, createdAt: new Date().toISOString() }
+            : item,
+        ),
+      );
+      setLastLiveRefreshAt(new Date().toISOString());
+    } catch {
+      // Silent refresh errors should not break active user flow.
+    } finally {
+      setIsLiveRefreshing(false);
+    }
+  }, [conversation, isLiveRefreshing, isSending, requestAssistantQuery]);
+
+  useOperationalRealtime(["ai"], () => {
+    void refreshLastAnsweredQuestion();
+  }, { enabled: hasConversation, debounceMs: 1200 });
 
   const clearConversation = () => {
     setConversation([]);
@@ -460,6 +511,13 @@ export default function AiAssistantPage() {
               <Bot className="h-4 w-4" />
               Read-only assistant
             </div>
+
+            {hasConversation ? (
+              <div className="flex items-center gap-2 rounded-2xl border border-emerald-400/20 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-100">
+                {isLiveRefreshing ? "Refreshing from live data..." : "Live data active"}
+                {lastLiveRefreshAt ? ` · ${formatTimestamp(lastLiveRefreshAt)}` : ""}
+              </div>
+            ) : null}
           </div>
         </header>
 

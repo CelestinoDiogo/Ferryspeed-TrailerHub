@@ -10,6 +10,6 @@ export const formatAssistantResponse = (result: AssistantQueryResult): AiAssista
     summary: result.summary,
     links: result.links ?? [],
     queriedAt: new Date().toISOString(),
-    truncated: false,
+    truncated: result.truncated ?? false,
   };
 };

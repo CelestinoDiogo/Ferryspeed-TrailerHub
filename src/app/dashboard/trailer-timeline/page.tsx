@@ -5,6 +5,7 @@ import { RotateCw } from "lucide-react";
 import { AppCard } from "@/components/layout/app-card";
 import { PageHeader } from "@/components/layout/page-header";
 import { TrailerAuditLogTable } from "@/components/trailers/trailer-audit-log-table";
+import { useOperationalRealtime } from "@/lib/realtime/operational-realtime";
 import type { TrailerAuditRow, TrailerAuditTimeFilter } from "@/lib/trailer-audit-log";
 import { loadTrailerAuditLog } from "@/lib/trailer-audit-log";
 
@@ -52,6 +53,10 @@ export default function TrailerTimelineDashboardPage() {
   useEffect(() => {
     void loadRows(false);
   }, [loadRows]);
+
+  useOperationalRealtime(["timeline"], () => {
+    void loadRows(true);
+  }, { debounceMs: 500 });
 
   const sortedRows = useMemo(
     () =>

@@ -26,10 +26,18 @@ export default function DeparturePage() {
   const router = useRouter();
   const [trailers, setTrailers] = useState<TrailerRecord[]>([]);
   const [selectedTrailerId, setSelectedTrailerId] = useState<string | null>(null);
+  const [requestedTrailerId, setRequestedTrailerId] = useState<string | null>(null);
+  const [requestedTrailerNumber, setRequestedTrailerNumber] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    setRequestedTrailerId(params.get("trailerId"));
+    setRequestedTrailerNumber(params.get("trailer"));
+  }, []);
 
   useEffect(() => {
     const loadActiveTrailers = async () => {
@@ -47,7 +55,22 @@ export default function DeparturePage() {
           throw supabaseError;
         }
 
-        setTrailers((data ?? []) as TrailerRecord[]);
+        const loaded = (data ?? []) as TrailerRecord[];
+        setTrailers(loaded);
+
+        if (!selectedTrailerId && loaded.length > 0) {
+          const targetById = requestedTrailerId ? loaded.find((row) => row.id === requestedTrailerId) : null;
+          const targetByNumber = requestedTrailerNumber
+            ? loaded.find(
+                (row) => row.trailer_number?.trim().toUpperCase() === requestedTrailerNumber.trim().toUpperCase(),
+              )
+            : null;
+          const target = targetById ?? targetByNumber;
+          if (target) {
+            setSelectedTrailerId(target.id);
+            setSearch(target.trailer_number ?? "");
+          }
+        }
       } catch (err) {
         const message = err instanceof Error ? err.message : "Unable to load active trailers.";
         setError(message);
@@ -57,7 +80,7 @@ export default function DeparturePage() {
     };
 
     void loadActiveTrailers();
-  }, []);
+  }, [requestedTrailerId, requestedTrailerNumber, selectedTrailerId]);
 
   const filteredTrailers = useMemo(() => {
     const term = search.trim().toLowerCase();

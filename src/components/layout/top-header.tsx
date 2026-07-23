@@ -1,9 +1,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Bell, CalendarDays, Clock3, Menu, Search, Settings, UserCircle2 } from "lucide-react";
+import { CalendarDays, Clock3, Menu, Search, Settings, UserCircle2 } from "lucide-react";
 import { OperationsToolsButton } from "@/components/layout/operations-tools-button";
 import { OperationsToolsDrawer } from "@/components/layout/operations-tools-drawer";
+import { RealtimeOperationsCenter } from "@/components/layout/realtime-operations-center";
 import { toRoleLabel } from "@/lib/auth/roles";
 import { useCurrentUser } from "@/lib/auth/use-current-user";
 
@@ -33,7 +34,7 @@ export function TopHeader({ title, subtitle: _subtitle, onMenuClick }: TopHeader
   const [dateText, setDateText] = useState("--");
   const [timeText, setTimeText] = useState("--:--:--");
   const [toolsOpen, setToolsOpen] = useState(false);
-  const { fullName, email, roleKey, isActive } = useCurrentUser();
+  const { userId, fullName, email, roleKey, isActive } = useCurrentUser();
   const [titleLeft, ...titleRest] = title.split(" ");
   const titleRight = titleRest.join(" ");
 
@@ -87,9 +88,12 @@ export function TopHeader({ title, subtitle: _subtitle, onMenuClick }: TopHeader
           <button className="inline-flex h-11 w-11 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-700 shadow-sm transition hover:bg-slate-50" aria-label="Search">
             <Search className="h-5 w-5" />
           </button>
-          <button className="inline-flex h-11 w-11 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-700 shadow-sm transition hover:bg-slate-50" aria-label="Notifications">
-            <Bell className="h-5 w-5" />
-          </button>
+          <RealtimeOperationsCenter
+            roleKey={roleKey}
+            userId={userId}
+            userName={userName}
+            roleLabel={userRole}
+          />
           <button className="inline-flex h-11 w-11 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-700 shadow-sm transition hover:bg-slate-50" aria-label="Settings">
             <Settings className="h-5 w-5" />
           </button>

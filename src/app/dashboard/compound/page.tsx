@@ -1,7 +1,7 @@
 ﻿"use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { PrintButton } from "@/components/print/print-button";
 import { PrintFilters } from "@/components/print/print-filters";
 import { PrintFooter } from "@/components/print/print-footer";
@@ -21,6 +21,7 @@ import {
   buildActiveExportStatusByTrailerId,
   isTrailerEligibleForCompoundViews,
 } from "@/lib/export-allocation";
+import { useOperationalRealtime } from "@/lib/realtime/operational-realtime";
 
 // ============================================================================
 // Types
@@ -205,8 +206,7 @@ export default function CompoundPage() {
   const [error, setError] = useState<string | null>(null);
 
   // Load trailers and bookings in parallel ÔÇö single round trip
-  useEffect(() => {
-    const loadData = async () => {
+  const loadData = useCallback(async () => {
       setIsLoading(true);
       setError(null);
 
@@ -267,10 +267,15 @@ export default function CompoundPage() {
       } finally {
         setIsLoading(false);
       }
-    };
+    }, []);
 
+  useEffect(() => {
     void loadData();
-  }, []);
+  }, [loadData]);
+
+  useOperationalRealtime(["compound"], () => {
+    void loadData();
+  }, { debounceMs: 800 });
 
   // Build enriched position states ÔÇö no additional queries
   const allPositionStates = useMemo((): PositionState[] => {

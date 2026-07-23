@@ -19,6 +19,7 @@ const looksLikeSql = (question: string) => sqlPattern.test(question);
 export async function runAiAssistantFoundationQuery(
   supabase: SupabaseClient<Database>,
   question: string,
+  userId: string,
 ): Promise<AiAssistantResponse> {
   const parsed = promptRequestSchema.parse({ question });
   const normalizedQuestion = parsed.question.trim();
@@ -37,6 +38,6 @@ export async function runAiAssistantFoundationQuery(
   }
 
   const intent = detectIntent(normalizedQuestion);
-  const result = await runIntentQuery({ supabase, question: normalizedQuestion }, intent);
+  const result = await runIntentQuery({ supabase, question: normalizedQuestion, userId }, intent);
   return formatAssistantResponse(result);
 }
