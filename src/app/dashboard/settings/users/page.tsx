@@ -1,7 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { PermissionGuard } from "@/components/auth/permission-guard";
 import { SettingsNav } from "@/components/settings/settings-nav";
+import { useCurrentUser } from "@/lib/auth/use-current-user";
 import { fetchRbacJson } from "@/lib/rbac/client-fetch";
 import { roleKeys, type RoleKey } from "@/lib/rbac/constants";
 import type { Database } from "@/lib/database.types";
@@ -24,6 +26,7 @@ const roleLabels: Record<RoleKey, string> = {
 };
 
 export default function SettingsUsersPage() {
+  const { roleKey: currentRoleKey } = useCurrentUser();
   const [users, setUsers] = useState<UserRoleRow[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -89,7 +92,8 @@ export default function SettingsUsersPage() {
   };
 
   return (
-    <div className="space-y-6">
+    <PermissionGuard roleKey={currentRoleKey} moduleKey="user_management" action="view">
+      <div className="space-y-6">
       <header className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
         <p className="text-xs font-semibold uppercase tracking-[0.25em] text-cyan-700">Settings</p>
         <h1 className="mt-2 text-3xl font-semibold text-slate-900">Users</h1>
@@ -111,16 +115,17 @@ export default function SettingsUsersPage() {
                 <th className="px-4 py-3 text-left font-semibold text-slate-700">Email</th>
                 <th className="px-4 py-3 text-left font-semibold text-slate-700">Role</th>
                 <th className="px-4 py-3 text-left font-semibold text-slate-700">Active</th>
+                <th className="px-4 py-3 text-left font-semibold text-slate-700">Last sign-in</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
               {isLoading ? (
                 <tr>
-                  <td colSpan={4} className="px-4 py-8 text-center text-slate-500">Loading users...</td>
+                  <td colSpan={5} className="px-4 py-8 text-center text-slate-500">Loading users...</td>
                 </tr>
               ) : users.length === 0 ? (
                 <tr>
-                  <td colSpan={4} className="px-4 py-8 text-center text-slate-500">No users assigned yet.</td>
+                  <td colSpan={5} className="px-4 py-8 text-center text-slate-500">No users assigned yet.</td>
                 </tr>
               ) : (
                 users.map((row) => (
@@ -160,6 +165,7 @@ export default function SettingsUsersPage() {
                         {row.is_active ? "Active" : "Inactive"}
                       </button>
                     </td>
+                    <td className="px-4 py-3 text-slate-500">-</td>
                   </tr>
                 ))
               )}
@@ -167,6 +173,7 @@ export default function SettingsUsersPage() {
           </table>
         </div>
       </section>
-    </div>
+      </div>
+    </PermissionGuard>
   );
 }

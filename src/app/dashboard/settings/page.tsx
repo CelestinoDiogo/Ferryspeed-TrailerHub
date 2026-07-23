@@ -1,5 +1,9 @@
+"use client";
+
 import Link from "next/link";
+import { PermissionGuard } from "@/components/auth/permission-guard";
 import { SettingsNav } from "@/components/settings/settings-nav";
+import { useCurrentUser } from "@/lib/auth/use-current-user";
 
 const cards = [
   {
@@ -20,8 +24,11 @@ const cards = [
 ] as const;
 
 export default function SettingsPage() {
+  const { roleKey } = useCurrentUser();
+
   return (
-    <div className="space-y-6">
+    <PermissionGuard roleKey={roleKey} moduleKey="settings" action="view">
+      <div className="space-y-6">
       <header className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
         <p className="text-xs font-semibold uppercase tracking-[0.25em] text-cyan-700">Settings</p>
         <h1 className="mt-2 text-3xl font-semibold text-slate-900">User Management, Roles & Permissions</h1>
@@ -42,6 +49,7 @@ export default function SettingsPage() {
           </Link>
         ))}
       </section>
-    </div>
+      </div>
+    </PermissionGuard>
   );
 }

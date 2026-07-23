@@ -2,6 +2,8 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { canAccessModule, canPerformAction } from "@/lib/auth/permissions";
+import { useCurrentUser } from "@/lib/auth/use-current-user";
 
 const items = [
   { label: "Users", href: "/dashboard/settings/users" },
@@ -11,10 +13,23 @@ const items = [
 
 export function SettingsNav() {
   const pathname = usePathname();
+  const { roleKey } = useCurrentUser();
+
+  const visibleItems = items.filter((item) => {
+    if (!roleKey) {
+      return true;
+    }
+
+    if (item.href === "/dashboard/settings/users") {
+      return canPerformAction(roleKey, "user_management", "view");
+    }
+
+    return canAccessModule(roleKey, "settings");
+  });
 
   return (
     <nav className="flex flex-wrap gap-2">
-      {items.map((item) => {
+      {visibleItems.map((item) => {
         const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
         return (
           <Link

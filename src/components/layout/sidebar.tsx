@@ -28,6 +28,8 @@ import {
 import { isNavItemActive } from "@/components/layout/navigation";
 import { SidebarItem } from "@/components/layout/sidebar-item";
 import { SidebarSection } from "@/components/layout/sidebar-section";
+import { canAccessModule, type PermissionModuleKey } from "@/lib/auth/permissions";
+import { useCurrentUser } from "@/lib/auth/use-current-user";
 import { supabase } from "@/lib/supabase";
 
 type SidebarProps = {
@@ -39,6 +41,7 @@ type MenuItem = {
   label: string;
   href: string;
   icon: ComponentType<{ className?: string }>;
+  moduleKey: PermissionModuleKey;
 };
 
 type MenuGroup = {
@@ -50,52 +53,53 @@ const dashboardItem: MenuItem = {
   label: "Dashboard",
   href: "/dashboard",
   icon: LayoutDashboard,
+  moduleKey: "dashboard",
 };
 
 const groupedItems: MenuGroup[] = [
   {
     title: "OPERATIONS",
     items: [
-      { label: "Vessel Operations", href: "/dashboard/vessel-operations", icon: Ship },
-      { label: "Arrivals", href: "/dashboard/search?filter=arrivals_today", icon: MapPin },
-      { label: "Export Operations", href: "/dashboard/export-operations", icon: Upload },
-      { label: "Deliveries", href: "/dashboard/deliveries", icon: Truck },
-      { label: "Collections", href: "/dashboard/deliveries?filter=waiting", icon: ClipboardList },
-      { label: "Departures", href: "/dashboard/departure", icon: LogOut },
+      { label: "Vessel Operations", href: "/dashboard/vessel-operations", icon: Ship, moduleKey: "vessel_operations" },
+      { label: "Arrivals", href: "/dashboard/search?filter=arrivals_today", icon: MapPin, moduleKey: "arrivals" },
+      { label: "Export Operations", href: "/dashboard/export-operations", icon: Upload, moduleKey: "export_operations" },
+      { label: "Deliveries", href: "/dashboard/deliveries", icon: Truck, moduleKey: "arrivals" },
+      { label: "Collections", href: "/dashboard/deliveries?filter=waiting", icon: ClipboardList, moduleKey: "arrivals" },
+      { label: "Departures", href: "/dashboard/departure", icon: LogOut, moduleKey: "departures" },
     ],
   },
   {
     title: "YARD",
     items: [
-      { label: "Compound", href: "/dashboard/compound", icon: Warehouse },
-      { label: "Stock Check", href: "/dashboard/compound/stock-check", icon: ClipboardList },
-      { label: "Review Discrepancies", href: "/dashboard/compound/review-discrepancies", icon: ScanSearch },
-      { label: "Waiting for Compound", href: "/dashboard/compound/waiting", icon: ClipboardList },
-      { label: "Local Trailers", href: "/dashboard/local-trailers", icon: Truck },
-      { label: "Trailer Search", href: "/dashboard/search", icon: ScanSearch },
-      { label: "Maintenance", href: "/dashboard/maintenance", icon: LifeBuoy },
+      { label: "Compound", href: "/dashboard/compound", icon: Warehouse, moduleKey: "compound" },
+      { label: "Stock Check", href: "/dashboard/compound/stock-check", icon: ClipboardList, moduleKey: "stock_check" },
+      { label: "Review Discrepancies", href: "/dashboard/compound/review-discrepancies", icon: ScanSearch, moduleKey: "reconciliation" },
+      { label: "Waiting for Compound", href: "/dashboard/compound/waiting", icon: ClipboardList, moduleKey: "compound" },
+      { label: "Local Trailers", href: "/dashboard/local-trailers", icon: Truck, moduleKey: "compound" },
+      { label: "Trailer Search", href: "/dashboard/search", icon: ScanSearch, moduleKey: "arrivals" },
+      { label: "Maintenance", href: "/dashboard/maintenance", icon: LifeBuoy, moduleKey: "compound" },
     ],
   },
   {
     title: "INTELLIGENCE & REPORTS",
     items: [
-      { label: "Operations Summary", href: "/dashboard/operations", icon: FileBarChart2 },
-      { label: "Trailer Timeline", href: "/dashboard/trailer-timeline", icon: ClipboardList },
-      { label: "AI Assistant", href: "/dashboard/ai-assistant", icon: Bot },
-      { label: "AI Reports", href: "/dashboard/vessel-operations?report=ai", icon: FileText },
-      { label: "Print Reports", href: "/dashboard/vessel-operations?report=print", icon: Printer },
+      { label: "Operations Summary", href: "/dashboard/operations", icon: FileBarChart2, moduleKey: "reports" },
+      { label: "Trailer Timeline", href: "/dashboard/trailer-timeline", icon: ClipboardList, moduleKey: "timeline" },
+      { label: "AI Assistant", href: "/dashboard/ai-assistant", icon: Bot, moduleKey: "ai_assistant" },
+      { label: "AI Reports", href: "/dashboard/vessel-operations?report=ai", icon: FileText, moduleKey: "reports" },
+      { label: "Print Reports", href: "/dashboard/vessel-operations?report=print", icon: Printer, moduleKey: "reports" },
     ],
   },
   {
     title: "ADMINISTRATION",
     items: [
-      { label: "Manual Arrival", href: "/dashboard/new-arrival", icon: BarChart3 },
-      { label: "Trailer Fleet", href: "/dashboard/company-trailers", icon: Container },
-      { label: "Settings", href: "/dashboard/settings", icon: Settings },
-      { label: "Users", href: "/dashboard/settings/users", icon: Settings },
-      { label: "Roles", href: "/dashboard/settings/roles", icon: Settings },
-      { label: "Permissions", href: "/dashboard/settings/permissions", icon: Settings },
-      { label: "Operations Centre", href: "/dashboard/operations-centre", icon: Settings },
+      { label: "Manual Arrival", href: "/dashboard/new-arrival", icon: BarChart3, moduleKey: "arrivals" },
+      { label: "Trailer Fleet", href: "/dashboard/company-trailers", icon: Container, moduleKey: "compound" },
+      { label: "Settings", href: "/dashboard/settings", icon: Settings, moduleKey: "settings" },
+      { label: "Users", href: "/dashboard/settings/users", icon: Settings, moduleKey: "user_management" },
+      { label: "Roles", href: "/dashboard/settings/roles", icon: Settings, moduleKey: "settings" },
+      { label: "Permissions", href: "/dashboard/settings/permissions", icon: Settings, moduleKey: "settings" },
+      { label: "Operations Centre", href: "/dashboard/operations-centre", icon: Settings, moduleKey: "settings" },
     ],
   },
 ];
@@ -104,6 +108,7 @@ export function Sidebar({ onNavigate, mobile = false }: SidebarProps) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const { roleKey } = useCurrentUser();
   const [isSigningOut, setIsSigningOut] = useState(false);
 
   const handleSignOut = async () => {
@@ -129,6 +134,15 @@ export function Sidebar({ onNavigate, mobile = false }: SidebarProps) {
     return true;
   };
 
+  const filteredGroups = groupedItems
+    .map((group) => ({
+      ...group,
+      items: group.items.filter((item) => (roleKey ? canAccessModule(roleKey, item.moduleKey) : true)),
+    }))
+    .filter((group) => group.items.length > 0);
+
+  const canSeeDashboardItem = roleKey ? canAccessModule(roleKey, dashboardItem.moduleKey) : true;
+
   return (
     <aside
       className={
@@ -153,15 +167,17 @@ export function Sidebar({ onNavigate, mobile = false }: SidebarProps) {
         </Link>
 
         <nav className="flex-1 space-y-4 overflow-y-auto pr-1">
-          <SidebarItem
-            label={dashboardItem.label}
-            href={dashboardItem.href}
-            icon={dashboardItem.icon}
-            active={isItemActive(dashboardItem.href)}
-            onNavigate={onNavigate}
-          />
+          {canSeeDashboardItem ? (
+            <SidebarItem
+              label={dashboardItem.label}
+              href={dashboardItem.href}
+              icon={dashboardItem.icon}
+              active={isItemActive(dashboardItem.href)}
+              onNavigate={onNavigate}
+            />
+          ) : null}
 
-          {groupedItems.map((group) => (
+          {filteredGroups.map((group) => (
             <SidebarSection key={group.title} title={group.title}>
               {group.items.map((item) => {
                 const active = isItemActive(item.href);

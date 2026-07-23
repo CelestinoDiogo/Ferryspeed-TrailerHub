@@ -1,7 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { PermissionGuard } from "@/components/auth/permission-guard";
 import { SettingsNav } from "@/components/settings/settings-nav";
+import { useCurrentUser } from "@/lib/auth/use-current-user";
 import { fetchRbacJson } from "@/lib/rbac/client-fetch";
 import type { Database } from "@/lib/database.types";
 
@@ -16,6 +18,7 @@ type RolePatchResponse = {
 };
 
 export default function SettingsRolesPage() {
+  const { roleKey } = useCurrentUser();
   const [roles, setRoles] = useState<RoleRow[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -65,7 +68,8 @@ export default function SettingsRolesPage() {
   };
 
   return (
-    <div className="space-y-6">
+    <PermissionGuard roleKey={roleKey} moduleKey="settings" action="view">
+      <div className="space-y-6">
       <header className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
         <p className="text-xs font-semibold uppercase tracking-[0.25em] text-cyan-700">Settings</p>
         <h1 className="mt-2 text-3xl font-semibold text-slate-900">Roles</h1>
@@ -120,6 +124,7 @@ export default function SettingsRolesPage() {
           ))
         )}
       </section>
-    </div>
+      </div>
+    </PermissionGuard>
   );
 }

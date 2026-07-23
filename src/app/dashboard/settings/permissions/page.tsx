@@ -1,7 +1,9 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { PermissionGuard } from "@/components/auth/permission-guard";
 import { SettingsNav } from "@/components/settings/settings-nav";
+import { useCurrentUser } from "@/lib/auth/use-current-user";
 import { fetchRbacJson } from "@/lib/rbac/client-fetch";
 import type { PermissionMatrixItem } from "@/lib/rbac/types";
 
@@ -30,6 +32,7 @@ const actionKeys = [
 ] as const;
 
 export default function SettingsPermissionsPage() {
+  const { roleKey } = useCurrentUser();
   const [rows, setRows] = useState<PermissionMatrixItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -120,7 +123,8 @@ export default function SettingsPermissionsPage() {
   };
 
   return (
-    <div className="space-y-6">
+    <PermissionGuard roleKey={roleKey} moduleKey="settings" action="view">
+      <div className="space-y-6">
       <header className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
         <p className="text-xs font-semibold uppercase tracking-[0.25em] text-cyan-700">Settings</p>
         <h1 className="mt-2 text-3xl font-semibold text-slate-900">Permissions</h1>
@@ -189,6 +193,7 @@ export default function SettingsPermissionsPage() {
           </section>
         ))
       )}
-    </div>
+      </div>
+    </PermissionGuard>
   );
 }

@@ -40,7 +40,7 @@ export async function PUT(request: Request) {
     const user = await requireAuthenticatedRouteUser(supabase, accessToken);
 
     await bootstrapCurrentUserRole(supabase, user);
-    await requireRbacPermission(supabase, user.id, "settings", "edit");
+    await requireRbacPermission(supabase, user.id, "settings", "manage_settings");
 
     const payload = updatePermissionSchema.parse(await request.json().catch(() => ({})));
     const updated = await updatePermission(supabase, payload);

@@ -84,6 +84,22 @@ export type Database = {
         Update: Partial<Database["public"]["Tables"]["app_user_roles"]["Row"]>;
         Relationships: [];
       };
+      app_user_role_audit_log: {
+        Row: {
+          id: string;
+          user_id: string;
+          previous_role_key: string;
+          new_role_key: string;
+          previous_is_active: boolean;
+          new_is_active: boolean;
+          changed_by: string;
+          changed_at: string;
+          created_at: string;
+        };
+        Insert: Partial<Database["public"]["Tables"]["app_user_role_audit_log"]["Row"]>;
+        Update: Partial<Database["public"]["Tables"]["app_user_role_audit_log"]["Row"]>;
+        Relationships: [];
+      };
       company_trailers: {
         Row: {
           id: string;
