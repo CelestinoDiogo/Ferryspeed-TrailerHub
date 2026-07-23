@@ -14,6 +14,7 @@ import { PrintSummary } from "@/components/print/print-summary";
 import { PrintTable } from "@/components/print/print-table";
 import type { Database } from "@/lib/database.types";
 import { supabase } from "@/lib/supabase";
+import { createTrailerActivity } from "@/lib/trailer-activity";
 import { getLocalDateKey } from "@/lib/operational-readiness";
 import {
   createHistoryDateRange,
@@ -641,10 +642,13 @@ function ExportOperationsPageContent() {
     oldStatus: ExportAllocationStatus,
     newStatus: ExportAllocationStatus,
     movementMetadata?: Record<string, unknown>,
+    options?: { skipLegacyEvent?: boolean },
   ) => {
     const customer = allocation.customer?.trim() ? allocation.customer.trim() : "customer";
     let eventType = "export_allocation_status_changed";
     let eventDescription = `Export allocation status changed from ${getExportAllocationStatusLabel(oldStatus)} to ${getExportAllocationStatusLabel(newStatus)}.`;
+    let activityEventType: "export_status_changed" | "export_cancelled" = "export_status_changed";
+    let activityTitle = "Export status changed";
 
     if (newStatus === "delivered_empty") {
       eventDescription = `Empty trailer delivered to ${customer}.`;
@@ -657,6 +661,8 @@ function ExportOperationsPageContent() {
       eventDescription = "Export allocation completed.";
     } else if (newStatus === "cancelled") {
       eventType = "export_allocation_cancelled";
+      activityEventType = "export_cancelled";
+      activityTitle = "Export allocation cancelled";
       eventDescription = "Export allocation cancelled.";
     }
 
@@ -672,17 +678,44 @@ function ExportOperationsPageContent() {
       ...(movementMetadata ? { movement: movementMetadata } : {}),
     } as Database["public"]["Tables"]["trailer_events"]["Insert"]["new_value"];
 
-    const { error: eventError } = await supabase.from("trailer_events").insert({
-      trailer_id: allocation.trailer_id,
-      trailer_number: allocation.trailer_number,
-      event_type: eventType,
-      event_description: eventDescription,
-      old_value: oldValuePayload,
-      new_value: newValuePayload,
-    });
+    if (!options?.skipLegacyEvent) {
+      const { error: eventError } = await supabase.from("trailer_events").insert({
+        trailer_id: allocation.trailer_id,
+        trailer_number: allocation.trailer_number,
+        event_type: eventType,
+        event_description: eventDescription,
+        old_value: oldValuePayload,
+        new_value: newValuePayload,
+      });
 
-    if (eventError) {
-      console.error("Failed to create export allocation status event:", eventError);
+      if (eventError) {
+        console.error("Failed to create export allocation status event:", eventError);
+      }
+    }
+
+    try {
+      await createTrailerActivity({
+        trailerId: allocation.trailer_id,
+        trailerNumber: allocation.trailer_number ?? "",
+        eventType: activityEventType,
+        eventTitle: activityTitle,
+        eventDescription,
+        sourceModule: "export",
+        sourceRecordId: allocation.id,
+        previousStatus: oldStatus,
+        newStatus,
+        previousCompoundPosition:
+          typeof movementMetadata?.previous_compound_position === "string" ? movementMetadata.previous_compound_position : null,
+        newCompoundPosition:
+          typeof movementMetadata?.new_compound_position === "string" ? movementMetadata.new_compound_position : null,
+        metadata: {
+          export_allocation_id: allocation.id,
+          customer: allocation.customer ?? null,
+          movement: movementMetadata ?? null,
+        },
+      });
+    } catch (activityError) {
+      console.error("Unable to log trailer activity for export allocation status change:", activityError);
     }
   };
 
@@ -869,9 +902,9 @@ function ExportOperationsPageContent() {
           setWarning("Trailer delivered empty, but automatic waiting assignment could not be completed.");
         }
 
-        if (delivered.requiresClientEvent) {
-          await createStatusChangedEvent(allocation, allocation.status, nextStatus, movementMetadata);
-        }
+        await createStatusChangedEvent(allocation, allocation.status, nextStatus, movementMetadata, {
+          skipLegacyEvent: !delivered.requiresClientEvent,
+        });
         setSuccess(
           automaticAssignmentMessage
             ? `Status updated to Delivered Empty. Trailer removed from compound inventory. ${automaticAssignmentMessage}`

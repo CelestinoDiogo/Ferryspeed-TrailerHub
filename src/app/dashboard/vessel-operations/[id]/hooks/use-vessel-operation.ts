@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabase";
+import { createTrailerActivity } from "@/lib/trailer-activity";
 import {
   buildVesselSupabaseErrorMessage,
   computeVesselOperationSummary,
@@ -766,6 +767,29 @@ export function useVesselOperation(operationId: string): UseVesselOperationResul
 
         if (eventError) {
           logVesselSupabaseError("Insert mark arrived event failed", eventError);
+        }
+
+        try {
+          await createTrailerActivity({
+            trailerId: trailer.trailer_id ?? null,
+            trailerNumber: trailer.trailer_number ?? "",
+            eventType: "vessel_arrived",
+            eventTitle: "Vessel trailer marked arrived",
+            eventDescription: "Expected trailer marked as arrived.",
+            sourceModule: "vessel",
+            sourceRecordId: trailer.id,
+            previousStatus: trailer.arrival_status ?? trailer.status,
+            newStatus: "arrived",
+            metadata: {
+              vessel_trailer_id: trailer.id,
+              vessel_operation_id: trailer.vessel_operation_id,
+              arrived_at: nowIso,
+            },
+            performedBy: operatorName,
+            createdAt: nowIso,
+          });
+        } catch (activityError) {
+          console.error("Unable to log trailer activity for vessel arrival:", activityError);
         }
 
         setSuccess(`Arrival confirmed for ${trailer.trailer_number ?? "trailer"}.`);

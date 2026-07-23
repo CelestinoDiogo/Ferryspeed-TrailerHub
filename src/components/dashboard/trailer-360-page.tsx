@@ -5,10 +5,13 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ArrowLeft } from "lucide-react";
 import { PrintButton } from "@/components/print/print-button";
+import { TrailerActivityTimeline } from "@/components/trailers/trailer-activity-timeline";
 import { TrailerAuditLogTable } from "@/components/trailers/trailer-audit-log-table";
 import { TrailerTimeline } from "@/components/trailers/trailer-timeline";
 import { supabase } from "@/lib/supabase";
 import type { Database } from "@/lib/database.types";
+import { useOperationalRealtime } from "@/lib/realtime/operational-realtime";
+import { getTrailerActivity, type TrailerActivityRow } from "@/lib/trailer-activity";
 import { loadTrailerAuditLog, type TrailerAuditRow } from "@/lib/trailer-audit-log";
 import { getTrailerCurrentLocationLabel } from "@/lib/trailer-location";
 import {
@@ -184,8 +187,10 @@ const buildInspectionSummary = (
 };
 
 export function Trailer360Page({ trailerId }: Trailer360PageProps) {
-  const [activeTab, setActiveTab] = useState<"overview" | "timeline">("timeline");
+  const [activeTab, setActiveTab] = useState<"activity" | "overview" | "timeline">("activity");
   const [profile, setProfile] = useState<TrailerOperationalProfile | null>(null);
+  const [activityRows, setActivityRows] = useState<TrailerActivityRow[]>([]);
+  const [activityError, setActivityError] = useState<string | null>(null);
   const [auditRows, setAuditRows] = useState<TrailerAuditRow[]>([]);
   const [auditError, setAuditError] = useState<string | null>(null);
   const [exportAllocations, setExportAllocations] = useState<ExportAllocationView[]>([]);
@@ -221,9 +226,25 @@ export function Trailer360Page({ trailerId }: Trailer360PageProps) {
     setVesselSectionError(null);
     setInspectionSectionError(null);
     setGalleryError(null);
+    setActivityError(null);
 
     try {
       const loadedProfile = await loadTrailerOperationalProfile(supabase, trailerId);
+      const activityTrailer = loadedProfile.trailer;
+
+      try {
+        const loadedActivityRows = await getTrailerActivity({
+          trailerId: activityTrailer?.id ?? trailerId,
+          trailerNumber: activityTrailer?.trailer_number ?? null,
+          limit: 250,
+        });
+        setActivityRows(loadedActivityRows);
+      } catch (activityLoadError) {
+        console.error("Unable to load trailer activity:", activityLoadError);
+        setActivityRows([]);
+        setActivityError(activityLoadError instanceof Error ? activityLoadError.message : "Unable to load trailer activity.");
+      }
+
       const loadedAuditRows = await loadTrailerAuditLog({
         trailerId,
         timeFilter: "all",
@@ -388,6 +409,8 @@ export function Trailer360Page({ trailerId }: Trailer360PageProps) {
       console.error("Unable to load trailer 360 view:", error);
       setPageError(genericPageError);
       setProfile(null);
+      setActivityRows([]);
+      setActivityError("Unable to load trailer activity.");
       setAuditRows([]);
       setAuditError("Unable to load trailer timeline.");
       setExportAllocations([]);
@@ -400,6 +423,10 @@ export function Trailer360Page({ trailerId }: Trailer360PageProps) {
   useEffect(() => {
     void loadTrailer();
   }, [loadTrailer]);
+
+  useOperationalRealtime(["activity"], () => {
+    void loadTrailer();
+  }, { enabled: Boolean(trailerId), debounceMs: 500 });
 
   const vesselOperationGroups = useMemo<VesselOperationGroup[]>(() => {
     if (!profile) {
@@ -572,6 +599,17 @@ export function Trailer360Page({ trailerId }: Trailer360PageProps) {
           <div className="flex flex-wrap gap-2">
             <button
               type="button"
+              onClick={() => setActiveTab("activity")}
+              className={`rounded-full px-3 py-1.5 text-xs font-semibold transition ${
+                activeTab === "activity"
+                  ? "bg-cyan-600 text-white"
+                  : "border border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+              }`}
+            >
+              Activity Timeline
+            </button>
+            <button
+              type="button"
               onClick={() => setActiveTab("timeline")}
               className={`rounded-full px-3 py-1.5 text-xs font-semibold transition ${
                 activeTab === "timeline"
@@ -595,10 +633,25 @@ export function Trailer360Page({ trailerId }: Trailer360PageProps) {
           </div>
         </section>
 
+        {activeTab === "activity" ? (
+          <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+            <p className="text-xs font-semibold uppercase tracking-[0.3em] text-slate-500">Activity Timeline</p>
+            <p className="mt-2 text-sm text-slate-600">Centralized trailer activity history with structured status and compound movement changes.</p>
+            <div className="mt-4">
+              <TrailerActivityTimeline
+                rows={activityRows}
+                isLoading={isLoading}
+                error={activityError}
+                emptyLabel="No activity records found for this trailer yet."
+              />
+            </div>
+          </section>
+        ) : null}
+
         {activeTab === "timeline" ? (
           <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-            <p className="text-xs font-semibold uppercase tracking-[0.3em] text-slate-500">Trailer Timeline</p>
-            <p className="mt-2 text-sm text-slate-600">Audit history for trailer {trailer.trailer_number ?? "-"}.</p>
+            <p className="text-xs font-semibold uppercase tracking-[0.3em] text-slate-500">Audit Timeline</p>
+            <p className="mt-2 text-sm text-slate-600">Legacy audit history for trailer {trailer.trailer_number ?? "-"}.</p>
             <div className="mt-4">
               <TrailerAuditLogTable
                 rows={auditRows}

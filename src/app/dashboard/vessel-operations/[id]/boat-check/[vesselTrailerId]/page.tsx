@@ -35,6 +35,7 @@ import {
   type TemperatureStatus,
   type TemperatureToleranceSettings,
 } from "@/lib/temperature-tolerance";
+import { createTrailerActivity } from "@/lib/trailer-activity";
 
 type PhotoView = VesselInspectionPhotoRecord & { previewUrl?: string | null };
 type SelectedInspectionPhoto = {
@@ -153,6 +154,7 @@ function VesselInspectionPageContent() {
 
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
+  const [isUploadingPhotos, setIsUploadingPhotos] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [storageStatus, setStorageStatus] = useState<string | null>(null);
@@ -207,6 +209,16 @@ function VesselInspectionPageContent() {
     if (!files || files.length === 0) {
       return;
     }
+
+    console.log("Photo selected:", {
+      source,
+      count: files.length,
+      files: Array.from(files).map((file) => ({
+        name: file.name,
+        size: file.size,
+        type: file.type,
+      })),
+    });
 
     const nextFiles = Array.from(files);
     const rejectionMessages: string[] = [];
@@ -410,6 +422,7 @@ function VesselInspectionPageContent() {
 
       setReceptionConfirmedAt(matchedReception?.created_at ?? null);
     } catch (loadErr) {
+      console.error("Unable to load inspection:", loadErr);
       logVesselSupabaseError("Unable to load inspection", asSupabaseErrorLike(loadErr));
       setError(buildVesselSupabaseErrorMessage(asSupabaseErrorLike(loadErr), "Unable to load inspection."));
     } finally {
@@ -487,7 +500,14 @@ function VesselInspectionPageContent() {
 
   const uploadSelectedPhotos = useCallback(
     async (operationData: VesselOperationRecord, trailerData: VesselOperationTrailerRecord, nowIso: string) => {
+      console.log("Photo upload handler entered:", {
+        operationId: operationData.id,
+        vesselTrailerId: trailerData.id,
+        selectedPhotoCount: selectedPhotos.length,
+      });
+
       if (selectedPhotos.length === 0) {
+        console.log("Photo upload skipped because no photos are selected.");
         return { uploadedCount: 0, failedFiles: [] as string[] };
       }
 
@@ -510,6 +530,14 @@ function VesselInspectionPageContent() {
         const safeFileName = sanitizeFileName(file.name || "photo");
         const storagePath = `vessel-operations/${operationData.id}/${trailerData.id}/${Date.now()}-${safeFileName}`;
 
+        console.log("Before Supabase upload:", {
+          fileName: file.name,
+          storagePath,
+          contentType: file.type,
+          size: file.size,
+          source,
+        });
+
         const { error: uploadError } = await supabase.storage
           .from("vessel-inspection-photos")
           .upload(storagePath, file, {
@@ -518,15 +546,29 @@ function VesselInspectionPageContent() {
             contentType: file.type,
           });
 
+        console.log("After Supabase upload:", {
+          fileName: file.name,
+          storagePath,
+          uploadError: uploadError?.message ?? null,
+        });
+
         if (uploadError) {
           if (isStorageConfigurationError(uploadError.message || "")) {
             console.error("Photo upload skipped due to storage configuration:", uploadError);
             failedFiles.push(`${file.name} (${uploadError.message || "Photo storage is not configured in this environment."})`);
             continue;
           }
+          console.error("Photo upload failed:", uploadError);
           failedFiles.push(`${file.name} (${uploadError.message || "Upload failed."})`);
           continue;
         }
+
+        console.log("Before database insert:", {
+          fileName: file.name,
+          storagePath,
+          vesselTrailerId: trailerData.id,
+          vesselOperationId: operationData.id,
+        });
 
         const { data: photoData, error: photoInsertError } = await supabase
           .from("vessel_inspection_photos")
@@ -543,10 +585,20 @@ function VesselInspectionPageContent() {
           .select("id, vessel_trailer_id, category, storage_path, file_name, description, uploaded_at, uploaded_by")
           .single();
 
+        console.log("After database insert:", {
+          fileName: file.name,
+          storagePath,
+          photoInsertError: photoInsertError?.message ?? null,
+          photoId: photoData?.id ?? null,
+        });
+
         if (photoInsertError || !photoData) {
           const { error: cleanupError } = await supabase.storage.from("vessel-inspection-photos").remove([storagePath]);
           if (cleanupError) {
             console.error("Unable to clean up orphaned inspection photo:", cleanupError);
+          }
+          if (photoInsertError) {
+            console.error("Unable to save inspection photo metadata:", photoInsertError);
           }
           failedFiles.push(`${file.name} (${photoInsertError?.message || "Unable to save photo metadata."})`);
           continue;
@@ -570,10 +622,84 @@ function VesselInspectionPageContent() {
     [inspectionNotes, selectedPhotos],
   );
 
+  const handleUploadSelectedPhotos = useCallback(async () => {
+    if (!operation || !trailer) {
+      setError("Unable to load the current trailer for photo upload.");
+      return;
+    }
+
+    console.log("Photo upload trigger action: upload photo button clicked", {
+      operationId: operation.id,
+      vesselTrailerId: trailer.id,
+      selectedPhotoCount: selectedPhotos.length,
+    });
+
+    if (selectedPhotos.length === 0) {
+      setError("Select at least one photo before uploading.");
+      return;
+    }
+
+    if (isUploadingPhotos) {
+      return;
+    }
+
+    setIsUploadingPhotos(true);
+    setError(null);
+    setSuccess(null);
+    setStorageStatus(`Uploading ${selectedPhotos.length} photo${selectedPhotos.length === 1 ? "" : "s"}...`);
+    setPhotoSelectionError(null);
+
+    try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+
+      console.log("Photo upload session:", session);
+
+      if (!session) {
+        const message = "No authenticated Supabase session. Upload policy requires authenticated access.";
+        console.error(message);
+        setError(message);
+        return;
+      }
+
+      const nowIso = new Date().toISOString();
+      const photoResult = await uploadSelectedPhotos(operation, trailer, nowIso);
+
+      await loadInspection();
+
+      if (photoResult.failedFiles.length > 0) {
+        const message = `Some photos could not be saved: ${photoResult.failedFiles.join(", ")}`;
+        console.error(message);
+        setError(message);
+      }
+
+      if (photoResult.uploadedCount > 0) {
+        clearSelectedPhotos();
+        setStorageStatus(`${photoResult.uploadedCount} new photo${photoResult.uploadedCount === 1 ? "" : "s"} saved successfully.`);
+        setSuccess(`Photo upload complete. ${photoResult.uploadedCount} photo${photoResult.uploadedCount === 1 ? "" : "s"} uploaded.`);
+      } else if (photoResult.failedFiles.length === 0) {
+        setStorageStatus("No photos were uploaded.");
+      }
+    } catch (uploadErr) {
+      console.error("Unable to upload inspection photos:", uploadErr);
+      const message = asSupabaseErrorLike(uploadErr)?.message || "Unable to upload inspection photos.";
+      setError(message);
+    } finally {
+      setIsUploadingPhotos(false);
+    }
+  }, [clearSelectedPhotos, isUploadingPhotos, loadInspection, operation, selectedPhotos.length, trailer, uploadSelectedPhotos]);
+
   const handleSaveInspection = useCallback(async () => {
     if (!operation || !trailer) {
       return;
     }
+
+    console.log("Photo upload trigger action: save inspection clicked", {
+      operationId: operation.id,
+      vesselTrailerId: trailer.id,
+      selectedPhotoCount: selectedPhotos.length,
+    });
 
     if (!vesselTrailerId || trailer.id !== vesselTrailerId) {
       setError("Unable to validate the selected trailer inspection. Refresh and try again.");
@@ -608,6 +734,7 @@ function VesselInspectionPageContent() {
     }
 
     setIsSaving(true);
+    setIsUploadingPhotos(false);
     setError(null);
     setSuccess(null);
     setStorageStatus(null);
@@ -615,6 +742,7 @@ function VesselInspectionPageContent() {
 
     try {
       const nowIso = new Date().toISOString();
+      const wasInspectionCompleted = Boolean(trailer.inspection_completed_at) || trailer.status === "inspected";
 
       const frontOutOfRange = frontAlertManual || (expectedFrontTemperature !== null
         ? isTemperatureOutOfRange(frontValue, expectedFrontTemperature, temperatureTolerance)
@@ -716,21 +844,38 @@ function VesselInspectionPageContent() {
         throw trailerUpdateError;
       }
 
-      const photoResult = await uploadSelectedPhotos(operation, trailer, nowIso);
-
-      clearSelectedPhotos();
-      await loadInspection();
-
-      if (photoResult.failedFiles.length > 0) {
-        setStorageStatus(`Inspection saved. Some photos could not be saved: ${photoResult.failedFiles.join(", ")}`);
-      } else if (photoResult.uploadedCount > 0) {
-        setStorageStatus(`${photoResult.uploadedCount} new photo${photoResult.uploadedCount === 1 ? "" : "s"} saved successfully.`);
+      if (!wasInspectionCompleted && trailer.trailer_number?.trim()) {
+        try {
+          await createTrailerActivity({
+            trailerId: trailer.trailer_id ?? null,
+            trailerNumber: trailer.trailer_number,
+            eventType: "inspection_completed",
+            eventTitle: "Inspection completed",
+            eventDescription: "Boat check inspection completed successfully.",
+            sourceModule: "inspection",
+            sourceRecordId: trailer.id,
+            previousStatus: trailer.status,
+            newStatus: "inspected",
+            metadata: {
+              vessel_trailer_id: trailer.id,
+              vessel_operation_id: operation.id,
+              has_damage: hasDamage,
+              has_temperature_alert: hasTemperatureAlert,
+            },
+            createdAt: nowIso,
+          });
+        } catch (activityError) {
+          console.error("Unable to log trailer activity for inspection completion:", activityError);
+        }
       }
+
+      await loadInspection();
 
       setSuccess("Inspection saved successfully.");
     } catch (saveErr) {
+      console.error("Unable to save inspection:", saveErr);
       logVesselSupabaseError("Unable to save inspection", asSupabaseErrorLike(saveErr));
-      setError(buildVesselSupabaseErrorMessage(asSupabaseErrorLike(saveErr), "Unable to save inspection."));
+      setError(asSupabaseErrorLike(saveErr)?.message || buildVesselSupabaseErrorMessage(asSupabaseErrorLike(saveErr), "Unable to save inspection."));
     } finally {
       setIsSaving(false);
     }
@@ -756,9 +901,7 @@ function VesselInspectionPageContent() {
     trailer,
     temperatureTolerance,
     vesselTrailerId,
-    clearSelectedPhotos,
     loadInspection,
-    uploadSelectedPhotos,
   ]);
 
   if (isLoading) {
@@ -927,8 +1070,10 @@ function VesselInspectionPageContent() {
                 type="file"
                 accept="image/*"
                 capture="environment"
+                disabled={isUploadingPhotos || isReadOnly}
                 className="hidden"
                 onChange={(event) => {
+                  console.log("Photo selected from camera input.");
                   addSelectedPhotos(event.target.files, "camera");
                   event.currentTarget.value = "";
                 }}
@@ -941,8 +1086,10 @@ function VesselInspectionPageContent() {
                 type="file"
                 accept="image/*"
                 multiple
+                disabled={isUploadingPhotos || isReadOnly}
                 className="hidden"
                 onChange={(event) => {
+                  console.log("Photo selected from upload input.");
                   addSelectedPhotos(event.target.files, "upload");
                   event.currentTarget.value = "";
                 }}
@@ -951,6 +1098,29 @@ function VesselInspectionPageContent() {
           </div>
 
           {photoSelectionError ? <div className="mt-3 rounded-2xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">{photoSelectionError}</div> : null}
+          {selectedPhotos.length > 0 ? <div className="mt-3 rounded-2xl border border-cyan-500/30 bg-cyan-500/10 px-4 py-3 text-sm text-cyan-100">{selectedPhotos.length} new photo{selectedPhotos.length === 1 ? " is" : "s are"} selected. Use Upload Photo to start the upload.</div> : null}
+          {isUploadingPhotos ? <div className="mt-3 rounded-2xl border border-cyan-500/30 bg-cyan-500/10 px-4 py-3 text-sm text-cyan-100">Uploading selected photos to Supabase Storage...</div> : null}
+
+          {selectedPhotos.length > 0 ? (
+            <div className="mt-3 flex flex-col gap-3 sm:flex-row">
+              <button
+                type="button"
+                onClick={() => void handleUploadSelectedPhotos()}
+                disabled={isUploadingPhotos || isReadOnly}
+                className="inline-flex items-center justify-center rounded-2xl bg-emerald-500 px-5 py-3 text-sm font-semibold text-slate-950 hover:bg-emerald-400 disabled:opacity-60"
+              >
+                {isUploadingPhotos ? "Uploading photo..." : "Upload Photo"}
+              </button>
+              <button
+                type="button"
+                onClick={clearSelectedPhotos}
+                disabled={isUploadingPhotos}
+                className="inline-flex items-center justify-center rounded-2xl border border-white/10 bg-slate-800 px-5 py-3 text-sm font-semibold text-white hover:bg-slate-700 disabled:opacity-60"
+              >
+                Clear Selected Photos
+              </button>
+            </div>
+          ) : null}
 
           <div className="mt-5">
             <p className="text-xs font-semibold uppercase tracking-[0.25em] text-slate-400">Saved Photos</p>
@@ -1001,8 +1171,8 @@ function VesselInspectionPageContent() {
         </section>
 
         <section className="rounded-3xl border border-white/10 bg-slate-900/70 p-5 shadow-lg shadow-black/20 backdrop-blur sm:p-6">
-          <button type="button" onClick={() => void handleSaveInspection()} disabled={isSaving || isReadOnly} className="w-full rounded-2xl bg-emerald-500 px-4 py-3 text-sm font-semibold text-slate-950 hover:bg-emerald-400 disabled:opacity-60">
-            {isSaving ? "Saving..." : isReadOnly ? "Read Only" : hasExistingInspection ? "Update Inspection" : "Save Inspection"}
+          <button type="button" onClick={() => void handleSaveInspection()} disabled={isSaving || isUploadingPhotos || isReadOnly} className="w-full rounded-2xl bg-emerald-500 px-4 py-3 text-sm font-semibold text-slate-950 hover:bg-emerald-400 disabled:opacity-60">
+            {isSaving ? "Saving..." : isUploadingPhotos ? "Upload in Progress" : isReadOnly ? "Read Only" : hasExistingInspection ? "Update Inspection" : "Save Inspection"}
           </button>
         </section>
         </fieldset>

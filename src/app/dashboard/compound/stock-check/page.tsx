@@ -9,6 +9,7 @@ import { LoadingState } from "@/components/layout/loading-state";
 import { PageHeader } from "@/components/layout/page-header";
 import { StatCard } from "@/components/layout/stat-card";
 import { supabase } from "@/lib/supabase";
+import { createTrailerActivity } from "@/lib/trailer-activity";
 import { logTrailerEvent } from "@/lib/trailer-audit-log";
 import {
   formatDateTime,
@@ -866,6 +867,29 @@ export default function CompoundStockCheckPage() {
         performedBy: operatorName,
       });
 
+      try {
+        await createTrailerActivity({
+          trailerId: rpcRow.trailer_id,
+          trailerNumber: rpcRow.trailer_number,
+          eventType: "load_status_changed",
+          eventTitle: "Load status changed",
+          eventDescription: "Load status changed from stock check reconciliation.",
+          sourceModule: "stock_check",
+          sourceRecordId: rpcRow.stock_check_item_id,
+          previousStatus: rpcRow.previous_load_status,
+          newStatus: rpcRow.new_load_status,
+          metadata: {
+            stock_check_id: openStockCheck.id,
+            stock_check_item_id: rpcRow.stock_check_item_id,
+            discrepancy_type: rpcRow.discrepancy_type,
+            resolution_status: rpcRow.resolution_status,
+          },
+          performedBy: operatorName,
+        });
+      } catch (activityError) {
+        console.error("Unable to log trailer activity for stock check load status change:", activityError);
+      }
+
       setActionNotice(`${normalizeTrailerNumber(rpcRow.trailer_number)} changed from ${beforeLabel} to ${afterLabel}.`);
       showScanNotice("Operational correction applied.", "info");
       setPendingLoadStatusChange(null);
@@ -980,6 +1004,29 @@ export default function CompoundStockCheckPage() {
         sourceModule: "stock_check",
         performedBy: operatorName,
       });
+
+      try {
+        await createTrailerActivity({
+          trailerId: rpcRow.trailer_id,
+          trailerNumber: rpcRow.trailer_number,
+          eventType: "compound_position_changed",
+          eventTitle: "Compound position changed",
+          eventDescription: "Compound position changed from stock check reconciliation.",
+          sourceModule: "stock_check",
+          sourceRecordId: rpcRow.stock_check_item_id,
+          previousCompoundPosition: rpcRow.previous_position,
+          newCompoundPosition: rpcRow.new_position,
+          metadata: {
+            stock_check_id: openStockCheck.id,
+            stock_check_item_id: rpcRow.stock_check_item_id,
+            discrepancy_type: rpcRow.discrepancy_type,
+            resolution_status: rpcRow.resolution_status,
+          },
+          performedBy: operatorName,
+        });
+      } catch (activityError) {
+        console.error("Unable to log trailer activity for stock check position change:", activityError);
+      }
 
       showScanNotice("Operational position correction applied.", "info");
       setPendingPositionChange(null);

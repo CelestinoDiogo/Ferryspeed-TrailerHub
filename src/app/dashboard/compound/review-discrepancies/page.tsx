@@ -12,6 +12,7 @@ import { StatCard } from "@/components/layout/stat-card";
 import { formatDateTime, formatStatusLabel, normalizeTrailerNumber, type StockCheck, type StockCheckItem } from "@/lib/compound-stock-check";
 import { OPERATIONAL_STAGE_ORDER, getOperationalStageLabel, type OperationalStage } from "@/lib/operations/operational-stages";
 import { supabase } from "@/lib/supabase";
+import { createTrailerActivity } from "@/lib/trailer-activity";
 import { logTrailerEvent } from "@/lib/trailer-audit-log";
 
 type TrailerLookupRow = {
@@ -655,6 +656,28 @@ export default function CompoundReviewDiscrepanciesPage() {
         performedBy: operatorName,
         performedAt: resolvedAtIso,
       });
+
+      try {
+        await createTrailerActivity({
+          trailerId: pendingOperationalStatusChange.trailerId,
+          trailerNumber: pendingOperationalStatusChange.trailerNumber,
+          eventType: "operational_status_changed",
+          eventTitle: "Operational status changed",
+          eventDescription: "Operational status changed from Review Discrepancies.",
+          sourceModule: "review_discrepancies",
+          sourceRecordId: pendingOperationalStatusChange.stockCheckItemId,
+          previousStatus,
+          newStatus,
+          metadata: {
+            stock_check_item_id: pendingOperationalStatusChange.stockCheckItemId,
+            resolution_action: resolutionAction,
+          },
+          performedBy: operatorName,
+          createdAt: resolvedAtIso,
+        });
+      } catch (activityError) {
+        console.error("Unable to log trailer activity for operational status change:", activityError);
+      }
 
       setNotice(
         `${normalizeTrailerNumber(pendingOperationalStatusChange.trailerNumber)} operational status changed from ${

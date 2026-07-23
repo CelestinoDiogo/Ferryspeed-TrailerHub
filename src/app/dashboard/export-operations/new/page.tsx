@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabase";
+import { createTrailerActivity } from "@/lib/trailer-activity";
 import {
   COMPOUND_REFRESH_STORAGE_KEY,
   EXPORT_ACTIVE_STATUS_QUERY_VALUES,
@@ -338,6 +339,33 @@ export default function NewExportAllocationPage() {
 
       if (eventError) {
         console.error("Failed to create export_allocation_created event:", eventError);
+      }
+
+      try {
+        await createTrailerActivity({
+          trailerId: trailer.id,
+          trailerNumber: normalizeTrailerNumber(trailer.trailer_number),
+          eventType: "export_allocated",
+          eventTitle: "Export allocation created",
+          eventDescription: `Trailer allocated to ${formState.customer.trim()}.`,
+          sourceModule: "export",
+          sourceRecordId: allocationData.id,
+          newStatus: "allocated",
+          metadata: {
+            export_allocation_id: allocationData.id,
+            customer: insertPayload.customer,
+            collection_address: insertPayload.collection_address,
+            haulier: insertPayload.haulier,
+            booking_reference: insertPayload.booking_reference,
+            load_type: insertPayload.load_type,
+            collection_date: insertPayload.collection_date,
+            expected_return_at: insertPayload.expected_return_at,
+            priority: insertPayload.priority,
+            source: formState.source,
+          },
+        });
+      } catch (activityError) {
+        console.error("Unable to log trailer activity for export allocation creation:", activityError);
       }
 
       if (typeof window !== "undefined") {

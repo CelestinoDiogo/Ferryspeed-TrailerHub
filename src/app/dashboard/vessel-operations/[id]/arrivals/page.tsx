@@ -13,6 +13,7 @@ import { PrintTable } from "@/components/print/print-table";
 import { ConfirmReceptionModal } from "../components/confirm-reception-modal";
 import { useVesselReception } from "../hooks/use-vessel-reception";
 import { supabase } from "@/lib/supabase";
+import { createTrailerActivity } from "@/lib/trailer-activity";
 import {
   canConfirmVesselTrailerReception,
   formatVesselDateTime,
@@ -342,6 +343,29 @@ function VesselArrivalsPageContent() {
 
         if (eventError) {
           console.error("Unable to save mark arrived event:", eventError);
+        }
+
+        try {
+          await createTrailerActivity({
+            trailerId: trailer.trailer_id ?? null,
+            trailerNumber: trailer.trailer_number ?? "",
+            eventType: "vessel_arrived",
+            eventTitle: "Vessel trailer marked arrived",
+            eventDescription: "Expected trailer marked as arrived.",
+            sourceModule: "vessel",
+            sourceRecordId: trailer.id,
+            previousStatus: trailer.arrival_status ?? trailer.status,
+            newStatus: "arrived",
+            metadata: {
+              vessel_trailer_id: trailer.id,
+              vessel_operation_id: trailer.vessel_operation_id,
+              arrived_at: nowIso,
+            },
+            performedBy: operatorName,
+            createdAt: nowIso,
+          });
+        } catch (activityError) {
+          console.error("Unable to log trailer activity for vessel arrival:", activityError);
         }
 
         setSuccess(`Arrival confirmed for ${trailer.trailer_number ?? "trailer"}.`);

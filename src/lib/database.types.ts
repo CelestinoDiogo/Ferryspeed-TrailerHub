@@ -150,6 +150,76 @@ export type Database = {
         Update: Partial<Database["public"]["Tables"]["trailer_audit_log"]["Row"]>;
         Relationships: [];
       };
+      trailer_activity_log: {
+        Row: {
+          id: string;
+          trailer_id: string | null;
+          trailer_number: string;
+          normalized_trailer_number: string;
+          event_type: string;
+          event_title: string;
+          event_description: string | null;
+          source_module: string;
+          source_record_id: string | null;
+          previous_status: string | null;
+          new_status: string | null;
+          previous_compound_position: string | null;
+          new_compound_position: string | null;
+          metadata: Json;
+          performed_by: string | null;
+          created_at: string | null;
+        };
+        Insert: Partial<Database["public"]["Tables"]["trailer_activity_log"]["Row"]>;
+        Update: Partial<Database["public"]["Tables"]["trailer_activity_log"]["Row"]>;
+        Relationships: [];
+      };
+      operational_alert_settings: {
+        Row: {
+          id: string;
+          enabled: boolean | null;
+          compound_dwell_warning_days: number | null;
+          compound_dwell_critical_days: number | null;
+          compound_occupancy_warning_percent: number | null;
+          compound_occupancy_critical_percent: number | null;
+          priority_inspection_pending_minutes: number | null;
+          temperature_alerts_enabled: boolean | null;
+          inspection_missing_photos_enabled: boolean | null;
+          stock_check_discrepancies_enabled: boolean | null;
+          export_waiting_collection_hours: number | null;
+          created_at: string | null;
+          updated_at: string | null;
+        };
+        Insert: Partial<Database["public"]["Tables"]["operational_alert_settings"]["Row"]>;
+        Update: Partial<Database["public"]["Tables"]["operational_alert_settings"]["Row"]>;
+        Relationships: [];
+      };
+      operational_alerts: {
+        Row: {
+          id: string;
+          alert_key: string;
+          severity: string;
+          status: string;
+          title: string;
+          description: string | null;
+          trailer_id: string | null;
+          trailer_number: string | null;
+          source_module: string;
+          source_record_id: string | null;
+          metadata: Json;
+          acknowledged_at: string | null;
+          acknowledged_by: string | null;
+          resolved_at: string | null;
+          resolved_by: string | null;
+          resolution_note: string | null;
+          dismissed_at: string | null;
+          dismissed_by: string | null;
+          created_at: string | null;
+          updated_at: string | null;
+        };
+        Insert: Partial<Database["public"]["Tables"]["operational_alerts"]["Row"]>;
+        Update: Partial<Database["public"]["Tables"]["operational_alerts"]["Row"]>;
+        Relationships: [];
+      };
       delivery_bookings: {
         Row: {
           id: string;
@@ -176,6 +246,21 @@ export type Database = {
         };
         Insert: Partial<Database["public"]["Tables"]["delivery_bookings"]["Row"]>;
         Update: Partial<Database["public"]["Tables"]["delivery_bookings"]["Row"]>;
+        Relationships: [];
+      };
+      compound_waiting_list: {
+        Row: {
+          id: string;
+          trailer_id: string;
+          trailer_number: string | null;
+          customer: string | null;
+          status: string;
+          notes: string | null;
+          created_at: string | null;
+          updated_at: string | null;
+        };
+        Insert: Partial<Database["public"]["Tables"]["compound_waiting_list"]["Row"]>;
+        Update: Partial<Database["public"]["Tables"]["compound_waiting_list"]["Row"]>;
         Relationships: [];
       };
       export_allocations: {
@@ -408,7 +493,39 @@ export type Database = {
         Relationships: [];
       };
     };
-    Views: Record<string, never>;
+    Views: {
+      compound_waiting_active: {
+        Row: {
+          id: string;
+          trailer_id: string | null;
+          trailer_number: string | null;
+          customer: string | null;
+          load_status: string | null;
+          priority_level: string | null;
+          priority_reason: string | null;
+          waiting_reason: string | null;
+          arrived_at: string | null;
+          waiting_since: string | null;
+          waiting_minutes: number | null;
+          vessel_operation_id: string | null;
+          vessel_trailer_id: string | null;
+          notes: string | null;
+          created_at: string | null;
+        };
+        Relationships: [];
+      };
+      operational_alert_summary: {
+        Row: {
+          total_active_alerts: number | null;
+          critical_count: number | null;
+          high_count: number | null;
+          warning_count: number | null;
+          info_count: number | null;
+          latest_alert_at: string | null;
+        };
+        Relationships: [];
+      };
+    };
     Functions: {
       confirm_vessel_operation_list: {
         Args: { p_vessel_operation_id: string; p_confirmed_by?: string | null };
@@ -479,6 +596,26 @@ export type Database = {
           discrepancy_type: string | null;
           resolution_status: string | null;
         }[];
+      };
+      acknowledge_operational_alert: {
+        Args: { p_operational_alert_id: string; p_acknowledged_by?: string | null };
+        Returns: Database["public"]["Tables"]["operational_alerts"]["Row"];
+      };
+      resolve_operational_alert: {
+        Args: {
+          p_operational_alert_id: string;
+          p_resolved_by?: string | null;
+          p_resolution_note?: string | null;
+        };
+        Returns: Database["public"]["Tables"]["operational_alerts"]["Row"];
+      };
+      dismiss_operational_alert: {
+        Args: {
+          p_operational_alert_id: string;
+          p_dismissed_by?: string | null;
+          p_dismissal_reason?: string | null;
+        };
+        Returns: Database["public"]["Tables"]["operational_alerts"]["Row"];
       };
     };
     Enums: Record<string, never>;

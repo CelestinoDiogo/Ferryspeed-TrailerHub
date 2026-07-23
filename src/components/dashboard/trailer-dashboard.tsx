@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useState } from "react";
-import { AlertTriangle, Anchor, ChevronRight, ClipboardList, Package, PlusCircle, ScanSearch, Ship, Truck, Wrench } from "lucide-react";
+import { Anchor, ChevronRight, ClipboardList, Package, PlusCircle, ScanSearch, Ship, Truck, Wrench } from "lucide-react";
 import { PrintButton } from "@/components/print/print-button";
 import { PrintFilters } from "@/components/print/print-filters";
 import { PrintFooter } from "@/components/print/print-footer";
@@ -13,6 +13,7 @@ import { PrintHeader } from "@/components/print/print-header";
 import { PrintReportLayout } from "@/components/print/print-report-layout";
 import { PrintSummary } from "@/components/print/print-summary";
 import { PrintTable } from "@/components/print/print-table";
+import { OperationalAlertsSection } from "@/components/dashboard/operational-alerts-section";
 import { COMPOUND_REFRESH_STORAGE_KEY } from "@/lib/export-allocation";
 import { supabase } from "@/lib/supabase";
 import {
@@ -27,6 +28,15 @@ import {
   normalizeExportAllocationRecord,
   type ExportAllocationRecord,
 } from "@/lib/export-allocation";
+import {
+  acknowledgeOperationalAlert,
+  dismissOperationalAlert,
+  getOperationalAlerts,
+  resolveOperationalAlert,
+  runOperationalAlertDetection,
+  type OperationalAlertRow,
+  type OperationalAlertSummary,
+} from "@/lib/operational-alerts";
 import { useOperationalRealtime } from "@/lib/realtime/operational-realtime";
 
 type DashboardStats = {
@@ -99,25 +109,7 @@ type ExportSummary = {
   overdue: number;
 };
 
-type OperationalAlert = {
-  id: string;
-  type:
-    | "missing_position"
-    | "high_occupancy"
-    | "loaded_no_customer"
-    | "incomplete_info"
-    | "allocated_in_compound"
-    | "missing_latest_stock_check"
-    | "waiting_collection_24h"
-    | "temperature_alert"
-    | "damage_pending_review";
-  severity: "warning" | "alert";
-  title: string;
-  description: string;
-  trailerId?: string;
-  trailerNumber?: string;
-  href?: string;
-};
+type AlertStatusView = "active" | "resolved";
 
 type StockCheckHeadline = {
   id: string;
@@ -168,6 +160,16 @@ const defaultExportSummary: ExportSummary = {
   overdue: 0,
 };
 
+const defaultOperationalAlertSummary: OperationalAlertSummary = {
+  totalActiveAlerts: 0,
+  criticalCount: 0,
+  highCount: 0,
+  warningCount: 0,
+  infoCount: 0,
+  latestAlertAt: null,
+  raw: null,
+};
+
 const COMPOUND_POSITIONS = 50;
 
 const getDateKey = (value?: string | null) => {
@@ -200,7 +202,14 @@ export function TrailerDashboard() {
   const [stats, setStats] = useState<DashboardStats>(defaultStats);
   const [trailers, setTrailers] = useState<TrailerRecord[]>([]);
   const [events, setEvents] = useState<TrailerEvent[]>([]);
-  const [alerts, setAlerts] = useState<OperationalAlert[]>([]);
+  const [operationalAlerts, setOperationalAlerts] = useState<OperationalAlertRow[]>([]);
+  const [resolvedOperationalAlerts, setResolvedOperationalAlerts] = useState<OperationalAlertRow[]>([]);
+  const [resolvedAlertsLoaded, setResolvedAlertsLoaded] = useState(false);
+  const [resolvedAlertsLoading, setResolvedAlertsLoading] = useState(false);
+  const [alertStatusView, setAlertStatusView] = useState<AlertStatusView>("active");
+  const [operationalAlertSummary, setOperationalAlertSummary] = useState<OperationalAlertSummary>(defaultOperationalAlertSummary);
+  const [operationalAlertError, setOperationalAlertError] = useState<string | null>(null);
+  const [isAlertsRefreshing, setIsAlertsRefreshing] = useState(false);
   const [todayDeliveries, setTodayDeliveries] = useState<DeliveryBooking[]>([]);
   const [waitingCollections, setWaitingCollections] = useState<WaitingCollectionItem[]>([]);
   const [waitingCollectionSummary, setWaitingCollectionSummary] = useState<WaitingCollectionSummary>({ count: 0, attentionRequiredCount: 0, oldestTrailer: null, oldestDays: 0 });
@@ -228,6 +237,7 @@ export function TrailerDashboard() {
   const loadStats = useCallback(async () => {
       setIsLoading(true);
       setError(null);
+      setOperationalAlertError(null);
 
       try {
         const todayKey = getDateKey(new Date().toISOString());
@@ -463,138 +473,15 @@ export function TrailerDashboard() {
         setMissingTrailersCount(latestMissing);
         setUnexpectedTrailersCount(latestUnexpected);
 
-        // Generate operational alerts
-        const generatedAlerts: OperationalAlert[] = [];
-
-        // Check for trailers without compound position
-        const trailersWithoutPosition = compoundTrailers.filter(
-          (t) => !t.compound_position || t.compound_position.trim() === ""
-        );
-        if (trailersWithoutPosition.length > 0) {
-          generatedAlerts.push({
-            id: "missing_position_alert",
-            type: "missing_position",
-            severity: "alert",
-            title: `${trailersWithoutPosition.length} Trailer${trailersWithoutPosition.length === 1 ? "" : "s"} Without Position`,
-            description: `${trailersWithoutPosition.length} trailer${trailersWithoutPosition.length === 1 ? "" : "s"} not yet assigned to a compound position.`,
-            trailerNumber: trailersWithoutPosition[0]?.trailer_number ?? undefined,
-          });
+        const alertDetectionResult = await runOperationalAlertDetection(supabase);
+        if (alertDetectionResult.ok) {
+          setOperationalAlerts(alertDetectionResult.data.alerts);
+          setOperationalAlertSummary(alertDetectionResult.data.summary ?? defaultOperationalAlertSummary);
+        } else {
+          setOperationalAlerts([]);
+          setOperationalAlertSummary(defaultOperationalAlertSummary);
+          setOperationalAlertError(alertDetectionResult.error);
         }
-
-        // Check for high occupancy (above 80%)
-        if (occupancy > 80) {
-          generatedAlerts.push({
-            id: "high_occupancy_alert",
-            type: "high_occupancy",
-            severity: "warning",
-            title: "Compound Occupancy High",
-            description: `Compound is at ${occupancy}% capacity. Plan departures to maintain operations.`,
-          });
-        }
-
-        // Check for loaded trailers without customer
-        const loadedTrailersNoCustomer = compoundTrailers.filter((t) => {
-          const isLoaded = normalizeLoadStatus(t.load_status) === "loaded";
-          const hasCustomer = t.customer && t.customer.trim() !== "";
-          return isLoaded && !hasCustomer;
-        });
-        if (loadedTrailersNoCustomer.length > 0) {
-          generatedAlerts.push({
-            id: "loaded_no_customer_alert",
-            type: "loaded_no_customer",
-            severity: "warning",
-            title: `${loadedTrailersNoCustomer.length} Loaded Trailer${loadedTrailersNoCustomer.length === 1 ? "" : "s"} Without Customer`,
-            description: `${loadedTrailersNoCustomer.length} loaded trailer${loadedTrailersNoCustomer.length === 1 ? "" : "s"} missing customer information.`,
-            trailerNumber: loadedTrailersNoCustomer[0]?.trailer_number ?? undefined,
-          });
-        }
-
-        // Check for incomplete information (loaded without description)
-        const loadedTrailersNoDescription = compoundTrailers.filter((t) => {
-          const isLoaded = normalizeLoadStatus(t.load_status) === "loaded";
-          const hasDescription = t.load_description && t.load_description.trim() !== "";
-          return isLoaded && !hasDescription;
-        });
-        if (loadedTrailersNoDescription.length > 0) {
-          generatedAlerts.push({
-            id: "incomplete_info_alert",
-            type: "incomplete_info",
-            severity: "warning",
-            title: `${loadedTrailersNoDescription.length} Trailer${loadedTrailersNoDescription.length === 1 ? "" : "s"} Missing Load Description`,
-            description: `${loadedTrailersNoDescription.length} loaded trailer${loadedTrailersNoDescription.length === 1 ? "" : "s"} without load description.`,
-            trailerNumber: loadedTrailersNoDescription[0]?.trailer_number ?? undefined,
-          });
-        }
-
-        if (overdueExportAllocations.length > 0) {
-          generatedAlerts.push({
-            id: "export_overdue_alert",
-            type: "incomplete_info",
-            severity: "alert",
-            title: `${overdueExportAllocations.length} Export Allocation${overdueExportAllocations.length === 1 ? "" : "s"} Overdue`,
-            description: `${overdueExportAllocations.length} export allocation${overdueExportAllocations.length === 1 ? "" : "s"} exceeded expected return time.`,
-            href: "/dashboard/export-operations?filter=overdue",
-          });
-        }
-
-        if (allocatedInCompound > 0) {
-          generatedAlerts.push({
-            id: "allocated_in_compound_alert",
-            type: "allocated_in_compound",
-            severity: "warning",
-            title: `${allocatedInCompound} Allocated Trailer${allocatedInCompound === 1 ? "" : "s"} Still in Compound`,
-            description: "Allocated trailers still occupy compound positions and need progression.",
-            href: "/dashboard/export-operations?status=allocated",
-          });
-        }
-
-        if (latestMissing > 0) {
-          generatedAlerts.push({
-            id: "missing_latest_stock_check_alert",
-            type: "missing_latest_stock_check",
-            severity: "alert",
-            title: `${latestMissing} Missing from Latest Stock Check`,
-            description: "Latest stock check has missing trailers requiring operational follow-up.",
-            href: latestStockCheck?.id
-              ? `/dashboard/compound/review-discrepancies?stockCheckId=${latestStockCheck.id}&filter=missing`
-              : "/dashboard/compound/review-discrepancies?filter=missing",
-          });
-        }
-
-        if (waitingOver24h > 0) {
-          generatedAlerts.push({
-            id: "waiting_collection_24h_alert",
-            type: "waiting_collection_24h",
-            severity: "warning",
-            title: `${waitingOver24h} Waiting Collection Over 24h`,
-            description: "Delivered trailers have been waiting for collection for more than 24 hours.",
-            href: "/dashboard/deliveries?filter=waiting",
-          });
-        }
-
-        if (temperatureAlerts > 0) {
-          generatedAlerts.push({
-            id: "temperature_alert",
-            type: "temperature_alert",
-            severity: "alert",
-            title: `${temperatureAlerts} Temperature Alert${temperatureAlerts === 1 ? "" : "s"}`,
-            description: "Trailer inspections flagged temperature exceptions requiring review.",
-            href: "/dashboard/vessel-operations?filter=today",
-          });
-        }
-
-        if (damagePendingReview > 0) {
-          generatedAlerts.push({
-            id: "damage_pending_review",
-            type: "damage_pending_review",
-            severity: "warning",
-            title: `${damagePendingReview} Damage Pending Review`,
-            description: "Inspection damage records remain pending completion review.",
-            href: "/dashboard/vessel-operations?filter=today",
-          });
-        }
-
-        setAlerts(generatedAlerts);
       } catch (err) {
         const message =
           err instanceof Error
@@ -603,7 +490,9 @@ export function TrailerDashboard() {
         setError(message);
         setStats(defaultStats);
         setEvents([]);
-        setAlerts([]);
+        setOperationalAlerts([]);
+        setOperationalAlertSummary(defaultOperationalAlertSummary);
+        setOperationalAlertError(message);
         setTrailers([]);
         setTodayDeliveries([]);
         setWaitingCollections([]);
@@ -627,12 +516,88 @@ export function TrailerDashboard() {
       }
     }, [saved]);
 
+  const refreshOperationalAlerts = useCallback(async () => {
+    setIsAlertsRefreshing(true);
+    setOperationalAlertError(null);
+
+    try {
+      const alertDetectionResult = await runOperationalAlertDetection(supabase);
+      if (alertDetectionResult.ok) {
+        setOperationalAlerts(alertDetectionResult.data.alerts);
+        setOperationalAlertSummary(alertDetectionResult.data.summary ?? defaultOperationalAlertSummary);
+      } else {
+        setOperationalAlertError(alertDetectionResult.error);
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unable to refresh operational alerts.";
+      setOperationalAlertError(message);
+    } finally {
+      setIsAlertsRefreshing(false);
+    }
+  }, []);
+
+  const loadResolvedAlerts = useCallback(async () => {
+    setResolvedAlertsLoading(true);
+
+    try {
+      const result = await getOperationalAlerts({ includeResolved: true, status: ["resolved"], limit: 250 }, supabase);
+      if (result.ok) {
+        setResolvedOperationalAlerts(result.data);
+        setResolvedAlertsLoaded(true);
+      } else {
+        setOperationalAlertError(result.error);
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unable to load resolved alerts.";
+      setOperationalAlertError(message);
+    } finally {
+      setResolvedAlertsLoading(false);
+    }
+  }, []);
+
+  const handleAlertStatusViewChange = useCallback(
+    (view: AlertStatusView) => {
+      setAlertStatusView(view);
+      if (view === "resolved" && !resolvedAlertsLoaded && !resolvedAlertsLoading) {
+        void loadResolvedAlerts();
+      }
+    },
+    [loadResolvedAlerts, resolvedAlertsLoaded, resolvedAlertsLoading],
+  );
+
+  const handleAlertsRefresh = useCallback(async () => {
+    await refreshOperationalAlerts();
+    if (resolvedAlertsLoaded) {
+      await loadResolvedAlerts();
+    }
+  }, [loadResolvedAlerts, refreshOperationalAlerts, resolvedAlertsLoaded]);
+
   useEffect(() => {
     void loadStats();
   }, [loadStats]);
 
+  useEffect(() => {
+    const handleFocus = () => {
+      void handleAlertsRefresh();
+    };
+
+    const intervalId = window.setInterval(() => {
+      void handleAlertsRefresh();
+    }, 60_000);
+
+    window.addEventListener("focus", handleFocus);
+
+    return () => {
+      window.removeEventListener("focus", handleFocus);
+      window.clearInterval(intervalId);
+    };
+  }, [handleAlertsRefresh]);
+
   useOperationalRealtime(["dashboard"], () => {
     void loadStats();
+    if (resolvedAlertsLoaded) {
+      void loadResolvedAlerts();
+    }
   }, { debounceMs: 900 });
 
   useEffect(() => {
@@ -673,23 +638,6 @@ export function TrailerDashboard() {
     { label: "Collections", subtitle: "Today", value: collectionsTodayCount, href: "/dashboard/deliveries?filter=waiting", icon: <ClipboardList className="h-6 w-6" /> },
     { label: "Vessel Operations", subtitle: "Today", value: vesselOpsTodayCount, href: "/dashboard/vessel-operations?filter=today", icon: <Anchor className="h-6 w-6" /> },
   ];
-
-  const rightAlerts = [
-    ...alerts.slice(0, 4),
-    ...(vesselOperations[0]
-      ? [
-          {
-            id: "next_vessel_info",
-            type: "incomplete_info" as const,
-            severity: "warning" as const,
-            title: `Next Vessel: ${vesselOperations[0].vessel_name ?? "Scheduled"}`,
-            description: vesselOperations[0].expected_arrival_at
-              ? `ETA ${new Date(vesselOperations[0].expected_arrival_at).toLocaleString("en-GB")}`
-              : "Arrival window pending confirmation.",
-          },
-        ]
-      : []),
-  ].slice(0, 5);
 
   const intelligentKpis: Array<{ label: string; value: number; href: string }> = [
     { label: "Awaiting Inspection", value: awaitingInspectionCount, href: "/dashboard/vessel-operations?filter=today" },
@@ -763,12 +711,12 @@ export function TrailerDashboard() {
         />
 
         <PrintTable
-          rows={alerts.slice(0, 8)}
+          rows={operationalAlerts.slice(0, 8)}
           columns={[
             { key: "title", header: "Urgent / Exception", render: (alert) => alert.title },
             { key: "severity", header: "Severity", render: (alert) => alert.severity },
             { key: "description", header: "Description", render: (alert) => alert.description },
-            { key: "trailer", header: "Trailer", render: (alert) => alert.trailerNumber ?? "—" },
+            { key: "trailer", header: "Trailer", render: (alert) => alert.trailer_number ?? "—" },
           ]}
         />
 
@@ -807,6 +755,12 @@ export function TrailerDashboard() {
       {error ? (
         <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-900">
           {error}
+        </div>
+      ) : null}
+
+      {operationalAlertError ? (
+        <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          {operationalAlertError}
         </div>
       ) : null}
 
@@ -892,27 +846,31 @@ export function TrailerDashboard() {
             </div>
           </section>
 
-          <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-[0_12px_30px_rgba(15,23,42,0.05)]">
-            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-500">Alerts</p>
-            <div className="mt-3 space-y-2">
-              {rightAlerts.length === 0 ? (
-                <p className="text-sm text-slate-500">No operational exceptions at this moment.</p>
-              ) : (
-                rightAlerts.map((alert) => (
-                  <div key={alert.id} className="rounded-xl border border-amber-200 bg-amber-50 p-3">
-                    <div className="flex items-start gap-2">
-                      <AlertTriangle className="mt-0.5 h-4 w-4 text-amber-700" />
-                      <div>
-                        <p className="text-sm font-semibold text-slate-900">{alert.title}</p>
-                        <p className="text-xs text-slate-600">{alert.description}</p>
-                        {alert.href ? <Link href={alert.href} className="mt-1 inline-block text-xs font-semibold text-slate-700 underline">Open</Link> : null}
-                      </div>
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-          </section>
+          <OperationalAlertsSection
+            summary={operationalAlertSummary}
+            activeAlerts={operationalAlerts}
+            resolvedAlerts={resolvedOperationalAlerts}
+            resolvedAlertsLoaded={resolvedAlertsLoaded}
+            resolvedAlertsLoading={resolvedAlertsLoading}
+            statusView={alertStatusView}
+            isLoading={isLoading}
+            isRefreshing={isAlertsRefreshing}
+            error={operationalAlertError}
+            onStatusViewChange={handleAlertStatusViewChange}
+            onRefresh={() => { void handleAlertsRefresh(); }}
+            onAcknowledge={async (alert) => {
+              const result = await acknowledgeOperationalAlert({ operationalAlertId: alert.id });
+              if (!result.ok) throw new Error(result.error);
+            }}
+            onResolve={async (alert, resolutionNote) => {
+              const result = await resolveOperationalAlert({ operationalAlertId: alert.id, reason: resolutionNote ?? undefined });
+              if (!result.ok) throw new Error(result.error);
+            }}
+            onDismiss={async (alert) => {
+              const result = await dismissOperationalAlert({ operationalAlertId: alert.id });
+              if (!result.ok) throw new Error(result.error);
+            }}
+          />
 
           <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-[0_12px_30px_rgba(15,23,42,0.05)]">
             <p className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-500">Operational Health Score</p>
