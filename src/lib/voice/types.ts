@@ -99,33 +99,36 @@ export const isVoiceActionIntent = (intent: VoiceIntentName): intent is VoiceAct
 };
 
 export const toAssistantIntent = (intent: VoiceReadIntentName, entities: VoiceEntities): AssistantIntent => {
+  const trailerNumber = entities.trailerNumber?.trim();
+  const customer = entities.customer?.trim();
+
   switch (intent) {
     case "trailer_location":
-      return { intent: "trailer_location", trailerNumber: entities.trailerNumber };
+      return trailerNumber ? { intent: "trailer_location", trailerNumber } : { intent: "unknown" };
     case "trailer_full_status":
-      return { intent: "trailer_full_status", trailerNumber: entities.trailerNumber };
+      return trailerNumber ? { intent: "trailer_current_status", trailerNumber } : { intent: "unknown" };
     case "trailer_history_summary":
-      return { intent: "trailer_history_summary", trailerNumber: entities.trailerNumber };
+      return trailerNumber ? { intent: "find_trailer", trailerNumber } : { intent: "unknown" };
     case "trailers_by_customer":
-      return { intent: "trailers_by_customer", customer: entities.customer };
+      return customer ? { intent: "departures_by_customer", customer } : { intent: "unknown" };
     case "trailer_at_position":
-      return { intent: "trailer_at_position", compoundPosition: entities.compoundPosition };
+      return { intent: "compound_summary" };
     case "allocated_still_in_compound":
-      return { intent: "allocated_still_in_compound" };
+      return { intent: "export_allocated" };
     case "waiting_collection_overdue":
-      return { intent: "waiting_collection_overdue" };
+      return { intent: "export_overdue" };
     case "arrivals_pending_inspection":
-      return { intent: "arrivals_pending_inspection" };
+      return { intent: "list_pending_inspections" };
     case "temperature_alerts":
-      return { intent: "temperature_alerts" };
+      return { intent: "list_temperature_alerts" };
     case "damage_alerts":
-      return { intent: "damage_alerts" };
+      return { intent: "unresolved_operational_alerts" };
     case "open_discrepancies":
-      return { intent: "open_discrepancies", unresolvedOnly: true };
+      return { intent: "stock_check_discrepancies" };
     case "operational_status_issues":
-      return { intent: "operational_status_issues" };
+      return { intent: "unresolved_operational_alerts" };
     case "daily_operations_summary":
-      return { intent: "daily_operations_summary" };
+      return { intent: "current_operational_summary" };
     default:
       return { intent: "unknown" };
   }

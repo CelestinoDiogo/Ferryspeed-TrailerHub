@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { RotateCw } from "lucide-react";
 import { AlertCard } from "@/components/layout/alert-card";
@@ -160,6 +161,21 @@ const normalizePositionDisplay = (value?: string | null) => {
   const normalized = value?.trim().toUpperCase();
   return normalized && normalized.length > 0 ? normalized : "-";
 };
+
+const extractTrailerPrefix = (value?: string | null) => {
+  const normalized = normalizeTrailerNumber(value ?? "");
+  if (!normalized) {
+    return "";
+  }
+
+  const match = normalized.match(/^[A-Z]+/);
+  return match?.[0] ?? "";
+};
+
+const trailerNaturalCollator = new Intl.Collator(undefined, {
+  numeric: true,
+  sensitivity: "base",
+});
 
 const isPositionResolved = (item: StockCheckItem) => {
   const discrepancy = item.discrepancy_type?.trim().toLowerCase() ?? "";
@@ -350,6 +366,8 @@ export default function CompoundStockCheckPage() {
   const [isChangingPosition, setIsChangingPosition] = useState(false);
   const [activePositionItemId, setActivePositionItemId] = useState<string | null>(null);
   const [pendingPositionChange, setPendingPositionChange] = useState<PendingPositionChange | null>(null);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [prefixFilter, setPrefixFilter] = useState<string>("all");
   const scanInputRef = useRef<HTMLInputElement | null>(null);
   const tableRowRefs = useRef<Record<string, HTMLTableRowElement | null>>({});
 
@@ -1044,13 +1062,77 @@ export default function CompoundStockCheckPage() {
     [items],
   );
 
+  const prefixOptions = useMemo(() => {
+    const prefixes = new Set<string>();
+    items.forEach((item) => {
+      const prefix = extractTrailerPrefix(item.trailer_number);
+      if (prefix) {
+        prefixes.add(prefix);
+      }
+    });
+
+    return [
+      { value: "all", label: "All prefixes" },
+      ...Array.from(prefixes)
+        .sort((left, right) => left.localeCompare(right, undefined, { sensitivity: "base" }))
+        .map((prefix) => ({ value: prefix, label: prefix })),
+    ];
+  }, [items]);
+
+  const filteredSortedItems = useMemo(() => {
+    const normalizedSearch = searchTerm.trim().toUpperCase();
+
+    const filtered = items.filter((item) => {
+      if (prefixFilter !== "all") {
+        const itemPrefix = extractTrailerPrefix(item.trailer_number);
+        if (itemPrefix !== prefixFilter) {
+          return false;
+        }
+      }
+
+      if (!normalizedSearch) {
+        return true;
+      }
+
+      const haystack = [
+        item.trailer_number,
+        item.expected_position,
+        item.actual_position,
+        item.system_operational_status,
+        item.system_load_status,
+      ]
+        .filter(Boolean)
+        .map((value) => normalizeTrailerNumber(value ?? ""))
+        .join(" ");
+
+      return haystack.includes(normalizedSearch);
+    });
+
+    return [...filtered].sort((left, right) => {
+      const leftPosition = normalizePositionDisplay(left.expected_position);
+      const rightPosition = normalizePositionDisplay(right.expected_position);
+      if (leftPosition !== rightPosition) {
+        return trailerNaturalCollator.compare(leftPosition, rightPosition);
+      }
+
+      return trailerNaturalCollator.compare(
+        normalizeTrailerNumber(left.trailer_number ?? ""),
+        normalizeTrailerNumber(right.trailer_number ?? ""),
+      );
+    });
+  }, [items, prefixFilter, searchTerm]);
+
   const stats = useMemo(() => {
     const expected = openStockCheck?.expected_total ?? 0;
     const checked = openStockCheck?.checked_total ?? 0;
     const found = openStockCheck?.present_total ?? 0;
     const remaining = Math.max(remainingTotal ?? expected - checked, 0);
+    const missing = openStockCheck?.missing_total ?? 0;
+    const unexpected = openStockCheck?.unexpected_total ?? 0;
+    const wrongPosition = openStockCheck?.wrong_position_total ?? 0;
+    const wrongStatus = openStockCheck?.wrong_status_total ?? 0;
 
-    return { expected, checked, found, remaining };
+    return { expected, checked, found, remaining, missing, unexpected, wrongPosition, wrongStatus };
   }, [openStockCheck, remainingTotal]);
 
   return (
@@ -1129,9 +1211,12 @@ export default function CompoundStockCheckPage() {
                       <tr className="border-b border-slate-200 text-xs uppercase tracking-[0.2em] text-slate-500">
                         <th className="px-2 py-3 font-semibold">Date</th>
                         <th className="px-2 py-3 font-semibold">Started By</th>
+                        <th className="px-2 py-3 font-semibold">Ended At</th>
                         <th className="px-2 py-3 font-semibold">Expected</th>
                         <th className="px-2 py-3 font-semibold">Found</th>
                         <th className="px-2 py-3 font-semibold">Missing</th>
+                        <th className="px-2 py-3 font-semibold">Unexpected</th>
+                        <th className="px-2 py-3 font-semibold">Position</th>
                         <th className="px-2 py-3 font-semibold">Status</th>
                         <th className="px-2 py-3 font-semibold">Action</th>
                       </tr>
@@ -1141,27 +1226,36 @@ export default function CompoundStockCheckPage() {
                         <tr key={row.id} className="border-b border-slate-100 align-top last:border-b-0">
                           <td className="px-2 py-3">{formatDateTime(row.started_at)}</td>
                           <td className="px-2 py-3">{row.started_by ?? "-"}</td>
+                          <td className="px-2 py-3">{formatDateTime(row.completed_at)}</td>
                           <td className="px-2 py-3">{row.expected_total ?? 0}</td>
                           <td className="px-2 py-3">{row.present_total ?? 0}</td>
                           <td className="px-2 py-3">{row.missing_total ?? 0}</td>
+                          <td className="px-2 py-3">{row.unexpected_total ?? 0}</td>
+                          <td className="px-2 py-3">{row.wrong_position_total ?? 0}</td>
                           <td className="px-2 py-3">
                             <span className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold ${getStatusBadgeClassName(row.status)}`}>
                               {formatStatusLabel(row.status)}
                             </span>
                           </td>
                           <td className="px-2 py-3">
-                            {(row.status === "in_progress" || row.status === "completed") ? (
-                              <button
-                                type="button"
-                                onClick={() => void handleReviewStockCheck(row)}
-                                disabled={isRefreshing || isMarking || isChangingLoadStatus}
-                                className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                            <div className="flex flex-wrap gap-1.5">
+                              {(row.status === "in_progress" || row.status === "completed") ? (
+                                <button
+                                  type="button"
+                                  onClick={() => void handleReviewStockCheck(row)}
+                                  disabled={isRefreshing || isMarking || isChangingLoadStatus}
+                                  className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                                >
+                                  Review
+                                </button>
+                              ) : null}
+                              <Link
+                                href={`/dashboard/compound/stock-check/summary?stockCheckId=${row.id}`}
+                                className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-50"
                               >
-                                Review
-                              </button>
-                            ) : (
-                              <span className="text-xs text-slate-500">-</span>
-                            )}
+                                Summary
+                              </Link>
+                            </div>
                           </td>
                         </tr>
                       ))}
@@ -1181,12 +1275,20 @@ export default function CompoundStockCheckPage() {
             <StatCard label="Checked" value={String(stats.checked)} />
             <StatCard label="Found" value={String(stats.found)} />
             <StatCard label="Remaining" value={String(stats.remaining)} />
+            <StatCard label="Missing" value={String(stats.missing)} />
+            <StatCard label="Unexpected" value={String(stats.unexpected)} />
+            <StatCard label="Position Mismatch" value={String(stats.wrongPosition)} />
+            <StatCard label="Status Mismatch" value={String(stats.wrongStatus)} />
           </section>
 
           <AppCard>
             <div className="p-5 md:p-6">
               <div className="flex flex-wrap items-start justify-between gap-4">
                 <dl className="grid gap-x-6 gap-y-3 text-sm text-slate-700 sm:grid-cols-2">
+                  <div>
+                    <dt className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Session ID</dt>
+                    <dd className="mt-1 break-all font-mono text-xs text-slate-900">{openStockCheck.id}</dd>
+                  </div>
                   <div>
                     <dt className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Started At</dt>
                     <dd className="mt-1 text-slate-900">{formatDateTime(openStockCheck.started_at)}</dd>
@@ -1195,12 +1297,24 @@ export default function CompoundStockCheckPage() {
                     <dt className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Started By</dt>
                     <dd className="mt-1 text-slate-900">{openStockCheck.started_by ?? "-"}</dd>
                   </div>
+                  <div>
+                    <dt className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Ended At</dt>
+                    <dd className="mt-1 text-slate-900">{formatDateTime(openStockCheck.completed_at)}</dd>
+                  </div>
                 </dl>
-                <span className={`inline-flex rounded-full border px-3 py-1.5 text-xs font-semibold ${getStatusBadgeClassName(openStockCheck.status)}`}>
-                  {formatStatusLabel(openStockCheck.status).toUpperCase()}
-                </span>
+                <div className="flex flex-col items-end gap-2">
+                  <span className={`inline-flex rounded-full border px-3 py-1.5 text-xs font-semibold ${getStatusBadgeClassName(openStockCheck.status)}`}>
+                    {formatStatusLabel(openStockCheck.status).toUpperCase()}
+                  </span>
+                  <Link
+                    href={`/dashboard/compound/stock-check/summary?stockCheckId=${openStockCheck.id}`}
+                    className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                  >
+                    Open Summary View
+                  </Link>
+                </div>
               </div>
-              <p className="mt-4 text-sm text-slate-600">Operational correction mode: load status changes update the trailer record in TrailerHub.</p>
+              <p className="mt-4 text-sm text-slate-600">Operational correction mode: load status and position changes use existing stock check reconciliation RPC workflows.</p>
             </div>
           </AppCard>
 
@@ -1243,9 +1357,40 @@ export default function CompoundStockCheckPage() {
           <AppCard>
             <div className="p-5 md:p-6">
               <h2 className="text-lg font-semibold text-slate-950">Expected Trailers</h2>
-              <p className="mt-1 text-sm text-slate-500">Snapshot items ordered by expected position and trailer number.</p>
+              <p className="mt-1 text-sm text-slate-500">Expected trailers currently in compound using operational stock check rules.</p>
 
-              {items.length === 0 ? (
+              <div className="mt-4 grid gap-3 md:grid-cols-[1fr_16rem_auto] md:items-end">
+                <label className="text-sm font-semibold text-slate-900" htmlFor="stockCheckSearch">
+                  Search
+                  <input
+                    id="stockCheckSearch"
+                    value={searchTerm}
+                    onChange={(event) => setSearchTerm(event.target.value.toUpperCase())}
+                    placeholder="Trailer, position, status"
+                    className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-cyan-500"
+                  />
+                </label>
+
+                <label className="text-sm font-semibold text-slate-900" htmlFor="stockCheckPrefix">
+                  Prefix
+                  <select
+                    id="stockCheckPrefix"
+                    value={prefixFilter}
+                    onChange={(event) => setPrefixFilter(event.target.value)}
+                    className="mt-2 h-[42px] w-full rounded-xl border border-slate-300 bg-white px-3 text-sm text-slate-900 outline-none focus:border-cyan-500"
+                  >
+                    {prefixOptions.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <p className="text-sm font-semibold text-slate-700">{filteredSortedItems.length} shown</p>
+              </div>
+
+              {filteredSortedItems.length === 0 ? (
                 <p className="mt-4 text-sm text-slate-500">No expected trailers were loaded for this stock check.</p>
               ) : (
                 <div className="mt-4 overflow-x-auto">
@@ -1261,7 +1406,7 @@ export default function CompoundStockCheckPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {items.map((item) => {
+                      {filteredSortedItems.map((item) => {
                         const normalizedItemTrailer = normalizeTrailerNumber(item.trailer_number ?? "");
                         const isPresent = item.physically_present === true;
                         const isMissing = item.physically_present === false;
@@ -1331,7 +1476,7 @@ export default function CompoundStockCheckPage() {
                           <td className="px-2 py-3">
                             {isPresent ? (
                               <span className="inline-flex rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-800">
-                                Present
+                                Found
                               </span>
                             ) : isMissing ? (
                               <span className="inline-flex rounded-full border border-rose-200 bg-rose-50 px-2.5 py-1 text-xs font-semibold text-rose-800">
@@ -1345,7 +1490,7 @@ export default function CompoundStockCheckPage() {
                                 aria-label={`Mark trailer ${item.trailer_number ?? "unknown"} as present`}
                                 className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
                               >
-                                {isCurrentAction ? "Marking..." : "Mark Present"}
+                                {isCurrentAction ? "Marking..." : "Mark Found"}
                               </button>
                             )}
                           </td>

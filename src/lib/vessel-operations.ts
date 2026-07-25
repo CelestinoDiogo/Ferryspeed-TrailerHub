@@ -114,6 +114,9 @@ export type VesselTrailerTemperaturePair = {
 export type VesselInspectionPhotoRecord = {
   id: string;
   vessel_trailer_id?: string | null;
+  trailer_id?: string | null;
+  trailer_number?: string | null;
+  vessel_operation_id?: string | null;
   category?: string | null;
   storage_path?: string | null;
   file_name?: string | null;

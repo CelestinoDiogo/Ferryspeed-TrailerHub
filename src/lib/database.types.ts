@@ -173,6 +173,44 @@ export type Database = {
         Update: Partial<Database["public"]["Tables"]["trailer_activity_log"]["Row"]>;
         Relationships: [];
       };
+      automation_rules: {
+        Row: {
+          id: string;
+          name: string;
+          description: string | null;
+          trigger_event: string;
+          conditions: Json;
+          actions: Json;
+          enabled: boolean;
+          last_executed_at: string | null;
+          execution_count: number;
+          created_by: string | null;
+          updated_by: string | null;
+          created_at: string | null;
+          updated_at: string | null;
+        };
+        Insert: Partial<Database["public"]["Tables"]["automation_rules"]["Row"]>;
+        Update: Partial<Database["public"]["Tables"]["automation_rules"]["Row"]>;
+        Relationships: [];
+      };
+      automation_rule_executions: {
+        Row: {
+          id: string;
+          rule_id: string;
+          trigger_event: string;
+          outcome: string;
+          message: string | null;
+          affected_entity_type: string | null;
+          affected_entity_id: string | null;
+          source_activity_id: string | null;
+          execution_payload: Json;
+          executed_at: string | null;
+          created_at: string | null;
+        };
+        Insert: Partial<Database["public"]["Tables"]["automation_rule_executions"]["Row"]>;
+        Update: Partial<Database["public"]["Tables"]["automation_rule_executions"]["Row"]>;
+        Relationships: [];
+      };
       operational_alert_settings: {
         Row: {
           id: string;
@@ -446,6 +484,8 @@ export type Database = {
         Row: {
           id: string;
           vessel_trailer_id: string | null;
+          trailer_id: string | null;
+          trailer_number: string | null;
           vessel_operation_id: string | null;
           category: string | null;
           storage_path: string | null;
@@ -469,6 +509,7 @@ export type Database = {
           subject: string | null;
           recipients: string[];
           cc: string[];
+          bcc: string[];
           executive_summary: string | null;
           operational_analysis: string | null;
           recommendations: string | null;
@@ -490,6 +531,27 @@ export type Database = {
         };
         Insert: Partial<Database["public"]["Tables"]["vessel_operation_reports"]["Row"]>;
         Update: Partial<Database["public"]["Tables"]["vessel_operation_reports"]["Row"]>;
+        Relationships: [];
+      };
+      vessel_operation_report_send_history: {
+        Row: {
+          id: string;
+          vessel_operation_id: string;
+          report_id: string | null;
+          subject: string;
+          recipients: Json;
+          report_content: string;
+          generated_at: string;
+          generated_by: string | null;
+          sent_at: string | null;
+          sent_by: string | null;
+          delivery_status: string;
+          provider_message_id: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: Partial<Database["public"]["Tables"]["vessel_operation_report_send_history"]["Row"]>;
+        Update: Partial<Database["public"]["Tables"]["vessel_operation_report_send_history"]["Row"]>;
         Relationships: [];
       };
     };
@@ -527,6 +589,15 @@ export type Database = {
       };
     };
     Functions: {
+      move_compound_trailer: {
+        Args: {
+          p_trailer_id: string;
+          p_target_position: string;
+          p_moved_by?: string | null;
+          p_reason?: string | null;
+        };
+        Returns: Database["public"]["Tables"]["trailers"]["Row"];
+      };
       confirm_vessel_operation_list: {
         Args: { p_vessel_operation_id: string; p_confirmed_by?: string | null };
         Returns: Database["public"]["Tables"]["vessel_operations"]["Row"];

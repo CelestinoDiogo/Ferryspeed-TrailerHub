@@ -27,6 +27,7 @@ export type OperationalAlertSettings = {
   stockCheckDiscrepanciesEnabled: boolean;
   exportWaitingCollectionHours: number;
   raw: OperationalAlertSettingsRow | null;
+  rawRows?: OperationalAlertSettingsRow[];
 };
 
 export type OperationalAlertSummary = {
@@ -175,6 +176,8 @@ type ExportAllocationRow = {
 };
 
 const ACTIVE_ALERT_STATUSES: OperationalAlertStatus[] = ["active", "acknowledged"];
+const isDev = process.env.NODE_ENV === "development";
+const SETTINGS_CACHE_MS = 15_000;
 const DEFAULT_SETTINGS: OperationalAlertSettings = {
   enabled: true,
   compoundDwellWarningDays: 7,
@@ -187,7 +190,11 @@ const DEFAULT_SETTINGS: OperationalAlertSettings = {
   stockCheckDiscrepanciesEnabled: true,
   exportWaitingCollectionHours: 24,
   raw: null,
+  rawRows: [],
 };
+
+let cachedOperationalAlertSettings: { fetchedAt: number; data: OperationalAlertSettings } | null = null;
+let inFlightOperationalAlertSettingsPromise: Promise<ServiceResult<OperationalAlertSettings>> | null = null;
 
 const severityOrder: OperationalAlertSeverity[] = ["critical", "high", "warning", "info"];
 
@@ -295,46 +302,118 @@ const resolveActorName = async (supabaseClient: SupabaseClient<Database>, fallba
   return metadataName || user.email || user.id || fallback;
 };
 
-const normalizeSettingsRow = (row: OperationalAlertSettingsRow | null): OperationalAlertSettings => ({
-  enabled: toBoolean(row?.enabled ?? null, DEFAULT_SETTINGS.enabled),
+const normalizeSettingsRow = (
+  row: OperationalAlertSettingsRow | null,
+  fallback: OperationalAlertSettings = DEFAULT_SETTINGS,
+  rawRows: OperationalAlertSettingsRow[] = row ? [row] : [],
+): OperationalAlertSettings => {
+  const looseRow = row as Record<string, unknown> | null;
+
+  return {
+  enabled: toBoolean(row?.enabled ?? null, fallback.enabled),
   compoundDwellWarningDays: toNumber(
-    row?.compound_dwell_warning_days ?? (row as Record<string, unknown> | null)?.["dwell_warning_days"] ?? (row as Record<string, unknown> | null)?.["compound_warning_days"],
-    DEFAULT_SETTINGS.compoundDwellWarningDays,
+    row?.compound_dwell_warning_days ?? looseRow?.["dwell_warning_days"] ?? looseRow?.["compound_warning_days"],
+    fallback.compoundDwellWarningDays,
   ),
   compoundDwellCriticalDays: toNumber(
-    row?.compound_dwell_critical_days ?? (row as Record<string, unknown> | null)?.["dwell_critical_days"] ?? (row as Record<string, unknown> | null)?.["compound_critical_days"],
-    DEFAULT_SETTINGS.compoundDwellCriticalDays,
+    row?.compound_dwell_critical_days ?? looseRow?.["dwell_critical_days"] ?? looseRow?.["compound_critical_days"],
+    fallback.compoundDwellCriticalDays,
   ),
   compoundOccupancyWarningPercent: toNumber(
-    row?.compound_occupancy_warning_percent ?? (row as Record<string, unknown> | null)?.["occupancy_warning_percent"] ?? (row as Record<string, unknown> | null)?.["occupancy_warning_threshold"],
-    DEFAULT_SETTINGS.compoundOccupancyWarningPercent,
+    row?.compound_occupancy_warning_percent ?? looseRow?.["occupancy_warning_percent"] ?? looseRow?.["occupancy_warning_threshold"],
+    fallback.compoundOccupancyWarningPercent,
   ),
   compoundOccupancyCriticalPercent: toNumber(
-    row?.compound_occupancy_critical_percent ?? (row as Record<string, unknown> | null)?.["occupancy_critical_percent"] ?? (row as Record<string, unknown> | null)?.["occupancy_critical_threshold"],
-    DEFAULT_SETTINGS.compoundOccupancyCriticalPercent,
+    row?.compound_occupancy_critical_percent ?? looseRow?.["occupancy_critical_percent"] ?? looseRow?.["occupancy_critical_threshold"],
+    fallback.compoundOccupancyCriticalPercent,
   ),
   priorityInspectionPendingMinutes: toNumber(
-    row?.priority_inspection_pending_minutes ?? (row as Record<string, unknown> | null)?.["inspection_pending_minutes"] ?? (row as Record<string, unknown> | null)?.["priority_pending_minutes"],
-    DEFAULT_SETTINGS.priorityInspectionPendingMinutes,
+    row?.priority_inspection_pending_minutes ?? looseRow?.["inspection_pending_minutes"] ?? looseRow?.["priority_pending_minutes"],
+    fallback.priorityInspectionPendingMinutes,
   ),
   temperatureAlertsEnabled: toBoolean(
-    row?.temperature_alerts_enabled ?? (row as Record<string, unknown> | null)?.["temperature_alert_enabled"],
-    DEFAULT_SETTINGS.temperatureAlertsEnabled,
+    row?.temperature_alerts_enabled ?? looseRow?.["temperature_alert_enabled"],
+    fallback.temperatureAlertsEnabled,
   ),
   inspectionMissingPhotosEnabled: toBoolean(
     row?.inspection_missing_photos_enabled,
-    DEFAULT_SETTINGS.inspectionMissingPhotosEnabled,
+    fallback.inspectionMissingPhotosEnabled,
   ),
   stockCheckDiscrepanciesEnabled: toBoolean(
     row?.stock_check_discrepancies_enabled,
-    DEFAULT_SETTINGS.stockCheckDiscrepanciesEnabled,
+    fallback.stockCheckDiscrepanciesEnabled,
   ),
   exportWaitingCollectionHours: toNumber(
-    row?.export_waiting_collection_hours ?? (row as Record<string, unknown> | null)?.["waiting_collection_hours"] ?? (row as Record<string, unknown> | null)?.["export_waiting_hours"],
-    DEFAULT_SETTINGS.exportWaitingCollectionHours,
+    row?.export_waiting_collection_hours ?? looseRow?.["waiting_collection_hours"] ?? looseRow?.["export_waiting_hours"],
+    fallback.exportWaitingCollectionHours,
   ),
   raw: row,
-});
+  rawRows,
+};
+};
+
+const mergeSettingsRows = (rows: OperationalAlertSettingsRow[]): OperationalAlertSettings => {
+  if (rows.length === 0) {
+    return { ...DEFAULT_SETTINGS, raw: null, rawRows: [] };
+  }
+
+  const sortedRows = [...rows].sort((left, right) => {
+    const leftTime = new Date(left.updated_at ?? left.created_at ?? 0).getTime();
+    const rightTime = new Date(right.updated_at ?? right.created_at ?? 0).getTime();
+
+    const safeLeft = Number.isFinite(leftTime) ? leftTime : 0;
+    const safeRight = Number.isFinite(rightTime) ? rightTime : 0;
+
+    return safeLeft - safeRight;
+  });
+
+  let merged: OperationalAlertSettings = { ...DEFAULT_SETTINGS, raw: null, rawRows: [] };
+
+  for (const row of sortedRows) {
+    try {
+      merged = normalizeSettingsRow(row, merged, [...(merged.rawRows ?? []), row]);
+    } catch (error) {
+      if (isDev) {
+        console.error("[alerts] malformed settings row skipped", {
+          resource: "public.operational_alert_settings",
+          rowId: row.id,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  }
+
+  return merged;
+};
+
+const loadOperationalAlertSettings = async (client: SupabaseClient<Database>): Promise<ServiceResult<OperationalAlertSettings>> => {
+  try {
+    const { data, error } = await client
+      .from("operational_alert_settings")
+      .select("*")
+      .order("updated_at", { ascending: false, nullsFirst: false });
+
+    if (error) {
+      return { ok: false, error: error.message || "Unable to load operational alert settings." };
+    }
+
+    const rows = (data ?? []) as OperationalAlertSettingsRow[];
+    const mergedSettings = mergeSettingsRows(rows);
+
+    if (isDev) {
+      console.info("[alerts] settings loaded", {
+        resource: "public.operational_alert_settings",
+        rowCount: rows.length,
+        effectiveSettingsRowId: mergedSettings.raw?.id ?? null,
+      });
+    }
+
+    return { ok: true, data: mergedSettings };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unable to load operational alert settings.";
+    return { ok: false, error: message };
+  }
+};
 
 const normalizeSummaryRow = (row: OperationalAlertSummaryRow | null): OperationalAlertSummary => ({
   totalActiveAlerts: toNumber(row?.total_active_alerts, 0),
@@ -437,32 +516,58 @@ export async function getOperationalAlertSettings(
   supabaseClient?: SupabaseClient<Database>,
 ): Promise<ServiceResult<OperationalAlertSettings>> {
   const client = getClient(supabaseClient);
+  const now = Date.now();
 
-  try {
-    const { data, error } = await client.from("operational_alert_settings").select("*").maybeSingle();
-    if (error) {
-      return { ok: false, error: error.message || "Unable to load operational alert settings." };
-    }
-
-    return { ok: true, data: normalizeSettingsRow((data ?? null) as OperationalAlertSettingsRow | null) };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "Unable to load operational alert settings.";
-    return { ok: false, error: message };
+  if (cachedOperationalAlertSettings && now - cachedOperationalAlertSettings.fetchedAt < SETTINGS_CACHE_MS) {
+    return { ok: true, data: cachedOperationalAlertSettings.data };
   }
+
+  if (!inFlightOperationalAlertSettingsPromise) {
+    inFlightOperationalAlertSettingsPromise = loadOperationalAlertSettings(client).finally(() => {
+      inFlightOperationalAlertSettingsPromise = null;
+    });
+  }
+
+  const result = await inFlightOperationalAlertSettingsPromise;
+  if (result.ok) {
+    cachedOperationalAlertSettings = {
+      fetchedAt: now,
+      data: result.data,
+    };
+  }
+
+  return result;
 }
 
 export async function getOperationalAlertSummary(
   supabaseClient?: SupabaseClient<Database>,
 ): Promise<ServiceResult<OperationalAlertSummary>> {
   const client = getClient(supabaseClient);
+  const isDev = process.env.NODE_ENV !== "production";
 
   try {
-    const { data, error } = await client.from("operational_alert_summary").select("*").maybeSingle();
+    const { data, error } = await client.from("operational_alert_summary").select("*");
     if (error) {
       return { ok: false, error: error.message || "Unable to load operational alert summary." };
     }
 
-    return { ok: true, data: normalizeSummaryRow((data ?? null) as OperationalAlertSummaryRow | null) };
+    const rows = (data ?? []) as OperationalAlertSummaryRow[];
+
+    if (rows.length > 1) {
+      if (isDev) {
+        console.error("[alerts] summary returned multiple rows", {
+          resource: "public.operational_alert_summary",
+          rowCount: rows.length,
+        });
+      }
+
+      return {
+        ok: false,
+        error: `Dashboard summary data issue: operational_alert_summary returned ${rows.length} rows; expected 1.`,
+      };
+    }
+
+    return { ok: true, data: normalizeSummaryRow(rows[0] ?? null) };
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unable to load operational alert summary.";
     return { ok: false, error: message };

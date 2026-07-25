@@ -4,6 +4,10 @@ import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { HistoryDateRangeFilter } from "@/components/common/history-date-range-filter";
+import { OperationalActionBar } from "@/components/operations/operational-action-bar";
+import { TrailerOperationsPanel } from "@/components/operations/trailer-operations-panel";
+import { SuccessToast } from "@/components/common/success-toast";
+import { TrailerHistoryDrawer } from "@/components/trailers/trailer-history-drawer";
 import { PrintButton } from "@/components/print/print-button";
 import { PrintFilters } from "@/components/print/print-filters";
 import { PrintFooter } from "@/components/print/print-footer";
@@ -13,8 +17,10 @@ import { ReportPrintLayout } from "@/components/print/report-print-layout";
 import { PrintSummary } from "@/components/print/print-summary";
 import { PrintTable } from "@/components/print/print-table";
 import type { Database } from "@/lib/database.types";
+import { loadExportAllocationsForReport } from "@/lib/reports/report-data";
 import { supabase } from "@/lib/supabase";
 import { createTrailerActivity } from "@/lib/trailer-activity";
+import { resolveAuditOperatorName } from "@/lib/trailer-audit-log";
 import { getLocalDateKey } from "@/lib/operational-readiness";
 import {
   createHistoryDateRange,
@@ -119,6 +125,16 @@ const formatDate = (value?: string | null) => {
 };
 
 const normalizeText = (value?: string | null) => value?.trim().toLowerCase() ?? "";
+
+const normalizeTrailerPrefix = (value?: string | null) => {
+  const normalized = value?.trim().toUpperCase() ?? "";
+  if (!normalized) {
+    return "";
+  }
+
+  const match = normalized.match(/^[A-Z]+/);
+  return match?.[0] ?? "";
+};
 
 const getDateKey = (value?: string | null) => {
   if (!value) {
@@ -296,6 +312,12 @@ function ExportOperationsPageContent() {
   const [success, setSuccess] = useState<string | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
   const [actioningId, setActioningId] = useState<string | null>(null);
+  const [undoCandidateAllocationId, setUndoCandidateAllocationId] = useState<string | null>(null);
+  const [historyTrailer, setHistoryTrailer] = useState<{ trailerId: string | null; trailerNumber: string | null } | null>(null);
+  const [selectedAllocationIds, setSelectedAllocationIds] = useState<string[]>([]);
+  const [panelAllocationId, setPanelAllocationId] = useState<string | null>(null);
+  const [prefixFilter, setPrefixFilter] = useState<string>("all");
+  const [sortBy, setSortBy] = useState<"collection_date" | "trailer_asc" | "trailer_desc">("collection_date");
 
   const historyRange = useMemo<HistoryDateRangeValue>(() => {
     const preset = normalizeHistoryPreset(historyPresetQuery);
@@ -373,8 +395,17 @@ function ExportOperationsPageContent() {
   };
 
   const handlePrintList = () => {
+    if (isLoading || filteredCount === 0) {
+      return;
+    }
+
     window.requestAnimationFrame(() => {
       window.requestAnimationFrame(() => {
+        const printRoot = document.getElementById("print-report-root");
+        if (printRoot && printRoot.childElementCount === 0) {
+          setError("Print report is still preparing. Please try again.");
+          return;
+        }
         window.print();
       });
     });
@@ -386,76 +417,7 @@ function ExportOperationsPageContent() {
     setWarning(null);
 
     try {
-      const queryColumns = `
-        id,
-        trailer_id,
-        trailer_number,
-        customer,
-        collection_address,
-        haulier,
-        booking_reference,
-        load_type,
-        collection_date,
-        expected_return_at,
-        priority,
-        status,
-        notes,
-        allocated_at,
-        delivered_empty_at,
-        waiting_loading_at,
-        collected_loaded_at,
-        completed_at,
-        collected_by_haulier_at,
-        loading_started_at,
-        loaded_at,
-        returned_at,
-        shipped_at,
-        cancelled_at,
-        created_at,
-        updated_at
-      `;
-
-      const fallbackColumns = `
-        id,
-        trailer_id,
-        trailer_number,
-        customer,
-        collection_address,
-        haulier,
-        booking_reference,
-        load_type,
-        collection_date,
-        expected_return_at,
-        priority,
-        status,
-        notes,
-        allocated_at,
-        delivered_empty_at,
-        waiting_loading_at,
-        collected_loaded_at,
-        completed_at,
-        created_at,
-        updated_at
-      `;
-
-      const runQuery = async (columns: string) =>
-        supabase
-          .from("export_allocations")
-          .select(columns)
-          .order("collection_date", { ascending: true })
-          .order("created_at", { ascending: false });
-
-      let result = await runQuery(queryColumns);
-
-      if (result.error) {
-        result = await runQuery(fallbackColumns);
-
-        if (result.error) {
-          throw new Error([result.error.message, result.error.details, result.error.hint].filter(Boolean).join(" - "));
-        }
-      }
-
-      const rows = (result.data ?? []) as unknown as ExportAllocationRecord[];
+      const rows = await loadExportAllocationsForReport(supabase);
       setAllocations(rows.map((row) => normalizeExportAllocationRecord(row)));
     } catch (loadErr) {
       setError(loadErr instanceof Error ? loadErr.message : "Unable to load export allocations.");
@@ -468,6 +430,18 @@ function ExportOperationsPageContent() {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void loadAllocations();
   }, []);
+
+  useEffect(() => {
+    if (!success) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setSuccess(null);
+    }, 2600);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [success]);
 
   const baseFilteredAllocations = useMemo(() => {
     const todayKey = getLocalDateKey();
@@ -546,12 +520,54 @@ function ExportOperationsPageContent() {
   }, [customerOptions, resolvedCustomerValue]);
 
   const filteredAllocations = useMemo(() => {
-    if (!resolvedCustomerValue) {
-      return baseFilteredAllocations;
-    }
+    const filteredByCustomer = !resolvedCustomerValue
+      ? baseFilteredAllocations
+      : baseFilteredAllocations.filter((item) => normalizeText(item.customer) === normalizeText(resolvedCustomerValue));
 
-    return baseFilteredAllocations.filter((item) => normalizeText(item.customer) === normalizeText(resolvedCustomerValue));
-  }, [baseFilteredAllocations, resolvedCustomerValue]);
+    const filteredByPrefix = filteredByCustomer.filter((item) => {
+      if (prefixFilter === "all") {
+        return true;
+      }
+
+      return normalizeTrailerPrefix(item.trailer_number) === prefixFilter;
+    });
+
+    return [...filteredByPrefix].sort((left, right) => {
+      if (sortBy === "trailer_asc" || sortBy === "trailer_desc") {
+        const leftTrailer = left.trailer_number?.trim() ?? "";
+        const rightTrailer = right.trailer_number?.trim() ?? "";
+        const base = leftTrailer.localeCompare(rightTrailer, undefined, {
+          numeric: true,
+          sensitivity: "base",
+        });
+        return sortBy === "trailer_desc" ? -base : base;
+      }
+
+      return comparePrintAllocations(left, right);
+    });
+  }, [baseFilteredAllocations, prefixFilter, resolvedCustomerValue, sortBy]);
+
+  const prefixOptions = useMemo(() => {
+    const prefixes = new Set<string>();
+    allocations.forEach((item) => {
+      const prefix = normalizeTrailerPrefix(item.trailer_number);
+      if (prefix) {
+        prefixes.add(prefix);
+      }
+    });
+
+    return [
+      { value: "all", label: "All" },
+      ...Array.from(prefixes)
+        .sort((left, right) => left.localeCompare(right, undefined, { sensitivity: "base" }))
+        .map((prefix) => ({ value: prefix, label: prefix })),
+    ];
+  }, [allocations]);
+
+  const panelAllocation = useMemo(
+    () => filteredAllocations.find((item) => item.id === panelAllocationId) ?? null,
+    [filteredAllocations, panelAllocationId],
+  );
 
   const printAllocations = useMemo(() => [...filteredAllocations].sort(comparePrintAllocations), [filteredAllocations]);
 
@@ -905,6 +921,7 @@ function ExportOperationsPageContent() {
         await createStatusChangedEvent(allocation, allocation.status, nextStatus, movementMetadata, {
           skipLegacyEvent: !delivered.requiresClientEvent,
         });
+        setUndoCandidateAllocationId(allocation.id);
         setSuccess(
           automaticAssignmentMessage
             ? `Status updated to Delivered Empty. Trailer removed from compound inventory. ${automaticAssignmentMessage}`
@@ -943,6 +960,11 @@ function ExportOperationsPageContent() {
       }
 
       await createStatusChangedEvent(allocation, allocation.status, nextStatus);
+      if (nextStatus === "waiting_loading" || nextStatus === "collected_loaded") {
+        setUndoCandidateAllocationId(allocation.id);
+      } else {
+        setUndoCandidateAllocationId(null);
+      }
       setSuccess(`Status updated to ${getExportAllocationStatusLabel(nextStatus)}.`);
       await loadAllocations();
     } catch (advanceErr) {
@@ -985,6 +1007,7 @@ function ExportOperationsPageContent() {
       await createStatusChangedEvent(allocation, allocation.status, "cancelled", {
         requires_manual_compound_return: cancelledAfterDeparture,
       });
+      setUndoCandidateAllocationId(null);
       setSuccess(
         cancelledAfterDeparture
           ? "Allocation cancelled. Trailer remains outside compound until explicitly returned."
@@ -1077,6 +1100,7 @@ function ExportOperationsPageContent() {
       }
 
       await createStatusChangedEvent(allocation, allocation.status, previousStatus, movementMetadata);
+      setUndoCandidateAllocationId(null);
       setSuccess(
         `Last movement undone. Status is now ${getExportAllocationStatusLabel(previousStatus)}.${fallbackRestoreMessage ?? ""}`,
       );
@@ -1091,6 +1115,115 @@ function ExportOperationsPageContent() {
   const activeCount = allocations.filter((item) => EXPORT_ACTIVE_STATUSES.has(item.status)).length;
   const atCustomerCount = allocations.filter((item) => item.status === "delivered_empty" || item.status === "waiting_loading").length;
   const completedCount = allocations.filter((item) => item.status === "completed").length;
+
+  const handleUndoFromToast = async () => {
+    if (!undoCandidateAllocationId) {
+      return;
+    }
+
+    const candidate = allocations.find((item) => item.id === undoCandidateAllocationId);
+    if (!candidate) {
+      setUndoCandidateAllocationId(null);
+      return;
+    }
+
+    await handleUndoLastMovement(candidate);
+  };
+
+  useEffect(() => {
+    setSelectedAllocationIds((current) => current.filter((id) => filteredAllocations.some((item) => item.id === id)));
+  }, [filteredAllocations]);
+
+  const toggleAllocationSelection = (allocationId: string) => {
+    setSelectedAllocationIds((current) => {
+      if (current.includes(allocationId)) {
+        return current.filter((id) => id !== allocationId);
+      }
+
+      return [...current, allocationId];
+    });
+  };
+
+  const toggleSelectVisible = () => {
+    setSelectedAllocationIds((current) => {
+      const visibleIds = filteredAllocations.map((item) => item.id);
+      const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => current.includes(id));
+      if (allVisibleSelected) {
+        return current.filter((id) => !visibleIds.includes(id));
+      }
+
+      const merged = new Set(current);
+      visibleIds.forEach((id) => merged.add(id));
+      return Array.from(merged);
+    });
+  };
+
+  const clearSelection = () => {
+    setSelectedAllocationIds([]);
+  };
+
+  const handleBatchQuickAction = async () => {
+    if (selectedAllocationIds.length === 0 || actioningId) {
+      return;
+    }
+
+    const selectedRows = filteredAllocations.filter((item) => selectedAllocationIds.includes(item.id));
+    for (const allocation of selectedRows) {
+      const next = getNextExportAllocationStatus(allocation.status);
+      if (!next) {
+        continue;
+      }
+
+      await handleAdvanceStatus(allocation);
+    }
+  };
+
+  const handleQuickMove = async (allocation: ExportAllocationRecord, nextPosition: string) => {
+    if (!allocation.trailer_id) {
+      throw new Error("No trailer available for this allocation.");
+    }
+
+    const { data: trailerRow, error: trailerError } = await supabase
+      .from("trailers")
+      .select("id, trailer_number, load_status, compound_position")
+      .eq("id", allocation.trailer_id)
+      .single();
+
+    if (trailerError || !trailerRow) {
+      throw new Error(trailerError?.message || "Unable to load trailer for movement.");
+    }
+
+    const { error: updateError } = await supabase
+      .from("trailers")
+      .update({ compound_position: nextPosition })
+      .eq("id", allocation.trailer_id)
+      .select("id")
+      .single();
+
+    if (updateError) {
+      throw new Error(updateError.message || "Unable to move trailer.");
+    }
+
+    const operatorName = await resolveAuditOperatorName();
+    const nowIso = new Date().toISOString();
+    await createTrailerActivity({
+      trailerId: allocation.trailer_id,
+      trailerNumber: trailerRow.trailer_number ?? allocation.trailer_number ?? allocation.trailer_id,
+      eventType: "compound_position_assigned",
+      eventTitle: "Position updated",
+      eventDescription: `Compound position changed to ${nextPosition} from Export Operations.`,
+      sourceModule: "export",
+      sourceRecordId: allocation.id,
+      previousStatus: trailerRow.load_status ?? null,
+      newStatus: trailerRow.load_status ?? null,
+      previousCompoundPosition: trailerRow.compound_position ?? null,
+      newCompoundPosition: nextPosition,
+      performedBy: operatorName,
+      createdAt: nowIso,
+    });
+
+    setSuccess(`Trailer moved to ${nextPosition}.`);
+  };
 
   return (
     <ReportPrintLayout
@@ -1126,7 +1259,13 @@ function ExportOperationsPageContent() {
         ) : null}
 
         {success ? (
-          <div className="rounded-2xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">{success}</div>
+          <SuccessToast
+            message={success}
+            onClose={() => setSuccess(null)}
+            actionLabel={undoCandidateAllocationId ? "Undo" : undefined}
+            onAction={undoCandidateAllocationId ? () => void handleUndoFromToast() : undefined}
+            actionDisabled={Boolean(actioningId)}
+          />
         ) : null}
 
         {warning ? (
@@ -1155,73 +1294,89 @@ function ExportOperationsPageContent() {
         </section>
 
         <section className="filters rounded-3xl border border-white/10 bg-slate-900/70 p-4 shadow-lg shadow-black/20 backdrop-blur sm:p-5">
-          <HistoryDateRangeFilter
-            value={historyRange}
-            onChange={(nextRange) => updateFilters({ history: nextRange })}
-            label="Collection Period"
+          <OperationalActionBar
+            moduleLabel="Export Operations"
+            searchValue={searchTerm}
+            onSearchChange={setSearchTerm}
+            searchPlaceholder="Trailer, customer, address, haulier, booking, load type"
+            prefixOptions={prefixOptions}
+            prefixValue={prefixFilter}
+            onPrefixChange={setPrefixFilter}
+            statusOptions={STATUS_OPTIONS.map((option) => ({ value: option.value, label: option.label }))}
+            statusValue={statusFilter}
+            onStatusChange={(value) => updateFilters({ status: value })}
+            sortOptions={[
+              { value: "collection_date", label: "Collection Date" },
+              { value: "trailer_asc", label: "Trailer A-Z" },
+              { value: "trailer_desc", label: "Trailer Z-A" },
+            ]}
+            sortValue={sortBy}
+            onSortChange={(value) => setSortBy(value as "collection_date" | "trailer_asc" | "trailer_desc")}
+            selectedCount={selectedAllocationIds.length}
+            primaryActions={
+              <>
+                <button
+                  type="button"
+                  onClick={toggleSelectVisible}
+                  className="rounded-xl border border-white/10 bg-slate-800 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-700"
+                >
+                  {filteredCount > 0 && filteredAllocations.every((item) => selectedAllocationIds.includes(item.id))
+                    ? "Unselect Visible"
+                    : "Select Visible"}
+                </button>
+                <button
+                  type="button"
+                  onClick={clearSelection}
+                  disabled={selectedAllocationIds.length === 0}
+                  className="rounded-xl border border-white/10 bg-slate-800 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-700 disabled:opacity-50"
+                >
+                  Clear
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleBatchQuickAction()}
+                  disabled={selectedAllocationIds.length === 0 || Boolean(actioningId)}
+                  className="rounded-xl bg-cyan-500 px-3 py-2 text-xs font-semibold text-slate-950 hover:bg-cyan-400 disabled:opacity-60"
+                >
+                  Run Quick Action
+                </button>
+              </>
+            }
+            secondaryActions={
+              <>
+                <HistoryDateRangeFilter
+                  value={historyRange}
+                  onChange={(nextRange) => updateFilters({ history: nextRange })}
+                  label="Collection Period"
+                />
+                <label className="text-xs uppercase tracking-[0.2em] text-slate-500">
+                  Customer
+                  <select
+                    value={resolvedCustomerValue}
+                    onChange={(event) => updateFilters({ customer: event.target.value })}
+                    className="mt-1.5 h-10 rounded-xl border border-white/10 bg-slate-950/85 px-3 text-sm text-slate-100"
+                  >
+                    <option value="">All Customers</option>
+                    {customerSelectOptions.map((customer) => (
+                      <option key={customer} value={customer}>
+                        {customer}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <button
+                  type="button"
+                  onClick={handleClearFilters}
+                  className="rounded-xl border border-white/10 bg-slate-800 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-700"
+                >
+                  Clear Filters
+                </button>
+                <PrintButton label="Print / Export" disabled={isLoading || filteredCount === 0} onPrint={handlePrintList} className="action-buttons" />
+              </>
+            }
           />
 
-          <div className="mt-3 grid gap-3 xl:grid-cols-3">
-
-            <label className="flex flex-col gap-2 text-sm text-slate-300">
-              <span className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Customer</span>
-              <select
-                value={resolvedCustomerValue}
-                onChange={(event) => updateFilters({ customer: event.target.value })}
-                className="h-11 rounded-2xl border border-white/10 bg-slate-950/80 px-3 text-slate-100 outline-none ring-0 focus:border-cyan-400/50"
-              >
-                <option value="">All Customers</option>
-                {customerSelectOptions.map((customer) => (
-                  <option key={customer} value={customer}>
-                    {customer}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <label className="flex flex-col gap-2 text-sm text-slate-300">
-              <span className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Status</span>
-              <select
-                value={statusFilter}
-                onChange={(event) => updateFilters({ status: event.target.value })}
-                className="h-11 rounded-2xl border border-white/10 bg-slate-950/80 px-3 text-slate-100 outline-none ring-0 focus:border-cyan-400/50"
-              >
-                {STATUS_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <label className="flex flex-col gap-2 text-sm text-slate-300">
-              <span className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Search</span>
-              <input
-                type="search"
-                value={searchTerm}
-                onChange={(event) => setSearchTerm(event.target.value)}
-                placeholder="Trailer, customer, address, haulier, booking, load type"
-                className="h-11 rounded-2xl border border-white/10 bg-slate-950/80 px-3 text-slate-100 outline-none ring-0 placeholder:text-slate-500 focus:border-cyan-400/50"
-              />
-            </label>
-          </div>
-
-          <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
-            <p className="text-sm font-semibold text-slate-200">
-              {filteredCount} allocation{filteredCount === 1 ? "" : "s"}
-            </p>
-
-            <div className="flex flex-wrap gap-2">
-              <button
-                type="button"
-                onClick={handleClearFilters}
-                className="rounded-2xl border border-white/10 bg-slate-800 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-700"
-              >
-                Clear Filters
-              </button>
-              <PrintButton label="Print / Export" disabled={isLoading || filteredCount === 0} onPrint={handlePrintList} className="action-buttons" />
-            </div>
-          </div>
+          <p className="mt-4 text-sm font-semibold text-slate-200">{filteredCount} allocation{filteredCount === 1 ? "" : "s"}</p>
         </section>
 
         {isLoading ? (
@@ -1249,6 +1404,15 @@ function ExportOperationsPageContent() {
                 <article key={allocation.id} className="rounded-3xl border border-white/10 bg-slate-900/70 p-4 shadow-lg shadow-black/20 backdrop-blur sm:p-5">
                   <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                     <div>
+                      <label className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-slate-950/70 px-2.5 py-1 text-xs text-slate-300">
+                        <input
+                          type="checkbox"
+                          checked={selectedAllocationIds.includes(allocation.id)}
+                          onChange={() => toggleAllocationSelection(allocation.id)}
+                          className="h-4 w-4"
+                        />
+                        Select
+                      </label>
                       <p className="text-xs uppercase tracking-[0.25em] text-slate-500">Trailer</p>
                       <p className="mt-1 text-xl font-semibold text-white">
                         {allocation.trailer_id ? (
@@ -1310,53 +1474,125 @@ function ExportOperationsPageContent() {
                   </div>
 
                   <div className="mt-4 flex flex-wrap gap-2">
-                    {allocation.trailer_id ? (
-                      <Link href={`/dashboard/trailers/${allocation.trailer_id}`} className="rounded-xl border border-white/10 bg-slate-800 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-700">
-                        View Trailer
-                      </Link>
-                    ) : null}
-                    <Link href={`/dashboard/export-operations/${allocation.id}`} className="rounded-xl border border-white/10 bg-slate-800 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-700">
-                      View
-                    </Link>
-                    <Link href={`/dashboard/export-operations/${allocation.id}?edit=1`} className="rounded-xl border border-white/10 bg-slate-800 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-700">
-                      Edit
-                    </Link>
                     {nextActionLabel ? (
                       <button
                         type="button"
                         onClick={() => void handleAdvanceStatus(allocation)}
                         disabled={isActioning}
-                        className="rounded-xl border border-cyan-500/30 bg-cyan-500/10 px-3 py-2 text-xs font-semibold text-cyan-200 hover:bg-cyan-500/20 disabled:opacity-60"
+                        className="rounded-xl bg-cyan-500 px-4 py-2 text-xs font-semibold text-slate-950 hover:bg-cyan-400 disabled:opacity-60"
                       >
                         {isActioning ? "Updating..." : nextActionLabel}
                       </button>
-                    ) : null}
-                    {canCancel ? (
-                      <button
-                        type="button"
-                        onClick={() => void handleCancel(allocation)}
-                        disabled={isActioning}
-                        className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs font-semibold text-rose-200 hover:bg-rose-500/20 disabled:opacity-60"
-                      >
-                        {isActioning ? "Cancelling..." : "Cancel Allocation"}
-                      </button>
-                    ) : null}
-                    {canUndo ? (
-                      <button
-                        type="button"
-                        onClick={() => void handleUndoLastMovement(allocation)}
-                        disabled={isActioning}
-                        className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs font-semibold text-amber-200 hover:bg-amber-500/20 disabled:opacity-60"
-                      >
-                        {isActioning ? "Undoing..." : "Undo Last Movement"}
-                      </button>
-                    ) : null}
+                    ) : (
+                      <Link href={`/dashboard/export-operations/${allocation.id}`} className="rounded-xl border border-white/10 bg-slate-800 px-4 py-2 text-xs font-semibold text-white hover:bg-slate-700">
+                        View Allocation
+                      </Link>
+                    )}
+
+                    <details className="group rounded-xl border border-white/10 bg-slate-950/60">
+                      <summary className="cursor-pointer list-none px-3 py-2 text-xs font-semibold text-slate-100 marker:content-none">More Actions</summary>
+                      <div className="flex flex-col gap-2 border-t border-white/10 p-2">
+                        {allocation.trailer_id ? (
+                          <Link href={`/dashboard/trailers/${allocation.trailer_id}`} className="rounded-lg border border-white/10 bg-slate-800 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-700">
+                            View Trailer
+                          </Link>
+                        ) : null}
+                        <Link href={`/dashboard/export-operations/${allocation.id}`} className="rounded-lg border border-white/10 bg-slate-800 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-700">
+                          View
+                        </Link>
+                        <Link href={`/dashboard/export-operations/${allocation.id}?edit=1`} className="rounded-lg border border-white/10 bg-slate-800 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-700">
+                          Edit
+                        </Link>
+                        <button
+                          type="button"
+                          onClick={() => setHistoryTrailer({ trailerId: allocation.trailer_id ?? null, trailerNumber: allocation.trailer_number ?? null })}
+                          className="rounded-lg border border-white/10 bg-slate-800 px-3 py-2 text-left text-xs font-semibold text-white hover:bg-slate-700"
+                        >
+                          History
+                        </button>
+                        {canCancel ? (
+                          <button
+                            type="button"
+                            onClick={() => void handleCancel(allocation)}
+                            disabled={isActioning}
+                            className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-left text-xs font-semibold text-rose-200 hover:bg-rose-500/20 disabled:opacity-60"
+                          >
+                            {isActioning ? "Cancelling..." : "Cancel Allocation"}
+                          </button>
+                        ) : null}
+                        {canUndo ? (
+                          <button
+                            type="button"
+                            onClick={() => void handleUndoLastMovement(allocation)}
+                            disabled={isActioning}
+                            className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-left text-xs font-semibold text-amber-200 hover:bg-amber-500/20 disabled:opacity-60"
+                          >
+                            {isActioning ? "Undoing..." : "Undo Last Movement"}
+                          </button>
+                        ) : null}
+                      </div>
+                    </details>
+
+                    <button
+                      type="button"
+                      onClick={() => setPanelAllocationId(allocation.id)}
+                      className="rounded-xl border border-white/10 bg-slate-800 px-4 py-2 text-xs font-semibold text-white hover:bg-slate-700"
+                    >
+                      Open Workspace
+                    </button>
                   </div>
                 </article>
               );
             })}
           </section>
         ) : null}
+
+        <TrailerHistoryDrawer
+          isOpen={Boolean(historyTrailer)}
+          trailerId={historyTrailer?.trailerId}
+          trailerNumber={historyTrailer?.trailerNumber}
+          onClose={() => setHistoryTrailer(null)}
+        />
+
+        <TrailerOperationsPanel
+          isOpen={Boolean(panelAllocation)}
+          onClose={() => setPanelAllocationId(null)}
+          moduleLabel="Export Operations"
+          trailer={
+            panelAllocation
+              ? {
+                  id: panelAllocation.id,
+                  trailerId: panelAllocation.trailer_id ?? null,
+                  trailerNumber: panelAllocation.trailer_number ?? null,
+                  customer: panelAllocation.customer ?? null,
+                  loadStatus: panelAllocation.load_type ?? null,
+                  status: panelAllocation.status,
+                  compoundPosition: null,
+                  arrivalDate: panelAllocation.collection_date ?? null,
+                }
+              : null
+          }
+          inspectionHref={panelAllocation?.trailer_id ? `/dashboard/trailers/${panelAllocation.trailer_id}` : null}
+          photosHref={panelAllocation?.trailer_id ? `/dashboard/trailers/${panelAllocation.trailer_id}` : null}
+          damageHref={panelAllocation?.trailer_id ? `/dashboard/trailers/${panelAllocation.trailer_id}` : null}
+          onDeliveredEmpty={
+            panelAllocation && getNextExportAllocationStatus(panelAllocation.status)
+              ? () => handleAdvanceStatus(panelAllocation)
+              : undefined
+          }
+          onOpenHistory={
+            panelAllocation
+              ? () =>
+                  setHistoryTrailer({
+                    trailerId: panelAllocation.trailer_id ?? null,
+                    trailerNumber: panelAllocation.trailer_number ?? null,
+                  })
+              : undefined
+          }
+          onMove={panelAllocation ? (nextPosition) => handleQuickMove(panelAllocation, nextPosition) : undefined}
+          moveLabel="Move Trailer"
+          isBusy={Boolean(actioningId)}
+        />
       </div>
     </main>
       }

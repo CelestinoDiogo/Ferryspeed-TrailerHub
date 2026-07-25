@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { SuccessToast } from "@/components/common/success-toast";
 import { TrailerTimeline } from "@/components/trailers/trailer-timeline";
 import type { Database } from "@/lib/database.types";
 import {
@@ -157,6 +158,18 @@ function ExportAllocationDetailsContent() {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!success) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setSuccess(null);
+    }, 2600);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [success]);
 
   const loadAllocation = useCallback(async () => {
     if (!allocationId) {
@@ -1007,9 +1020,7 @@ function ExportAllocationDetailsContent() {
           <div className="rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">{error}</div>
         ) : null}
 
-        {success ? (
-          <div className="rounded-2xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">{success}</div>
-        ) : null}
+        {success ? <SuccessToast message={success} onClose={() => setSuccess(null)} /> : null}
 
         {warning ? (
           <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">

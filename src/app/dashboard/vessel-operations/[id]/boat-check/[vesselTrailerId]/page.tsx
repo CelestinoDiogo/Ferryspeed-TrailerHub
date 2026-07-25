@@ -4,6 +4,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { SuccessToast } from "@/components/common/success-toast";
 import { supabase } from "@/lib/supabase";
 import {
   buildVesselSupabaseErrorMessage,
@@ -14,6 +15,7 @@ import {
   getVesselPriorityLabel,
   getVesselTrailerStatusClass,
   logVesselSupabaseError,
+  normalizeTrailerNumber,
   normalizeExpectedTemperatureUnit,
   resolveExpectedFrontTemperature,
   resolveExpectedRearTemperature,
@@ -43,6 +45,12 @@ type SelectedInspectionPhoto = {
   file: File;
   previewUrl: string;
   source: "camera" | "upload";
+};
+
+type TrailerNavigationItem = {
+  id: string;
+  trailer_number: string | null;
+  created_at: string | null;
 };
 
 type DamageChoice = "no" | "yes";
@@ -131,6 +139,7 @@ function VesselInspectionPageContent() {
   const [temperatures, setTemperatures] = useState<VesselInspectionTemperatureRecord[]>([]);
   const [damageRecord, setDamageRecord] = useState<VesselInspectionDamageRecord | null>(null);
   const [photos, setPhotos] = useState<PhotoView[]>([]);
+  const [trailerNavigation, setTrailerNavigation] = useState<TrailerNavigationItem[]>([]);
   const [receptionConfirmedAt, setReceptionConfirmedAt] = useState<string | null>(null);
   const [temperatureTolerance, setTemperatureTolerance] = useState<TemperatureToleranceSettings>(getDefaultTemperatureToleranceSettings);
 
@@ -184,6 +193,18 @@ function VesselInspectionPageContent() {
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
   }, []);
+
+  useEffect(() => {
+    if (!success) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setSuccess(null);
+    }, 2600);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [success]);
 
   const clearSelectedPhotos = useCallback(() => {
     setSelectedPhotos((current) => {
@@ -270,7 +291,7 @@ function VesselInspectionPageContent() {
     setStorageStatus(null);
 
     try {
-      const [operationResult, trailerResult, temperaturesResult, damagesResult, photosResult] = await Promise.all([
+      const [operationResult, trailerResult, temperaturesResult, damagesResult, photosResult, navigationResult] = await Promise.all([
         supabase
           .from("vessel_operations")
           .select("id, vessel_name, sailing_reference, origin_port, berth, expected_arrival_at, actual_arrival_at, status, notes, created_at, updated_at")
@@ -298,6 +319,11 @@ function VesselInspectionPageContent() {
           .select("id, vessel_trailer_id, category, storage_path, file_name, description, uploaded_at, uploaded_by")
           .eq("vessel_trailer_id", vesselTrailerId)
           .order("uploaded_at", { ascending: false }),
+        supabase
+          .from("vessel_operation_trailers")
+          .select("id, trailer_number, created_at")
+          .eq("vessel_operation_id", operationId)
+          .order("created_at", { ascending: true }),
       ]);
 
       if (operationResult.error || !operationResult.data) {
@@ -323,6 +349,10 @@ function VesselInspectionPageContent() {
       if (photosResult.error) {
         logVesselSupabaseError("Load boat check photos failed", photosResult.error);
         throw photosResult.error;
+      }
+
+      if (navigationResult.error) {
+        logVesselSupabaseError("Load boat check navigation failed", navigationResult.error);
       }
 
       const trailerRow = trailerResult.data as VesselOperationTrailerRecord;
@@ -406,6 +436,39 @@ function VesselInspectionPageContent() {
       }
 
       setPhotos(resolvedPhotos);
+
+      const navigationItems = ((navigationResult.data ?? []) as TrailerNavigationItem[])
+        .sort((left, right) => {
+          const leftNumber = left.trailer_number?.trim() ?? "";
+          const rightNumber = right.trailer_number?.trim() ?? "";
+
+          if (!leftNumber && !rightNumber) {
+            return 0;
+          }
+
+          if (!leftNumber) {
+            return 1;
+          }
+
+          if (!rightNumber) {
+            return -1;
+          }
+
+          const byTrailer = leftNumber.localeCompare(rightNumber, undefined, {
+            numeric: true,
+            sensitivity: "base",
+          });
+
+          if (byTrailer !== 0) {
+            return byTrailer;
+          }
+
+          const leftCreated = new Date(left.created_at ?? 0).getTime();
+          const rightCreated = new Date(right.created_at ?? 0).getTime();
+          return leftCreated - rightCreated;
+        });
+
+      setTrailerNavigation(navigationItems);
 
       const { data: receptionEvents } = await supabase
         .from("trailer_events")
@@ -498,13 +561,28 @@ function VesselInspectionPageContent() {
     ].filter((item) => Boolean(item.value));
   }, [operation, receptionConfirmedAt, trailer]);
 
+  const activeNavigationIndex = useMemo(
+    () => trailerNavigation.findIndex((item) => item.id === trailer?.id),
+    [trailer?.id, trailerNavigation],
+  );
+
+  const previousTrailer = activeNavigationIndex > 0 ? trailerNavigation[activeNavigationIndex - 1] : null;
+  const nextTrailer = activeNavigationIndex >= 0 && activeNavigationIndex < trailerNavigation.length - 1
+    ? trailerNavigation[activeNavigationIndex + 1]
+    : null;
+
   const uploadSelectedPhotos = useCallback(
-    async (operationData: VesselOperationRecord, trailerData: VesselOperationTrailerRecord, nowIso: string) => {
+    async (operationData: VesselOperationRecord, trailerData: VesselOperationTrailerRecord, nowIso: string, uploadedBy?: string | null) => {
       console.log("Photo upload handler entered:", {
         operationId: operationData.id,
         vesselTrailerId: trailerData.id,
         selectedPhotoCount: selectedPhotos.length,
       });
+
+      const normalizedTrailerNumber = normalizeTrailerNumber(trailerData.trailer_number);
+      if (!trailerData.id || !normalizedTrailerNumber) {
+        throw new Error("Photo upload blocked: trailer number is unavailable for this vessel trailer. Refresh and try again.");
+      }
 
       if (selectedPhotos.length === 0) {
         console.log("Photo upload skipped because no photos are selected.");
@@ -574,15 +652,17 @@ function VesselInspectionPageContent() {
           .from("vessel_inspection_photos")
           .insert({
             vessel_trailer_id: trailerData.id,
+            trailer_id: trailerData.trailer_id ?? null,
+            trailer_number: normalizedTrailerNumber,
             vessel_operation_id: operationData.id,
             category: source === "camera" ? "boat_check_camera" : "boat_check_upload",
             storage_path: storagePath,
             file_name: safeFileName,
             description: inspectionNotes.trim() || null,
             uploaded_at: nowIso,
-            uploaded_by: "TrailerHub User",
+            uploaded_by: uploadedBy ?? "TrailerHub User",
           })
-          .select("id, vessel_trailer_id, category, storage_path, file_name, description, uploaded_at, uploaded_by")
+          .select("id, vessel_trailer_id, trailer_id, trailer_number, vessel_operation_id, category, storage_path, file_name, description, uploaded_at, uploaded_by")
           .single();
 
         console.log("After database insert:", {
@@ -628,6 +708,12 @@ function VesselInspectionPageContent() {
       return;
     }
 
+    const normalizedTrailerNumber = normalizeTrailerNumber(trailer.trailer_number);
+    if (!trailer.id || !normalizedTrailerNumber) {
+      setError("Photo upload is blocked because this trailer has no valid trailer number. Refresh and try again.");
+      return;
+    }
+
     console.log("Photo upload trigger action: upload photo button clicked", {
       operationId: operation.id,
       vesselTrailerId: trailer.id,
@@ -663,8 +749,10 @@ function VesselInspectionPageContent() {
         return;
       }
 
+      const uploadedBy = session.user?.email?.trim() || session.user?.id || null;
+
       const nowIso = new Date().toISOString();
-      const photoResult = await uploadSelectedPhotos(operation, trailer, nowIso);
+      const photoResult = await uploadSelectedPhotos(operation, trailer, nowIso, uploadedBy);
 
       await loadInspection();
 
@@ -930,14 +1018,32 @@ function VesselInspectionPageContent() {
               <h1 className="mt-2 text-2xl font-semibold sm:text-3xl">{hasExistingInspection ? "Update Inspection" : "Start Inspection"}</h1>
               <p className="mt-2 text-sm text-slate-300">{operation.vessel_name ?? "Unnamed vessel"} - {trailer.trailer_number ?? "Trailer"}</p>
             </div>
-            <Link href={`/dashboard/vessel-operations/${operation.id}/boat-check`} className="rounded-2xl border border-white/10 bg-slate-800 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700">
-              Back to Boat Check
-            </Link>
+            <div className="flex flex-wrap gap-2">
+              <Link href={`/dashboard/vessel-operations/${operation.id}/boat-check`} className="rounded-2xl border border-white/10 bg-slate-800 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700">
+                Back to Boat Check
+              </Link>
+              {previousTrailer ? (
+                <Link
+                  href={`/dashboard/vessel-operations/${operation.id}/boat-check/${previousTrailer.id}`}
+                  className="rounded-2xl border border-white/10 bg-slate-800 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700"
+                >
+                  Previous Trailer
+                </Link>
+              ) : null}
+              {nextTrailer ? (
+                <Link
+                  href={`/dashboard/vessel-operations/${operation.id}/boat-check/${nextTrailer.id}`}
+                  className="rounded-2xl border border-white/10 bg-slate-800 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700"
+                >
+                  Next Trailer
+                </Link>
+              ) : null}
+            </div>
           </div>
         </header>
 
         {error ? <div className="rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">{error}</div> : null}
-        {success ? <div className="rounded-2xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">{success}</div> : null}
+        {success ? <SuccessToast message={success} onClose={() => setSuccess(null)} /> : null}
         {storageStatus ? <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">{storageStatus}</div> : null}
 
         <fieldset disabled={isReadOnly} className="contents">

@@ -1,127 +1,235 @@
-import type { AssistantIntent } from "@/lib/ai-assistant-foundation/types";
+import { aiAssistantIntentSchema, type AiAssistantContext, type AiAssistantIntent } from "@/lib/ai-assistant-types";
+import { normalizeTrailerNumber } from "@/lib/vessel-operations";
+
+const DEFAULT_LIMIT = 20;
 
 const normalizeText = (value: string) => value.trim().toLowerCase();
-const normalizeTrailerNumber = (value: string) => value.trim().toUpperCase();
-const normalizeCompoundPosition = (value: string) => value.trim().toUpperCase();
 
-const DEFAULT_LIMIT = 12;
+const sanitizeLimit = (value?: number) => {
+  if (!value || !Number.isFinite(value)) {
+    return DEFAULT_LIMIT;
+  }
 
-const extractTrailerNumber = (question: string) => {
-  const match = question.match(/\b([A-Za-z]{2,5}\d{3,8})\b/);
-  return match?.[1] ? normalizeTrailerNumber(match[1]) : undefined;
+  return Math.max(1, Math.min(50, Math.trunc(value)));
 };
 
-const extractTrailerPrefix = (question: string) => {
-  const match = question.match(/\b([A-Z]{2,5}\d{0,2})\b/);
+export const normalizeAssistantTrailerNumber = (value?: string | null) => {
+  const normalized = normalizeTrailerNumber(value);
+  return normalized.replace(/[\s\-_/]+/g, "").toUpperCase();
+};
+
+const extractTrailerNumber = (question: string) => {
+  const compact = question.toUpperCase();
+  const fullMatch = compact.match(/\b([A-Z]{2,5})[\s\-_/]*(\d{1,6})\b/);
+  if (!fullMatch) {
+    return null;
+  }
+
+  return normalizeAssistantTrailerNumber(`${fullMatch[1]}${fullMatch[2]}`);
+};
+
+const extractCustomer = (question: string) => {
+  const match = question.match(/\b(?:for|by)\s+customer\s+([A-Za-z0-9&'"().,\-\s]{2,80})/i)
+    ?? question.match(/\bdepartures\s+for\s+([A-Za-z0-9&'"().,\-\s]{2,80})/i);
+  return match?.[1]?.trim() || undefined;
+};
+
+const extractHours = (question: string) => {
+  const match = question.match(/(\d{1,3})\s*(?:h|hr|hrs|hour|hours)/i);
   if (!match?.[1]) {
     return undefined;
   }
 
-  const normalized = normalizeTrailerNumber(match[1]);
-  if (/^[A-Z]{2,5}\d{3,8}$/.test(normalized)) {
+  const value = Number(match[1]);
+  if (!Number.isFinite(value)) {
     return undefined;
   }
 
-  if (!/^[A-Z]{2,5}[0-9]*$/.test(normalized)) {
-    return undefined;
+  return Math.max(1, Math.min(24 * 30, Math.trunc(value)));
+};
+
+const inferScope = (normalized: string): "today" | "all" | "latest" | undefined => {
+  if (normalized.includes("today") || normalized.includes("now")) {
+    return "today";
   }
 
-  return normalized;
-};
-
-const extractCustomer = (question: string) => {
-  const match = question.match(/\bcustomer\s+([A-Za-z0-9&'"().,\-\s]{2,60})/i) ?? question.match(/\bfor\s+customer\s+([A-Za-z0-9&'"().,\-\s]{2,60})/i);
-  return match?.[1]?.trim() || undefined;
-};
-
-const extractCompoundPosition = (question: string) => {
-  const match = question.match(/\b(?:in|at|position)\s+(P\d{1,2})\b/i) ?? question.match(/\b(P\d{1,2})\b/i);
-  return match?.[1] ? normalizeCompoundPosition(match[1]) : undefined;
-};
-
-const extractLoadStatus = (normalized: string): "empty" | "loaded" | undefined => {
-  if (/\bempty\b/.test(normalized)) {
-    return "empty";
+  if (normalized.includes("latest")) {
+    return "latest";
   }
 
-  if (/\bloaded\b/.test(normalized)) {
-    return "loaded";
+  if (normalized.includes("all")) {
+    return "all";
   }
 
   return undefined;
 };
 
-export const detectIntent = (question: string): AssistantIntent => {
+const inferPriorityOnly = (normalized: string) => {
+  return /\bpriority\b/.test(normalized) || /\bhigh priority\b/.test(normalized);
+};
+
+const parseFromContext = (normalized: string, context?: AiAssistantContext): AiAssistantIntent | null => {
+  if (!context) {
+    return null;
+  }
+
+  if (/which\s+ones\s+are\s+still\s+missing|what\s+is\s+still\s+missing/.test(normalized) && context.activeVesselOperationId) {
+    return {
+      intent: "list_expected_trailers",
+      vesselOperationId: context.activeVesselOperationId,
+      scope: "today",
+      limit: DEFAULT_LIMIT,
+    };
+  }
+
+  return null;
+};
+
+export const detectIntent = (question: string, context?: AiAssistantContext): AiAssistantIntent => {
   const normalized = normalizeText(question);
   const trailerNumber = extractTrailerNumber(question);
-  const trailerPrefix = extractTrailerPrefix(question);
   const customer = extractCustomer(question);
-  const compoundPosition = extractCompoundPosition(question);
-  const loadStatus = extractLoadStatus(normalized);
+  const minHours = extractHours(question) ?? 48;
+  const scope = inferScope(normalized);
+  const priorityOnly = inferPriorityOnly(normalized);
 
-  if (/\b(daily\s+operational\s+summary|today'?s\s+operations\s+summary|what\s+happened\s+today|operations\s+summary)\b/.test(normalized)) {
-    return { intent: "daily_operations_summary", period: "today", limit: DEFAULT_LIMIT };
+  const contextIntent = parseFromContext(normalized, context);
+  if (contextIntent) {
+    return aiAssistantIntentSchema.parse(contextIntent);
   }
 
-  if (/\ballocated\b.*\bstill\b.*\bcompound\b|\ballocated\s+trailers\s+still\s+in\s+compound\b/.test(normalized)) {
-    return { intent: "allocated_still_in_compound", limit: DEFAULT_LIMIT };
+  if (trailerNumber && /\bwhere\b|\blocation\b|\bin the compound\b/.test(normalized)) {
+    return aiAssistantIntentSchema.parse({
+      intent: "trailer_location",
+      trailerNumber,
+      limit: 1,
+      scope,
+    });
   }
 
-  if (/\bwaiting\s+collection\b.*\boverdue\b|\boverdue\b.*\bwaiting\s+collection\b|\bwaiting\s+for\s+collection\b/.test(normalized)) {
-    return { intent: "waiting_collection_overdue", limit: DEFAULT_LIMIT };
-  }
-
-  if (/\barrivals?\b.*\bpending\s+inspection\b|\bpending\s+inspection\b/.test(normalized)) {
-    return { intent: "arrivals_pending_inspection", limit: DEFAULT_LIMIT };
-  }
-
-  if (/\btemperature\s+alerts?\b|\btemperature\b.*\balerts?\b/.test(normalized)) {
-    return { intent: "temperature_alerts", limit: DEFAULT_LIMIT };
-  }
-
-  if (/\bdamage\s+alerts?\b|\bdamage\b.*\balerts?\b/.test(normalized)) {
-    return { intent: "damage_alerts", limit: DEFAULT_LIMIT };
-  }
-
-  if (/\b(open|unresolved)\s+discrepanc/i.test(normalized) || /\bmissing\s+trailers?\b/.test(normalized)) {
-    return { intent: "open_discrepancies", unresolvedOnly: true, period: "latest", limit: DEFAULT_LIMIT };
-  }
-
-  if (/\boperational\s+status\s+issues\b|\bstatus\s+issues\b|\bproblem\s+status\b/.test(normalized)) {
-    return { intent: "operational_status_issues", limit: DEFAULT_LIMIT };
-  }
-
-  if (customer && /\btrailers?\b/.test(normalized)) {
-    return { intent: "trailers_by_customer", customer, limit: DEFAULT_LIMIT };
-  }
-
-  if (compoundPosition && /(what\s+is\s+currently\s+in|what\s+is\s+in|who\s+is\s+in|trailer\s+in\s+p\d{1,2})/.test(normalized)) {
-    return { intent: "trailer_at_position", compoundPosition, limit: DEFAULT_LIMIT };
-  }
-
-  if (/\bwhere\s+is\s+it\b|\bis\s+it\s+loaded\b|\bwhat\s+status\s+is\s+it\b/.test(normalized)) {
-    return { intent: "unknown", limit: DEFAULT_LIMIT };
+  if (trailerNumber && /\bstatus\b|\bcurrent\b|\bis .* in the compound\b/.test(normalized)) {
+    return aiAssistantIntentSchema.parse({
+      intent: "trailer_current_status",
+      trailerNumber,
+      limit: 1,
+      scope,
+    });
   }
 
   if (trailerNumber) {
-    if (/\bwhere\s+is\b/.test(normalized)) {
-      return { intent: "trailer_location", trailerNumber, limit: 1 };
-    }
-
-    if (/\bhistory\b|\btimeline\b|\bevents\b/.test(normalized)) {
-      return { intent: "trailer_history_summary", trailerNumber, limit: DEFAULT_LIMIT };
-    }
-
-    if (/\bstatus\b|\bfull\s+status\b|\bempty\s+or\s+loaded\b|\bloaded\b|\bempty\b/.test(normalized)) {
-      return { intent: "trailer_full_status", trailerNumber, loadStatus, limit: 1 };
-    }
-
-    return { intent: "trailer_full_status", trailerNumber, limit: 1 };
+    return aiAssistantIntentSchema.parse({
+      intent: "find_trailer",
+      trailerNumber,
+      limit: 5,
+      scope,
+    });
   }
 
-  if (trailerPrefix && /\b(where\s+is|status|history)\b/.test(normalized)) {
-    return { intent: "ambiguous_trailer", trailerPrefix, limit: DEFAULT_LIMIT };
+  if (/\bpriority\b.*\bwaiting\b.*\binspection\b|\bwaiting\b.*\binspection\b.*\bpriority\b/.test(normalized)) {
+    return aiAssistantIntentSchema.parse({
+      intent: "list_pending_inspections",
+      priorityOnly: true,
+      scope,
+      limit: DEFAULT_LIMIT,
+    });
   }
 
-  return { intent: "unknown", trailerNumber, customer, compoundPosition, loadStatus, limit: DEFAULT_LIMIT };
+  if (/\bexpected trailers\b|\bstill missing\b|\bnot arrived\b/.test(normalized)) {
+    return aiAssistantIntentSchema.parse({ intent: "list_expected_trailers", scope, limit: DEFAULT_LIMIT });
+  }
+
+  if (/\barrived trailers\b|\barrived\b/.test(normalized) && /\blist\b|\bshow\b|\bwhich\b/.test(normalized)) {
+    return aiAssistantIntentSchema.parse({ intent: "list_arrived_trailers", scope, limit: DEFAULT_LIMIT });
+  }
+
+  if (/\bpending inspections?\b|\bwaiting for inspection\b/.test(normalized)) {
+    return aiAssistantIntentSchema.parse({
+      intent: "list_pending_inspections",
+      priorityOnly,
+      scope,
+      limit: DEFAULT_LIMIT,
+    });
+  }
+
+  if (/\binspections? in progress\b|\binspection in progress\b/.test(normalized)) {
+    return aiAssistantIntentSchema.parse({ intent: "list_inspections_in_progress", scope, limit: DEFAULT_LIMIT });
+  }
+
+  if (/\bcompleted inspections?\b|\binspection complete\b/.test(normalized)) {
+    return aiAssistantIntentSchema.parse({ intent: "list_completed_inspections", scope, limit: DEFAULT_LIMIT });
+  }
+
+  if (/\bpriority trailers\b/.test(normalized)) {
+    return aiAssistantIntentSchema.parse({ intent: "list_priority_trailers", scope, limit: DEFAULT_LIMIT });
+  }
+
+  if (/\btemperature alerts?\b|\bshow temperature\b/.test(normalized)) {
+    return aiAssistantIntentSchema.parse({ intent: "list_temperature_alerts", scope, limit: DEFAULT_LIMIT });
+  }
+
+  if (/\bmissing photos\b|\binspections?.*photos\b/.test(normalized)) {
+    return aiAssistantIntentSchema.parse({ intent: "list_missing_photos", scope, limit: DEFAULT_LIMIT });
+  }
+
+  if (/\bcompound occupancy\b|\bcompound summary\b|\bhow full\b/.test(normalized)) {
+    return aiAssistantIntentSchema.parse({ intent: "compound_summary", scope, limit: DEFAULT_LIMIT });
+  }
+
+  if (/\bempty trailers\b.*\bcompound\b|\bcompound empty trailers\b/.test(normalized)) {
+    return aiAssistantIntentSchema.parse({ intent: "compound_empty_trailers", scope, limit: DEFAULT_LIMIT });
+  }
+
+  if (/\bloaded trailers\b.*\bcompound\b|\bcompound loaded trailers\b/.test(normalized)) {
+    return aiAssistantIntentSchema.parse({ intent: "compound_loaded_trailers", scope, limit: DEFAULT_LIMIT });
+  }
+
+  if (/\bavailable trailers\b.*\bcompound\b|\bcompound available trailers\b/.test(normalized)) {
+    return aiAssistantIntentSchema.parse({ intent: "compound_available_trailers", scope, limit: DEFAULT_LIMIT });
+  }
+
+  if (/\bfree positions\b|\bavailable positions\b/.test(normalized)) {
+    return aiAssistantIntentSchema.parse({ intent: "compound_free_positions", scope, limit: 50 });
+  }
+
+  if (/\bmore than\b.*\bcompound\b|\bin the compound for\b|\blong dwell\b/.test(normalized)) {
+    return aiAssistantIntentSchema.parse({ intent: "compound_long_dwell", minHours, scope, limit: DEFAULT_LIMIT });
+  }
+
+  if (/\bexports?\b.*\ballocated\b|\bexport allocated\b/.test(normalized)) {
+    return aiAssistantIntentSchema.parse({ intent: "export_allocated", scope, limit: DEFAULT_LIMIT });
+  }
+
+  if (/\bexports?\b.*\bwaiting loading\b|\bwaiting for loading\b/.test(normalized)) {
+    return aiAssistantIntentSchema.parse({ intent: "export_waiting_loading", scope, limit: DEFAULT_LIMIT });
+  }
+
+  if (/\bexports?\b.*\bwaiting collection\b|\bwaiting for collection\b/.test(normalized)) {
+    return aiAssistantIntentSchema.parse({ intent: "export_waiting_collection", scope, limit: DEFAULT_LIMIT });
+  }
+
+  if (/\bexports?\b.*\boverdue\b/.test(normalized)) {
+    return aiAssistantIntentSchema.parse({ intent: "export_overdue", scope, limit: DEFAULT_LIMIT });
+  }
+
+  if (/\bdeparted today\b|\bwhat departed today\b|\bdepartures today\b/.test(normalized)) {
+    return aiAssistantIntentSchema.parse({ intent: "departures_today", scope: "today", limit: DEFAULT_LIMIT });
+  }
+
+  if (customer && /\bdepartures\b/.test(normalized)) {
+    return aiAssistantIntentSchema.parse({ intent: "departures_by_customer", customer, scope: "today", limit: DEFAULT_LIMIT });
+  }
+
+  if (/\boperational alerts\b|\bunresolved alerts\b|\bexceptions\b/.test(normalized)) {
+    return aiAssistantIntentSchema.parse({ intent: "unresolved_operational_alerts", scope, limit: DEFAULT_LIMIT });
+  }
+
+  if (/\bstock check discrepancies\b|\bdiscrepancies\b/.test(normalized)) {
+    return aiAssistantIntentSchema.parse({ intent: "stock_check_discrepancies", scope: "latest", limit: DEFAULT_LIMIT });
+  }
+
+  if (/\bwhat needs attention\b|\boperational summary\b|\bcurrent operational summary\b/.test(normalized)) {
+    return aiAssistantIntentSchema.parse({ intent: "current_operational_summary", scope: "today", limit: DEFAULT_LIMIT });
+  }
+
+  return aiAssistantIntentSchema.parse({ intent: "unknown", limit: sanitizeLimit(DEFAULT_LIMIT) });
 };

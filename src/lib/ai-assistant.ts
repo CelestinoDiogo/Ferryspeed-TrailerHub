@@ -8,6 +8,7 @@ import { getLocalDateKey } from "@/lib/operational-readiness";
 import type { Database } from "@/lib/database.types";
 import { aiAssistantIntentSchema, allowedExportStatuses, type AiAssistantAlert, type AiAssistantIntent, type AiAssistantLink, type AiAssistantRecord, type AiAssistantResponse, type AiAssistantSection, type AiAssistantSummaryItem, type AiAssistantUiResultType } from "@/lib/ai-assistant-types";
 import { runAiAssistantFoundationQuery } from "@/lib/ai-assistant-foundation";
+import type { AiAssistantContext } from "@/lib/ai-assistant-types";
 
 type TrailerRow = Database["public"]["Tables"]["trailers"]["Row"];
 type VesselOperationRow = Database["public"]["Tables"]["vessel_operations"]["Row"];
@@ -24,9 +25,9 @@ const promptRequestSchema = z.object({
   question: z.string().trim().min(1).max(QUESTION_MAX_LENGTH),
 });
 
-const openAiIntentResponseSchema = aiAssistantIntentSchema.extend({
+const openAiIntentResponseSchema = aiAssistantIntentSchema.and(z.object({
   reason: z.string().trim().optional(),
-});
+}));
 
 const normalizeText = (value?: string | null) => value?.trim().toLowerCase() ?? "";
 
@@ -65,6 +66,15 @@ const compactString = (value?: string | null) => value?.trim().replace(/\s+/g, "
 const isUuid = (value?: string | null): value is string => Boolean(value && UUID_PATTERN.test(value.trim()));
 
 const trailerHref = (trailerId?: string | null) => (isUuid(trailerId) ? `/dashboard/trailers/${trailerId}` : null);
+
+type OpenAiIntentPayload = {
+  intent: AiAssistantIntent["intent"];
+  trailerNumber?: string;
+  customer?: string;
+  status?: AiAssistantIntent extends { intent: "export_by_status"; status: infer T } ? T : string;
+  date?: string;
+  limit?: number;
+};
 
 type InternalAiResponse = {
   intent: AiAssistantIntent["intent"];
@@ -305,15 +315,15 @@ const callOpenAiInterpreter = async (question: string) => {
       throw new Error("Empty OpenAI response.");
     }
 
-    const parsed = openAiIntentResponseSchema.parse(JSON.parse(raw));
+    const parsed = openAiIntentResponseSchema.parse(JSON.parse(raw)) as OpenAiIntentPayload;
     const normalizedIntent = {
       intent: parsed.intent,
-      trailerNumber: parsed.trailerNumber ? normalizeTrailerNumber(parsed.trailerNumber) : undefined,
-      customer: parsed.customer ? compactString(parsed.customer) : undefined,
+      trailerNumber: typeof parsed.trailerNumber === "string" ? normalizeTrailerNumber(parsed.trailerNumber) : undefined,
+      customer: typeof parsed.customer === "string" ? compactString(parsed.customer) : undefined,
       status: parsed.status,
       date: parsed.date,
-      limit: sanitizeLimit(parsed.limit),
-    } satisfies AiAssistantIntent;
+      limit: sanitizeLimit(typeof parsed.limit === "number" ? parsed.limit : undefined),
+    } as AiAssistantIntent;
 
     return { intent: normalizedIntent, provider: "openai" as const };
   } catch (error) {
@@ -490,7 +500,7 @@ const fetchOperationalKpis = async (supabase: SupabaseClient<Database>, date: st
     supabase
       .from("vessel_operation_trailers")
       .select("id, vessel_operation_id, arrival_status, inspection_completed_at, has_damage, has_temperature_alert"),
-    (supabase as any).rpc("get_compound_occupancy"),
+    supabase.rpc("get_compound_occupancy" as never),
   ]);
 
   if (trailersError) throw trailersError;
@@ -574,7 +584,7 @@ const fetchOperationsSummaryData = async (supabase: SupabaseClient<Database>, da
     supabase
       .from("vessel_operation_trailers")
       .select("vessel_operation_id, arrival_status, inspection_started_at, inspection_completed_at, has_damage, has_temperature_alert"),
-    (supabase as any).rpc("get_compound_occupancy"),
+    supabase.rpc("get_compound_occupancy" as never),
   ]);
 
   if (trailersError) throw trailersError;
@@ -887,7 +897,7 @@ async function queryWaitingCompound(supabase: SupabaseClient<Database>, limit: n
       .from("compound_waiting_active")
       .select("id, trailer_id, trailer_number, customer, load_status, priority_level, priority_reason, waiting_reason, arrived_at, waiting_since, waiting_minutes, vessel_operation_id, vessel_trailer_id, notes, created_at")
       .order("waiting_since", { ascending: true }),
-    (supabase as any).rpc("get_compound_occupancy"),
+    supabase.rpc("get_compound_occupancy" as never),
     supabase
       .from("trailers")
       .select("id, trailer_number, customer, load_status, arrival_date, departure_date, is_local, compound_position")
@@ -1157,7 +1167,11 @@ async function queryVesselOperationsToday(supabase: SupabaseClient<Database>, da
   };
 }
 
-async function queryExportByStatus(supabase: SupabaseClient<Database>, status: AiAssistantIntent["status"], limit: number) {
+async function queryExportByStatus(
+  supabase: SupabaseClient<Database>,
+  status: Extract<AiAssistantIntent, { intent: "export_by_status" }>["status"],
+  limit: number,
+) {
   const targetStatus = status ?? "delivered_empty";
   const statusDescription: Record<string, string> = {
     allocated: "Trailers allocated and awaiting empty delivery.",
@@ -1490,8 +1504,13 @@ async function queryOperationsSummaryToday(
   };
 }
 
-export async function runAiAssistantQuery(supabase: SupabaseClient<Database>, question: string, userId: string) {
-  return runAiAssistantFoundationQuery(supabase, question, userId);
+export async function runAiAssistantQuery(
+  supabase: SupabaseClient<Database>,
+  question: string,
+  userId: string,
+  pageContext?: AiAssistantContext,
+) {
+  return runAiAssistantFoundationQuery(supabase, question, userId, pageContext);
 }
 
 export function getFallbackAiAssistantIntent(question: string): AiAssistantIntent {

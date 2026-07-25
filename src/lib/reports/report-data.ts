@@ -197,3 +197,93 @@ export async function loadVesselOperationSummaryAndPrintReportData(
 
   return getVesselOperationReport(supabase, validatedOperationId);
 }
+
+export type OperationsCommandCentreTrailerRow = {
+  id: string;
+  trailer_number: string | null;
+  customer: string | null;
+  consignee: string | null;
+  load_status: string | null;
+  operational_status: string | null;
+  compound_position: string | null;
+  container_number: string | null;
+  arrival_date: string | null;
+  departure_date: string | null;
+  is_local: boolean | null;
+  trailer_source: string | null;
+  external_company: string | null;
+  source_vessel_operation_trailer_id: string | null;
+  created_at: string | null;
+};
+
+export type OperationsCommandCentreVesselOperationRow = {
+  id: string;
+  vessel_name: string | null;
+  sailing_reference: string | null;
+  status: string | null;
+  list_status: string | null;
+  list_confirmed_at: string | null;
+};
+
+export type OperationsCommandCentreVesselTrailerRow = {
+  id: string;
+  vessel_operation_id: string;
+  trailer_id: string | null;
+  trailer_number: string | null;
+  customer: string | null;
+  booking_reference: string | null;
+  load_status: string | null;
+  priority_level: string | null;
+  status: string;
+  arrived_at: string | null;
+  arrival_status: string | null;
+  arrival_confirmed_at: string | null;
+  arrival_record_id: string | null;
+  inspection_started_at: string | null;
+  inspection_completed_at: string | null;
+  assigned_position: string | null;
+  has_damage: boolean | null;
+  has_temperature_alert: boolean | null;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+export async function loadOperationsCommandCentreData(supabase: ReportSupabase) {
+  const [{ data: trailersData, error: trailersError }, { data: vesselOperationsData, error: vesselOperationsError }, { data: vesselTrailersData, error: vesselTrailersError }, exportAllocations] = await Promise.all([
+    supabase
+      .from("trailers")
+      .select(
+        "id, trailer_number, customer, consignee, load_status, operational_status, compound_position, container_number, arrival_date, departure_date, is_local, trailer_source, external_company, source_vessel_operation_trailer_id, created_at",
+      ),
+    supabase
+      .from("vessel_operations")
+      .select("id, vessel_name, sailing_reference, status, list_status, list_confirmed_at")
+      .order("created_at", { ascending: false }),
+    supabase
+      .from("vessel_operation_trailers")
+      .select(
+        "id, vessel_operation_id, trailer_id, trailer_number, customer, booking_reference, load_status, priority_level, status, arrived_at, arrival_status, arrival_confirmed_at, arrival_record_id, inspection_started_at, inspection_completed_at, assigned_position, has_damage, has_temperature_alert, created_at, updated_at",
+      )
+      .order("created_at", { ascending: false }),
+    loadExportAllocationsForReport(supabase),
+  ]);
+
+  if (trailersError) {
+    throw new Error(trailersError.message || "Unable to load trailers for operations command centre.");
+  }
+
+  if (vesselOperationsError) {
+    throw new Error(vesselOperationsError.message || "Unable to load vessel operations for operations command centre.");
+  }
+
+  if (vesselTrailersError) {
+    throw new Error(vesselTrailersError.message || "Unable to load vessel operation trailers for operations command centre.");
+  }
+
+  return {
+    trailers: (trailersData ?? []) as OperationsCommandCentreTrailerRow[],
+    vesselOperations: (vesselOperationsData ?? []) as OperationsCommandCentreVesselOperationRow[],
+    vesselTrailers: (vesselTrailersData ?? []) as OperationsCommandCentreVesselTrailerRow[],
+    exportAllocations,
+  };
+}

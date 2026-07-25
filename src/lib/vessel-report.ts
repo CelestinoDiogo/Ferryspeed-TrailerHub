@@ -26,6 +26,9 @@ type TemperatureLimits = {
   max: number | null;
 };
 
+const PHOTO_SIGNED_URL_TTL_SECONDS = 60 * 60;
+const PHOTO_BUCKET = "vessel-inspection-photos";
+
 const normalizeTrailerNumber = (value?: string | null) => (value ?? "").trim().toUpperCase();
 
 const parseTemperatureLimits = (value?: string | null): TemperatureLimits => {
@@ -120,6 +123,23 @@ const getTemperatureResult = (row: TemperatureRow, limits: TemperatureLimits, ex
 };
 
 const toIso = (value?: string | null) => (value ? new Date(value).toISOString() : null);
+
+const resolvePhotoUrl = async (supabase: SupabaseClient<Database>, storagePath?: string | null) => {
+  if (!storagePath) {
+    return null;
+  }
+
+  try {
+    const signedResult = await supabase.storage.from(PHOTO_BUCKET).createSignedUrl(storagePath, PHOTO_SIGNED_URL_TTL_SECONDS);
+    if (signedResult.data?.signedUrl) {
+      return signedResult.data.signedUrl;
+    }
+  } catch {
+    // Fall through to public URL when signed URLs are unavailable.
+  }
+
+  return supabase.storage.from(PHOTO_BUCKET).getPublicUrl(storagePath).data.publicUrl || null;
+};
 
 const formatArrivalStatus = (value?: string | null) => {
   if (value === "not_discharged") return "Not Discharged";
@@ -230,6 +250,12 @@ export async function getVesselOperationReport(
   const damages = (damagesResult.data ?? []) as DamageRow[];
   const temperatures = (temperaturesResult.data ?? []) as TemperatureRow[];
   const photos = (photosResult.data ?? []) as PhotoRow[];
+  const photoUrlByStoragePath = new Map<string, string | null>();
+  await Promise.all(
+    [...new Set(photos.map((photo) => photo.storage_path).filter((value): value is string => Boolean(value)))].map(async (storagePath) => {
+      photoUrlByStoragePath.set(storagePath, await resolvePhotoUrl(supabase, storagePath));
+    }),
+  );
 
   const trailerById = new Map<string, TrailerRow>();
   trailers.forEach((row) => {
@@ -318,7 +344,6 @@ export async function getVesselOperationReport(
     }));
   });
 
-  const bucket = "vessel-inspection-photos";
   const manifestRows = activeTrailers.map((trailer) => {
     const linkedMainTrailerId = trailer.arrival_record_id ?? trailer.trailer_id ?? null;
     const mainTrailer = linkedMainTrailerId ? mainTrailersById.get(linkedMainTrailerId) ?? null : null;
@@ -335,7 +360,7 @@ export async function getVesselOperationReport(
     const primaryDamage = trailerDamages.at(-1) ?? null;
     const trailerPhotos = (photosByTrailer.get(trailer.id) ?? []).map((photo) => ({
       id: photo.id,
-      url: photo.storage_path ? supabase.storage.from(bucket).getPublicUrl(photo.storage_path).data.publicUrl || null : null,
+      url: photo.storage_path ? photoUrlByStoragePath.get(photo.storage_path) ?? null : null,
       caption: photo.description ?? null,
       trailerNumber,
       recordedAt: toIso(photo.uploaded_at),
@@ -392,12 +417,9 @@ export async function getVesselOperationReport(
     const trailerNumber = normalizeTrailerNumber(mainTrailer?.trailer_number ?? trailer?.trailer_number) || "UNKNOWN";
     const attachedPhotos = (photosByTrailer.get(trailerId) ?? [])
       .map((photo) => {
-        if (!photo.storage_path) return null;
-        const publicUrl = supabase.storage.from(bucket).getPublicUrl(photo.storage_path).data.publicUrl;
-        if (!publicUrl) return null;
         return {
           id: photo.id,
-          url: publicUrl || null,
+          url: photo.storage_path ? photoUrlByStoragePath.get(photo.storage_path) ?? null : null,
           caption: photo.description ?? null,
           trailerNumber,
           recordedAt: toIso(photo.uploaded_at),
@@ -562,12 +584,11 @@ export async function getVesselOperationReport(
       const linkedMainTrailerId = linkedTrailer?.arrival_record_id ?? linkedTrailer?.trailer_id ?? null;
       const mainTrailer = linkedMainTrailerId ? mainTrailersById.get(linkedMainTrailerId) ?? null : null;
       const trailerNumber = normalizeTrailerNumber(mainTrailer?.trailer_number ?? linkedTrailer?.trailer_number) || "UNKNOWN";
-      const publicUrl = photo.storage_path ? supabase.storage.from(bucket).getPublicUrl(photo.storage_path).data.publicUrl : null;
       return {
         id: photo.id,
         trailerId,
         trailerNumber,
-        url: publicUrl || null,
+        url: photo.storage_path ? photoUrlByStoragePath.get(photo.storage_path) ?? null : null,
         caption: photo.description ?? null,
         recordedAt: toIso(photo.uploaded_at),
         category: photo.category ?? null,

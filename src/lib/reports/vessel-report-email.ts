@@ -23,6 +23,7 @@ type SendVesselReportEmailInput = {
   body: string;
   recipients: string[];
   cc: string[];
+  bcc: string[];
   vesselName?: string | null;
   voyageReference?: string | null;
   reportDate?: string | null;
@@ -276,6 +277,7 @@ const buildMimeMessage = (input: SendVesselReportEmailInput) => {
 
   const to = normalizeAndValidateEmails(input.recipients);
   const cc = normalizeAndValidateEmails(input.cc);
+  const bcc = normalizeAndValidateEmails(input.bcc);
 
   if (to.length === 0) {
     throw new VesselReportEmailError("Add at least one valid recipient before sending this report.", 400, "invalid_request");
@@ -302,6 +304,7 @@ const buildMimeMessage = (input: SendVesselReportEmailInput) => {
     `From: ${fromName} <${fromEmail}>`,
     `To: ${to.join(", ")}`,
     cc.length > 0 ? `Cc: ${cc.join(", ")}` : null,
+    bcc.length > 0 ? `Bcc: ${bcc.join(", ")}` : null,
     `Subject: ${subject}`,
     "MIME-Version: 1.0",
     `Content-Type: multipart/alternative; boundary=\"${boundary}\"`,
@@ -330,6 +333,7 @@ const buildMimeMessage = (input: SendVesselReportEmailInput) => {
     raw: toBase64Url(mime),
     recipients: to,
     cc,
+    bcc,
     subject,
     body: plainBody,
   };
@@ -373,6 +377,7 @@ export async function sendVesselReportEmail(input: SendVesselReportEmailInput) {
     gmailMessageId: payload.id ?? null,
     recipients: built.recipients,
     cc: built.cc,
+    bcc: built.bcc,
     subject: built.subject,
     body: built.body,
   };

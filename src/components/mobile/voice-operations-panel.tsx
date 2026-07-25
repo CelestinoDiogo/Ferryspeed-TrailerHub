@@ -4,9 +4,9 @@ import Link from "next/link";
 import { useCallback, useMemo, useState } from "react";
 import { Mic, MicOff, Volume2 } from "lucide-react";
 import type { RoleKey } from "@/lib/auth/roles";
-import { supabase } from "@/lib/supabase";
 import { parseVoiceCommand, resolveNextVoiceContext } from "@/lib/voice/parser";
 import { useSpeechRecognition } from "@/lib/voice/speech-recognition";
+import { getSessionToken, SESSION_EXPIRED_MESSAGE } from "@/lib/voice/session";
 import {
   getVoiceResponsesEnabled,
   isSpeechSynthesisSupported,
@@ -17,43 +17,6 @@ import { initialVoiceContext, isVoiceActionIntent, type VoiceContext, type Voice
 
 type VoiceOperationsPanelProps = {
   roleKey: RoleKey | null;
-};
-
-const SESSION_EXPIRED_MESSAGE = "Your session has expired. Please sign in again.";
-
-const getSessionToken = async () => {
-  const {
-    data: { user },
-    error: userError,
-  } = await supabase.auth.getUser();
-
-  if (userError) {
-    throw new Error(userError.message);
-  }
-
-  const {
-    data: { session },
-    error: sessionError,
-  } = await supabase.auth.getSession();
-
-  if (sessionError) {
-    throw new Error(sessionError.message);
-  }
-
-  if (session?.access_token) {
-    return session.access_token;
-  }
-
-  const refresh = await supabase.auth.refreshSession();
-  if (refresh.data.session?.access_token) {
-    return refresh.data.session.access_token;
-  }
-
-  if (!user) {
-    throw new Error(SESSION_EXPIRED_MESSAGE);
-  }
-
-  throw new Error(refresh.error?.message ?? "Unable to refresh authentication session.");
 };
 
 export function VoiceOperationsPanel({ roleKey }: VoiceOperationsPanelProps) {

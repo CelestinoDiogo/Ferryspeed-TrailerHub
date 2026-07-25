@@ -21,6 +21,7 @@ type VesselOperationAiReportPreviewModalProps = {
   onSubjectChange: (value: string) => void;
   onRecipientsChange: (value: string) => void;
   onCcChange: (value: string) => void;
+  onBccChange: (value: string) => void;
   onBodyChange: (value: string) => void;
 };
 
@@ -43,6 +44,7 @@ export function VesselOperationAiReportPreviewModal({
   onSubjectChange,
   onRecipientsChange,
   onCcChange,
+  onBccChange,
   onBodyChange,
 }: VesselOperationAiReportPreviewModalProps) {
   if (!open || !report) {
@@ -117,6 +119,16 @@ export function VesselOperationAiReportPreviewModal({
               <input
                 value={report.cc.join(", ")}
                 onChange={(event) => onCcChange(event.target.value)}
+                disabled={isSent}
+                className="mt-2 w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-950 outline-none ring-0 transition focus:border-cyan-500"
+              />
+            </label>
+
+            <label className="mt-4 block text-sm font-semibold text-slate-900">
+              BCC (comma, semicolon, or newline separated)
+              <input
+                value={report.bcc.join(", ")}
+                onChange={(event) => onBccChange(event.target.value)}
                 disabled={isSent}
                 className="mt-2 w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-950 outline-none ring-0 transition focus:border-cyan-500"
               />

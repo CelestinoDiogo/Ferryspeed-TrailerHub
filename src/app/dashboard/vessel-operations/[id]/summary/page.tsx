@@ -174,6 +174,26 @@ export default function VesselSummaryPage() {
   const [loadErrorKind, setLoadErrorKind] = useState<ReportLoadErrorKind | null>(null);
   const [reportNotice, setReportNotice] = useState<string | null>(null);
   const [emailProviderConfigured, setEmailProviderConfigured] = useState(false);
+  const [lastSavedDraftSignature, setLastSavedDraftSignature] = useState<string | null>(null);
+
+  const getDraftSignature = useCallback((draft: VesselOperationAiReportDraft | null) => {
+    if (!draft) {
+      return null;
+    }
+
+    return JSON.stringify({
+      subject: draft.subject,
+      recipients: draft.recipients,
+      cc: draft.cc,
+      bcc: draft.bcc,
+      body: draft.body,
+      generatedContent: draft.generatedContent,
+      editedContent: draft.editedContent,
+      status: draft.status,
+    });
+  }, []);
+
+  const hasUnsavedAiEdits = Boolean(aiReportDraft && lastSavedDraftSignature && getDraftSignature(aiReportDraft) !== lastSavedDraftSignature);
 
   const loadReport = useCallback(async () => {
     if (!operationId) {
@@ -274,6 +294,7 @@ export default function VesselSummaryPage() {
     if (!operationId || !reportData || reportData.operation.status !== "completed") {
       setAiReportDraft(null);
       setDraftHistory([]);
+      setLastSavedDraftSignature(null);
       return;
     }
 
@@ -282,21 +303,25 @@ export default function VesselSummaryPage() {
     try {
       const payload = await requestAiReport({ method: "GET", fallbackError: "Unable to load AI report draft." });
 
-      setAiReportDraft(payload.reportDraft ?? buildDeterministicVesselOperationAiReportDraft(reportData));
+      const draft = payload.reportDraft ?? buildDeterministicVesselOperationAiReportDraft(reportData);
+      setAiReportDraft(draft);
       setDraftHistory(payload.draftHistory ?? []);
       setEmailProviderConfigured(Boolean(payload.emailProviderConfigured));
+      setLastSavedDraftSignature(getDraftSignature(draft));
       if (payload.message) {
         setReportNotice("Draft loaded.");
       }
     } catch (loadErr) {
       console.error("Unable to load AI report draft:", loadErr);
-      setAiReportDraft(buildDeterministicVesselOperationAiReportDraft(reportData));
+      const fallbackDraft = buildDeterministicVesselOperationAiReportDraft(reportData);
+      setAiReportDraft(fallbackDraft);
       setDraftHistory([]);
+      setLastSavedDraftSignature(getDraftSignature(fallbackDraft));
       handleAiReportError(loadErr, "Unable to load saved draft history.");
     } finally {
       setIsAiReportLoading(false);
     }
-  }, [handleAiReportError, reportData, requestAiReport]);
+  }, [getDraftSignature, handleAiReportError, reportData, requestAiReport]);
 
   useEffect(() => {
     void loadAiReportDraft();
@@ -309,6 +334,14 @@ export default function VesselSummaryPage() {
 
     setIsAiReportGenerating(true);
     setReportNotice(null);
+
+    if (hasUnsavedAiEdits) {
+      const confirmDiscard = window.confirm("You have unsaved edits. Regenerate and discard them?");
+      if (!confirmDiscard) {
+        setIsAiReportGenerating(false);
+        return;
+      }
+    }
 
     try {
       const payload = await requestAiReport({
@@ -324,6 +357,7 @@ export default function VesselSummaryPage() {
       setAiReportDraft(payload.reportDraft);
       setDraftHistory(payload.draftHistory ?? []);
       setEmailProviderConfigured(Boolean(payload.emailProviderConfigured));
+      setLastSavedDraftSignature(getDraftSignature(payload.reportDraft));
       setIsAiReportPreviewOpen(true);
       setReportNotice(payload.usedFallback ? "A data-based report has been prepared from the current vessel operation records." : "AI report generated successfully.");
     } catch (generateErr) {
@@ -332,7 +366,7 @@ export default function VesselSummaryPage() {
     } finally {
       setIsAiReportGenerating(false);
     }
-  }, [handleAiReportError, operationId, reportData, requestAiReport]);
+  }, [getDraftSignature, handleAiReportError, hasUnsavedAiEdits, operationId, reportData, requestAiReport]);
 
   const saveAiReportDraft = useCallback(async () => {
     if (!operationId || !aiReportDraft) {
@@ -352,6 +386,7 @@ export default function VesselSummaryPage() {
             subject: aiReportDraft.subject,
             recipients: aiReportDraft.recipients,
             cc: aiReportDraft.cc,
+            bcc: aiReportDraft.bcc,
             generatedContent: aiReportDraft.generatedContent,
             editedContent: aiReportDraft.editedContent || aiReportDraft.body,
             body: aiReportDraft.body,
@@ -372,6 +407,7 @@ export default function VesselSummaryPage() {
       setAiReportDraft(payload.reportDraft);
       setDraftHistory(payload.draftHistory ?? []);
       setEmailProviderConfigured(Boolean(payload.emailProviderConfigured));
+      setLastSavedDraftSignature(getDraftSignature(payload.reportDraft));
       setReportNotice("Draft saved successfully.");
     } catch (saveErr) {
       console.error("Unable to save AI report draft:", saveErr);
@@ -379,7 +415,7 @@ export default function VesselSummaryPage() {
     } finally {
       setIsAiReportSaving(false);
     }
-  }, [aiReportDraft, handleAiReportError, operationId, requestAiReport]);
+  }, [getDraftSignature, aiReportDraft, handleAiReportError, operationId, requestAiReport]);
 
   const finalizeAiReport = useCallback(async () => {
     if (!operationId || !aiReportDraft) {
@@ -399,6 +435,7 @@ export default function VesselSummaryPage() {
             subject: aiReportDraft.subject,
             recipients: aiReportDraft.recipients,
             cc: aiReportDraft.cc,
+            bcc: aiReportDraft.bcc,
             generatedContent: aiReportDraft.generatedContent,
             editedContent: aiReportDraft.editedContent || aiReportDraft.body,
             body: aiReportDraft.body,
@@ -419,6 +456,7 @@ export default function VesselSummaryPage() {
       setAiReportDraft(payload.reportDraft);
       setDraftHistory(payload.draftHistory ?? []);
       setEmailProviderConfigured(Boolean(payload.emailProviderConfigured));
+      setLastSavedDraftSignature(getDraftSignature(payload.reportDraft));
       setReportNotice("Report finalized successfully.");
     } catch (finalizeErr) {
       console.error("Unable to finalize AI report:", finalizeErr);
@@ -426,7 +464,7 @@ export default function VesselSummaryPage() {
     } finally {
       setIsAiReportFinalizing(false);
     }
-  }, [aiReportDraft, handleAiReportError, operationId, requestAiReport]);
+  }, [getDraftSignature, aiReportDraft, handleAiReportError, operationId, requestAiReport]);
 
   const sendAiReport = useCallback(async () => {
     if (!operationId || !aiReportDraft) {
@@ -484,6 +522,7 @@ export default function VesselSummaryPage() {
               subject: aiReportDraft.subject,
               recipients: aiReportDraft.recipients,
               cc: aiReportDraft.cc,
+              bcc: aiReportDraft.bcc,
               generatedContent: aiReportDraft.generatedContent,
               editedContent: aiReportDraft.editedContent || aiReportDraft.body,
               body: aiReportDraft.body,
@@ -517,6 +556,7 @@ export default function VesselSummaryPage() {
           sendDraft: aiReportDraft.status === "draft",
           recipients: aiReportDraft.recipients,
           cc: aiReportDraft.cc,
+          bcc: aiReportDraft.bcc,
           subject: aiReportDraft.subject,
           body: aiReportDraft.body,
         }),
@@ -534,6 +574,7 @@ export default function VesselSummaryPage() {
       setAiReportDraft(payload.reportDraft);
       setDraftHistory(payload.draftHistory ?? []);
       setEmailProviderConfigured(Boolean(payload.emailProviderConfigured));
+      setLastSavedDraftSignature(getDraftSignature(payload.reportDraft));
       setReportNotice("Report sent successfully.");
     } catch (sendErr) {
       console.error("Unable to send AI report:", sendErr);
@@ -541,7 +582,7 @@ export default function VesselSummaryPage() {
     } finally {
       setIsAiReportSending(false);
     }
-  }, [aiReportDraft, handleAiReportError, operationId, requestAiReport]);
+  }, [getDraftSignature, aiReportDraft, handleAiReportError, operationId, requestAiReport]);
 
   const splitEmailList = useCallback((value: string) => {
     return value
@@ -870,6 +911,9 @@ export default function VesselSummaryPage() {
         }}
         onCcChange={(value) => {
           setAiReportDraft((current) => (current ? { ...current, cc: splitEmailList(value) } : current));
+        }}
+        onBccChange={(value) => {
+          setAiReportDraft((current) => (current ? { ...current, bcc: splitEmailList(value) } : current));
         }}
         onBodyChange={(value) => {
           setAiReportDraft((current) => (current ? { ...current, body: value, editedContent: value } : current));

@@ -7,5 +7,12 @@ type PrintReportLayoutProps = {
 };
 
 export function PrintReportLayout({ orientation = "portrait", children, className = "" }: PrintReportLayoutProps) {
-  return <section className={`print-only print-document ${orientation === "landscape" ? "print-landscape" : "print-portrait"} ${className}`.trim()}>{children}</section>;
+  return (
+    <section
+      id="print-report-root"
+      className={`print-only print-document ${orientation === "landscape" ? "print-landscape" : "print-portrait"} ${className}`.trim()}
+    >
+      {children}
+    </section>
+  );
 }

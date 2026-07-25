@@ -6,6 +6,7 @@ import type {
   VesselOperationAiReportDraft,
   VesselOperationAiReportHistoryItem,
 } from "@/lib/reports/types";
+import { buildVesselOperationCanonicalReport } from "@/lib/reports/vessel-operation-canonical-report";
 
 type ReportRow = Database["public"]["Tables"]["vessel_operation_reports"]["Row"];
 type ReportInsert = Database["public"]["Tables"]["vessel_operation_reports"]["Insert"];
@@ -22,6 +23,7 @@ type ReportSelectRow = Pick<
   | "title"
   | "recipients"
   | "cc"
+  | "bcc"
   | "generated_content"
   | "edited_content"
   | "executive_summary"
@@ -38,6 +40,7 @@ type DraftWriteInput = {
   subject: string;
   recipients: string[];
   cc: string[];
+  bcc: string[];
   generatedContent: string;
   editedContent: string;
   generationMode: "ai" | "template";
@@ -47,7 +50,7 @@ type DraftWriteInput = {
 };
 
 const REPORT_SELECT =
-  "id, vessel_operation_id, report_status, created_at, generated_at, generated_by, subject, title, recipients, cc, generated_content, edited_content, executive_summary, generated_by_ai, ai_model, approved_at, approved_by, sent_at, sent_by";
+  "id, vessel_operation_id, report_status, created_at, generated_at, generated_by, subject, title, recipients, cc, bcc, generated_content, edited_content, executive_summary, generated_by_ai, ai_model, approved_at, approved_by, sent_at, sent_by";
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -87,6 +90,23 @@ const sanitizeEmails = (values: string[]) => {
   return [...unique];
 };
 
+const parseDefaultEmails = (value?: string | null) => {
+  if (!value) {
+    return [] as string[];
+  }
+
+  return sanitizeEmails(
+    value
+      .split(/[\n,;]+/)
+      .map((item) => item.trim())
+      .filter(Boolean),
+  );
+};
+
+const getDefaultRecipients = () => parseDefaultEmails(process.env.VESSEL_REPORT_DEFAULT_RECIPIENTS);
+const getDefaultCc = () => parseDefaultEmails(process.env.VESSEL_REPORT_DEFAULT_CC);
+const getDefaultBcc = () => parseDefaultEmails(process.env.VESSEL_REPORT_DEFAULT_BCC);
+
 const toIso = (value?: string | null) => {
   if (!value) {
     return new Date().toISOString();
@@ -101,54 +121,7 @@ const toIso = (value?: string | null) => {
 };
 
 const buildStructuredSnapshot = (reportData: VesselOperationalReportData): Json => {
-  return {
-    operation: reportData.operation,
-    statistics: reportData.statistics,
-    trailers: reportData.trailers.map((trailer) => ({
-      trailerNumber: trailer.trailerNumber,
-      arrivalStatus: trailer.arrivalStatus,
-      inspectionStatus: trailer.inspectionStatus,
-      compoundPosition: trailer.compoundPosition,
-      hasDamage: trailer.hasDamage,
-      hasTemperatureAlert: trailer.hasTemperatureAlert,
-      frontTemperature: trailer.frontTemperature,
-      rearTemperature: trailer.rearTemperature,
-      temperatureUnit: trailer.temperatureUnit,
-      photos: trailer.photos.map((photo) => ({
-        id: photo.id,
-        category: photo.category ?? null,
-        fileName: photo.fileName ?? null,
-        recordedAt: photo.recordedAt,
-      })),
-    })),
-    damages: reportData.damages.map((damage) => ({
-      trailerNumber: damage.trailerNumber,
-      category: damage.category,
-      damageLocation: damage.damageLocation,
-      severity: damage.severity,
-      recordedAt: damage.recordedAt,
-      photoCount: damage.photos.length,
-    })),
-    temperatures: reportData.temperatures.map((temperature) => ({
-      trailerNumber: temperature.trailerNumber,
-      readingPoint: temperature.readingPoint,
-      expectedTemperature: temperature.expectedTemperature,
-      recordedTemperature: temperature.recordedTemperature,
-      requiredMin: temperature.requiredMin,
-      requiredMax: temperature.requiredMax,
-      unit: temperature.unit,
-      result: temperature.result,
-      recordedAt: temperature.recordedAt,
-    })),
-    photos: reportData.photos.map((photo) => ({
-      trailerNumber: photo.trailerNumber,
-      category: photo.category ?? null,
-      fileName: photo.fileName ?? null,
-      recordedAt: photo.recordedAt,
-    })),
-    exceptions: reportData.exceptions,
-    timeline: reportData.timeline,
-  };
+  return buildVesselOperationCanonicalReport(reportData) as unknown as Json;
 };
 
 const mapRowToHistoryItem = (row: ReportSelectRow): VesselOperationAiReportHistoryItem => {
@@ -161,6 +134,7 @@ const mapRowToHistoryItem = (row: ReportSelectRow): VesselOperationAiReportHisto
     subject: row.subject ?? row.title ?? "Vessel Operations Report",
     recipients: Array.isArray(row.recipients) ? row.recipients : [],
     cc: Array.isArray(row.cc) ? row.cc : [],
+    bcc: Array.isArray(row.bcc) ? row.bcc : [],
     generationMode: row.generated_by_ai ? "ai" : "template",
     status: normalizeStatus(row.report_status),
   };
@@ -170,12 +144,16 @@ const mapRowToDraft = (row: ReportSelectRow): VesselOperationAiReportDraft => {
   const historyItem = mapRowToHistoryItem(row);
   const generatedContent = row.generated_content ?? row.executive_summary ?? "";
   const editedContent = row.edited_content ?? generatedContent;
+  const recipients = historyItem.recipients.length > 0 ? historyItem.recipients : getDefaultRecipients();
+  const cc = historyItem.cc.length > 0 ? historyItem.cc : getDefaultCc();
+  const bcc = Array.isArray(row.bcc) && row.bcc.length > 0 ? row.bcc : getDefaultBcc();
 
   return {
     reportId: historyItem.reportId,
     subject: historyItem.subject,
-    recipients: historyItem.recipients,
-    cc: historyItem.cc,
+    recipients,
+    cc,
+    bcc,
     body: editedContent || generatedContent,
     generatedContent,
     editedContent,
@@ -209,14 +187,18 @@ const buildBaseRecord = (
   const generatedContent = input.generatedContent || input.editedContent;
   const editedContent = input.editedContent || generatedContent;
   const snapshot = buildStructuredSnapshot(reportData);
+  const recipients = sanitizeEmails(input.recipients).length > 0 ? sanitizeEmails(input.recipients) : getDefaultRecipients();
+  const cc = sanitizeEmails(input.cc).length > 0 ? sanitizeEmails(input.cc) : getDefaultCc();
+  const bcc = sanitizeEmails(input.bcc).length > 0 ? sanitizeEmails(input.bcc) : getDefaultBcc();
 
   return {
     vessel_operation_id: operationId,
     report_type: "operational",
     title: subject,
     subject,
-    recipients: sanitizeEmails(input.recipients),
-    cc: sanitizeEmails(input.cc),
+    recipients,
+    cc,
+    bcc,
     generated_content: generatedContent,
     edited_content: editedContent,
     executive_summary: generatedContent,
@@ -417,6 +399,7 @@ export async function markVesselReportAsSent(
   delivery?: {
     recipients?: string[];
     cc?: string[];
+    bcc?: string[];
     subject?: string;
     body?: string;
   },
@@ -426,8 +409,9 @@ export async function markVesselReportAsSent(
     throw new VesselReportLifecycleError("The selected report was not found.", 404);
   }
 
-  const recipients = delivery?.recipients ? sanitizeEmails(delivery.recipients) : Array.isArray(existing.recipients) ? sanitizeEmails(existing.recipients) : [];
-  const cc = delivery?.cc ? sanitizeEmails(delivery.cc) : Array.isArray(existing.cc) ? sanitizeEmails(existing.cc) : [];
+  const recipients = delivery?.recipients ? sanitizeEmails(delivery.recipients) : Array.isArray(existing.recipients) ? sanitizeEmails(existing.recipients) : getDefaultRecipients();
+  const cc = delivery?.cc ? sanitizeEmails(delivery.cc) : Array.isArray(existing.cc) ? sanitizeEmails(existing.cc) : getDefaultCc();
+  const bcc = delivery?.bcc ? sanitizeEmails(delivery.bcc) : Array.isArray(existing.bcc) ? sanitizeEmails(existing.bcc) : getDefaultBcc();
   const subject = (delivery?.subject ?? existing.subject ?? existing.title ?? "Vessel Operations Report").trim() || "Vessel Operations Report";
   const body = (delivery?.body ?? existing.edited_content ?? existing.generated_content ?? existing.executive_summary ?? "").trim();
 
@@ -449,6 +433,7 @@ export async function markVesselReportAsSent(
       edited_content: body,
       recipients,
       cc,
+      bcc,
       sent_at: now,
       sent_by: sentBy,
       updated_at: now,
@@ -463,4 +448,48 @@ export async function markVesselReportAsSent(
   }
 
   return mapRowToDraft(data);
+}
+
+type SendHistoryInput = {
+  reportId: string;
+  generatedAt: string;
+  generatedBy: string | null;
+  subject: string;
+  recipients: string[];
+  cc: string[];
+  bcc: string[];
+  reportContent: string;
+  sentAt: string | null;
+  sentBy: string | null;
+  deliveryStatus: "queued" | "sent" | "failed";
+  providerMessageId: string | null;
+};
+
+export async function recordVesselReportSendHistory(
+  supabase: SupabaseClient<Database>,
+  operationId: string,
+  input: SendHistoryInput,
+) {
+  const { error } = await supabase.from("vessel_operation_report_send_history").insert({
+    vessel_operation_id: operationId,
+    report_id: input.reportId,
+    subject: input.subject,
+    recipients: {
+      to: input.recipients,
+      cc: input.cc,
+      bcc: input.bcc,
+    } as Json,
+    report_content: input.reportContent,
+    generated_at: input.generatedAt,
+    generated_by: input.generatedBy,
+    sent_at: input.sentAt,
+    sent_by: input.sentBy,
+    delivery_status: input.deliveryStatus,
+    provider_message_id: input.providerMessageId,
+    updated_at: new Date().toISOString(),
+  });
+
+  if (error) {
+    throw new VesselReportLifecycleError("Unable to record the report send history.", 500);
+  }
 }

@@ -19,7 +19,7 @@ export const navItems: NavItem[] = [
   { label: "Calendar", href: "/dashboard/calendar", icon: "calendar" },
   { label: "Company Trailers", href: "/dashboard/company-trailers", icon: "fleet" },
   { label: "Operations Board", href: "/dashboard/operations", icon: "operations" },
-  { label: "Operations Centre", href: "/dashboard/operations-centre", icon: "opsCentre" },
+  { label: "Operations Centre", href: "/dashboard/operations-command-centre", icon: "opsCentre" },
 ];
 
 export const isNavItemActive = (pathname: string, href: string) => {

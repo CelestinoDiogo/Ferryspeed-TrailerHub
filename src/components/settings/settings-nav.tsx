@@ -9,6 +9,7 @@ const items = [
   { label: "Users", href: "/dashboard/settings/users" },
   { label: "Roles", href: "/dashboard/settings/roles" },
   { label: "Permissions", href: "/dashboard/settings/permissions" },
+  { label: "Automation", href: "/dashboard/settings/automation" },
 ] as const;
 
 export function SettingsNav() {

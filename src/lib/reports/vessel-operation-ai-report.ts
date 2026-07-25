@@ -1,6 +1,7 @@
 import "server-only";
 import { z } from "zod";
 import type { VesselOperationalReportData, VesselOperationAiReportDraft, VesselOperationAiReportSections } from "@/lib/reports/types";
+import { buildVesselOperationCanonicalReport } from "@/lib/reports/vessel-operation-canonical-report";
 import {
   buildDeterministicVesselOperationAiReportDraft as buildDeterministicVesselOperationAiReportDraftShared,
   buildDeterministicVesselOperationAiReportSections as buildDeterministicVesselOperationAiReportSectionsShared,
@@ -42,6 +43,8 @@ export async function generateVesselOperationAiSections(data: VesselOperationalR
     throw new Error("Missing OPENAI_API_KEY.");
   }
 
+  const canonicalReport = buildVesselOperationCanonicalReport(data);
+
   const payload = {
     model: modelName,
     response_format: { type: "json_object" },
@@ -51,7 +54,7 @@ export async function generateVesselOperationAiSections(data: VesselOperationalR
         content: [
           "You are an operational reporting assistant for a professional freight and ferry operations company.",
           "Write in professional British English.",
-          "Use only the facts supplied in the structured operation data.",
+          "Use only the facts supplied in the structured canonical vessel report.",
           "Never invent trailer numbers, customer names, bookings, incidents, times, quantities, temperatures, causes of damage, actions taken, or conclusions not supported by the data.",
           "Never use hyphen placeholders in prose such as from - to berth -, actual arrival was -, customer -, or expected temperature -.",
           "When a field is missing, omit that phrase or write a clear sentence such as Actual arrival was not recorded.",
@@ -76,7 +79,7 @@ export async function generateVesselOperationAiSections(data: VesselOperationalR
         role: "user",
         content: JSON.stringify({
           instruction: "Generate the full operational report sections from the live vessel operation data.",
-          operationFacts: data,
+          operationFacts: canonicalReport,
         }),
       },
     ],

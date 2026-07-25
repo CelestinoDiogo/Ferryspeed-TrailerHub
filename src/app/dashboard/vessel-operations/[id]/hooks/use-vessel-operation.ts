@@ -91,6 +91,7 @@ export type UseVesselOperationResult = {
   actioningTrailerId: string | null;
   error: string | null;
   success: string | null;
+  dismissSuccess: () => void;
   formState: TrailerFormState;
   inspectionByTrailer: Record<string, TrailerInspectionState>;
   bulkText: string;
@@ -266,6 +267,18 @@ export function useVesselOperation(operationId: string): UseVesselOperationResul
   const [isCompleting, setIsCompleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!success) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setSuccess(null);
+    }, 2600);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [success]);
 
   const loadOperation = useCallback(async () => {
     if (!operationId) {
@@ -584,8 +597,8 @@ export function useVesselOperation(operationId: string): UseVesselOperationResul
 
   const handleTogglePriority = useCallback(
     async (trailer: VesselOperationTrailerRecord) => {
-      if (!editable) {
-        setError("Trailer list is locked after confirmation.");
+      if (isReadOnly) {
+        setError("This operation is read-only.");
         return;
       }
 
@@ -609,6 +622,45 @@ export function useVesselOperation(operationId: string): UseVesselOperationResul
           throw updateError;
         }
 
+        const operatorName = await resolveOperatorName();
+
+        const { error: eventError } = await supabase.from("trailer_events").insert({
+          trailer_id: trailer.trailer_id ?? null,
+          trailer_number: trailer.trailer_number ?? null,
+          event_type: "vessel_priority_updated",
+          event_description: nextPriorityLevel === "priority" ? "Trailer marked as priority." : "Trailer marked as no priority.",
+          old_value: {
+            vessel_trailer_id: trailer.id,
+            priority_level: trailer.priority_level ?? "normal",
+          },
+          new_value: {
+            vessel_trailer_id: trailer.id,
+            priority_level: nextPriorityLevel,
+          },
+        });
+
+        if (eventError) {
+          logVesselSupabaseError("Insert vessel priority event failed", eventError);
+        }
+
+        await createTrailerActivity({
+          trailerId: trailer.trailer_id ?? null,
+          trailerNumber: trailer.trailer_number ?? trailer.id,
+          eventType: "operational_status_changed",
+          eventTitle: nextPriorityLevel === "priority" ? "Priority set" : "Priority removed",
+          eventDescription: nextPriorityLevel === "priority" ? "Trailer marked as priority." : "Trailer marked as no priority.",
+          sourceModule: "vessel",
+          sourceRecordId: trailer.id,
+          previousStatus: trailer.priority_level ?? "normal",
+          newStatus: nextPriorityLevel,
+          metadata: {
+            vessel_operation_id: trailer.vessel_operation_id,
+            vessel_trailer_id: trailer.id,
+          },
+          performedBy: operatorName,
+          createdAt: nowIso,
+        });
+
         await loadOperation();
         setSuccess(`Priority updated for ${trailer.trailer_number ?? "trailer"}.`);
       } catch (priorityErr) {
@@ -618,7 +670,7 @@ export function useVesselOperation(operationId: string): UseVesselOperationResul
         setActioningTrailerId(null);
       }
     },
-    [editable, loadOperation],
+    [isReadOnly, loadOperation],
   );
 
   const handleRemoveTrailer = useCallback(
@@ -730,7 +782,7 @@ export function useVesselOperation(operationId: string): UseVesselOperationResul
       try {
         const nowIso = new Date().toISOString();
         const operatorName = await resolveOperatorName();
-        const { error: updateError } = await supabase
+        const { data: updatedTrailer, error: updateError } = await supabase
           .from("vessel_operation_trailers")
           .update({
             status: "arrived",
@@ -741,11 +793,18 @@ export function useVesselOperation(operationId: string): UseVesselOperationResul
             updated_at: nowIso,
           })
           .eq("id", trailer.id)
-          .eq("arrival_status", "available_for_arrival")
-          .is("arrival_record_id", null);
+          .in("arrival_status", ["available_for_arrival", "expected"])
+          .is("arrival_record_id", null)
+          .select("id")
+          .maybeSingle();
 
         if (updateError) {
           throw updateError;
+        }
+
+        if (!updatedTrailer) {
+          setError("Arrival is no longer available for this trailer.");
+          return;
         }
 
         const { error: eventError } = await supabase.from("trailer_events").insert({
@@ -841,6 +900,12 @@ export function useVesselOperation(operationId: string): UseVesselOperationResul
 
       if (inspection.damage === "yes" && !inspection.damageDescription.trim()) {
         setError("Damage description is required when damage is marked as yes.");
+        return;
+      }
+
+      const normalizedTrailerNumber = normalizeTrailerNumber(trailer.trailer_number);
+      if (inspection.photos.length > 0 && (!trailer.id || !normalizedTrailerNumber)) {
+        setError("Photo upload is blocked because this trailer has no valid trailer number.");
         return;
       }
 
@@ -946,6 +1011,11 @@ export function useVesselOperation(operationId: string): UseVesselOperationResul
         }
 
         if (inspection.photos.length > 0) {
+          const {
+            data: { session },
+          } = await supabase.auth.getSession();
+          const uploadedBy = session?.user?.email?.trim() || session?.user?.id || null;
+
           for (const photo of inspection.photos) {
             const storagePath = `vessel-operations/${operation.id}/${trailer.id}/${Date.now()}-${sanitizeFileName(photo.name || "photo")}`;
             const { error: uploadError } = await supabase.storage.from("vessel-inspection-photos").upload(storagePath, photo, {
@@ -960,17 +1030,23 @@ export function useVesselOperation(operationId: string): UseVesselOperationResul
 
             const photoPayload = {
               vessel_trailer_id: trailer.id,
+              trailer_id: trailer.trailer_id ?? null,
+              trailer_number: normalizedTrailerNumber,
               vessel_operation_id: operation.id,
               category: "Boat Check",
               storage_path: storagePath,
               file_name: photo.name,
               description: inspection.notes.trim() || null,
               uploaded_at: nowIso,
-              uploaded_by: "TrailerHub User",
+              uploaded_by: uploadedBy ?? "TrailerHub User",
             };
 
             const { error: photoError } = await supabase.from("vessel_inspection_photos").insert(photoPayload as never);
             if (photoError) {
+              const { error: cleanupError } = await supabase.storage.from("vessel-inspection-photos").remove([storagePath]);
+              if (cleanupError) {
+                console.error("Unable to clean up orphaned inspection photo:", cleanupError);
+              }
               throw photoError;
             }
           }
@@ -1111,6 +1187,10 @@ export function useVesselOperation(operationId: string): UseVesselOperationResul
     setBulkTextState(value);
   }, []);
 
+  const dismissSuccess = useCallback(() => {
+    setSuccess(null);
+  }, []);
+
   return {
     operation,
     operationStatus,
@@ -1126,6 +1206,7 @@ export function useVesselOperation(operationId: string): UseVesselOperationResul
     actioningTrailerId,
     error,
     success,
+    dismissSuccess,
     formState,
     inspectionByTrailer,
     bulkText,

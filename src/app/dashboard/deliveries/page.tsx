@@ -10,6 +10,7 @@ import { PrintReportLayout } from "@/components/print/print-report-layout";
 import { ReportPrintLayout } from "@/components/print/report-print-layout";
 import { PrintSummary } from "@/components/print/print-summary";
 import { PrintTable } from "@/components/print/print-table";
+import { loadDeliveriesForReport } from "@/lib/reports/report-data";
 import { supabase } from "@/lib/supabase";
 import {
   getDateKey,
@@ -134,19 +135,7 @@ function DeliveriesPageContent() {
       setError(null);
 
       try {
-        const { data, error: bookingsError } = await supabase
-          .from("delivery_bookings")
-          .select(
-            `id, trailer_id, delivery_date, delivery_time, customer, consignee,
-             delivery_location, booking_reference, escort_required, status, notes, created_at,
-             delivered_at, waiting_collection_since, collection_due_date, collected_at,
-             demurrage_free_days, demurrage_daily_rate, demurrage_currency, demurrage_notes,
-             trailers(trailer_number, compound_position, departure_date)`
-          )
-          .order("delivery_date", { ascending: true })
-          .order("delivery_time", { ascending: true });
-
-        if (bookingsError) throw bookingsError;
+        const data = await loadDeliveriesForReport(supabase);
 
         const enriched = ((data ?? []) as Array<Record<string, unknown>>).map((booking) => {
           const trailerFromJoin = booking["trailers"] as Record<string, unknown> | null;
@@ -330,8 +319,17 @@ function DeliveriesPageContent() {
   };
 
   const handlePrint = () => {
+    if (isLoading || filteredBookings.length === 0) {
+      return;
+    }
+
     window.requestAnimationFrame(() => {
       window.requestAnimationFrame(() => {
+        const printRoot = document.getElementById("print-report-root");
+        if (printRoot && printRoot.childElementCount === 0) {
+          setError("Print report is still preparing. Please try again.");
+          return;
+        }
         window.print();
       });
     });

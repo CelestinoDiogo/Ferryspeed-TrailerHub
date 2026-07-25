@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { SuccessToast } from "@/components/common/success-toast";
+import { TrailerHistoryDrawer } from "@/components/trailers/trailer-history-drawer";
 import { ConfirmReceptionModal } from "../components/confirm-reception-modal";
 import { useVesselReception } from "../hooks/use-vessel-reception";
 import { supabase } from "@/lib/supabase";
@@ -43,6 +45,7 @@ function VesselBoatCheckPageContent() {
   const [operation, setOperation] = useState<VesselOperationRecord | null>(null);
   const [trailers, setTrailers] = useState<ViewTrailer[]>([]);
   const [actioningTrailerId, setActioningTrailerId] = useState<string | null>(null);
+  const [historyTrailer, setHistoryTrailer] = useState<{ trailerId: string | null; trailerNumber: string | null } | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -139,6 +142,18 @@ function VesselBoatCheckPageContent() {
     return () => window.clearTimeout(timeoutId);
   }, [loadBoatCheck]);
 
+  useEffect(() => {
+    if (!success) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setSuccess(null);
+    }, 2600);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [success]);
+
   const visibleTrailers = useMemo(() => {
     return trailers.filter((item) => item.arrival_status !== "cancelled" && item.arrival_status !== "not_discharged");
   }, [trailers]);
@@ -206,7 +221,7 @@ function VesselBoatCheckPageContent() {
         </header>
 
         {error ? <div className="rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">{error}</div> : null}
-        {success ? <div className="rounded-2xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">{success}</div> : null}
+        {success ? <SuccessToast message={success} onClose={() => setSuccess(null)} /> : null}
 
         <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
           <div className="rounded-2xl border border-white/10 bg-slate-900/70 p-4"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Arrived</p><p className="mt-2 text-lg font-semibold text-amber-200">{summary.arrived}</p></div>
@@ -226,6 +241,8 @@ function VesselBoatCheckPageContent() {
               const inspectionLabel = getVesselInspectionProgressLabel(inspectionState);
               const isReadOnly = operation.status === "completed" || operation.status === "cancelled";
               const canStartInspection = !isReadOnly && trailer.arrival_status !== "cancelled" && trailer.arrival_status !== "not_discharged";
+              const canConfirmReception = canConfirmVesselTrailerReception(trailer, operation);
+              const inspectionActionLabel = trailer.inspection_started_at ? "Complete Inspection" : "Start Inspection";
 
               return (
                 <article key={trailer.id} className="rounded-3xl border border-white/10 bg-slate-900/70 p-4 shadow-lg shadow-black/20 backdrop-blur sm:p-5">
@@ -254,26 +271,37 @@ function VesselBoatCheckPageContent() {
                           disabled={actioningTrailerId === trailer.id}
                           className="rounded-2xl bg-cyan-500 px-4 py-3 text-sm font-semibold text-slate-950 hover:bg-cyan-400 disabled:opacity-60"
                         >
-                          {actioningTrailerId === trailer.id ? "Opening..." : "Open Inspection"}
+                          {actioningTrailerId === trailer.id ? "Opening..." : inspectionActionLabel}
                         </button>
-                      ) : null}
-
-                      {isInspected || isReadOnly ? (
+                      ) : (
                         <Link href={`/dashboard/vessel-operations/${operation.id}/boat-check/${trailer.id}`} className="rounded-2xl border border-white/10 bg-slate-800 px-4 py-3 text-center text-sm font-semibold text-white hover:bg-slate-700">
-                          {isReadOnly ? "View Inspection" : "Edit Inspection"}
+                          View Inspection
                         </Link>
-                      ) : null}
+                      )}
 
-                      {canConfirmVesselTrailerReception(trailer, operation) ? (
-                        <button
-                          type="button"
-                          onClick={() => void reception.openReception(trailer)}
-                          disabled={actioningTrailerId === trailer.id}
-                          className="rounded-2xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm font-semibold text-emerald-100 hover:bg-emerald-500/20 disabled:opacity-60"
-                        >
-                          Confirm Reception
-                        </button>
-                      ) : null}
+                      <details className="group rounded-2xl border border-white/10 bg-slate-950/60">
+                        <summary className="cursor-pointer list-none px-4 py-3 text-sm font-semibold text-slate-100 marker:content-none">More Actions</summary>
+                        <div className="flex flex-col gap-2 border-t border-white/10 px-3 pb-3 pt-2">
+                          {canConfirmReception ? (
+                            <button
+                              type="button"
+                              onClick={() => void reception.openReception(trailer)}
+                              disabled={actioningTrailerId === trailer.id}
+                              className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-left text-xs font-semibold text-emerald-100 hover:bg-emerald-500/20 disabled:opacity-60"
+                            >
+                              Confirm Reception
+                            </button>
+                          ) : null}
+
+                          <button
+                            type="button"
+                            onClick={() => setHistoryTrailer({ trailerId: trailer.trailer_id ?? null, trailerNumber: trailer.trailer_number ?? null })}
+                            className="rounded-xl border border-white/10 bg-slate-800 px-3 py-2 text-left text-xs font-semibold text-white hover:bg-slate-700"
+                          >
+                            History
+                          </button>
+                        </div>
+                      </details>
 
                       {trailer.arrival_record_id ? (
                         <div className="rounded-2xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-100">
@@ -303,6 +331,13 @@ function VesselBoatCheckPageContent() {
         onConfirm={reception.submitReception}
         onFieldChange={reception.updateField}
         trailer={reception.selectedTrailer}
+      />
+
+      <TrailerHistoryDrawer
+        isOpen={Boolean(historyTrailer)}
+        trailerId={historyTrailer?.trailerId}
+        trailerNumber={historyTrailer?.trailerNumber}
+        onClose={() => setHistoryTrailer(null)}
       />
     </main>
   );

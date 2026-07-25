@@ -4,6 +4,7 @@ import {
   loadVesselReportDraftById,
   loadVesselReportHistory,
   markVesselReportAsSent,
+  recordVesselReportSendHistory,
   VesselReportLifecycleError,
 } from "@/lib/reports/vessel-operation-ai-report-store";
 import { sendVesselReportEmail, VesselReportEmailError } from "@/lib/reports/vessel-report-email";
@@ -26,6 +27,7 @@ const requestSchema = z.object({
   sendDraft: z.boolean().optional(),
   recipients: z.array(z.string().trim()).optional(),
   cc: z.array(z.string().trim()).optional(),
+  bcc: z.array(z.string().trim()).optional(),
   subject: z.string().trim().optional(),
   body: z.string().optional(),
 });
@@ -69,6 +71,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     }
 
     const selectedDraft = await loadVesselReportDraftById(supabase, parsedParams.id, payload.reportId);
+    const reportId = selectedDraft.reportId ?? payload.reportId;
 
     if (selectedDraft.status === "draft" && !payload.sendDraft) {
       return Response.json({ error: "This report is still a draft. Send it anyway?" }, { status: 409 });
@@ -91,31 +94,69 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       return Response.json({ error: "Report body cannot be empty." }, { status: 400 });
     }
 
-    const sendResult = await sendVesselReportEmail({
-      subject,
-      body,
-      recipients,
-      cc,
-      vesselName: reportData.operation.vesselName,
-      voyageReference: reportData.operation.voyageReference,
-      reportDate: reportData.operation.operationCompletedAt ?? reportData.operation.actualArrivalAt ?? new Date().toISOString(),
-      metrics: {
-        expectedTrailers: reportData.statistics.expectedTrailers,
-        arrivedTrailers: reportData.statistics.arrivedTrailers,
-        inspectedTrailers: reportData.statistics.inspectedTrailers,
-        pendingInspections: reportData.statistics.pendingInspections,
-        damagedTrailers: reportData.statistics.damagedTrailers,
-        temperatureAlertTrailers: reportData.statistics.temperatureAlertTrailers,
-        notDischargedTrailers: reportData.statistics.notDischargedTrailers,
-      },
-    });
+    const bcc = splitAndNormalizeEmails(payload.bcc ?? selectedDraft.bcc ?? []);
+
+    let sendResult: Awaited<ReturnType<typeof sendVesselReportEmail>>;
+    try {
+      sendResult = await sendVesselReportEmail({
+        subject,
+        body,
+        recipients,
+        cc,
+        bcc,
+        vesselName: reportData.operation.vesselName,
+        voyageReference: reportData.operation.voyageReference,
+        reportDate: reportData.operation.operationCompletedAt ?? reportData.operation.actualArrivalAt ?? new Date().toISOString(),
+        metrics: {
+          expectedTrailers: reportData.statistics.expectedTrailers,
+          arrivedTrailers: reportData.statistics.arrivedTrailers,
+          inspectedTrailers: reportData.statistics.inspectedTrailers,
+          pendingInspections: reportData.statistics.pendingInspections,
+          damagedTrailers: reportData.statistics.damagedTrailers,
+          temperatureAlertTrailers: reportData.statistics.temperatureAlertTrailers,
+          notDischargedTrailers: reportData.statistics.notDischargedTrailers,
+        },
+      });
+    } catch (sendError) {
+      await recordVesselReportSendHistory(supabase, parsedParams.id, {
+        reportId,
+        generatedAt: selectedDraft.generatedAt,
+        generatedBy: selectedDraft.generatedBy,
+        subject,
+        recipients,
+        cc,
+        bcc,
+        reportContent: body,
+        sentAt: null,
+        sentBy: null,
+        deliveryStatus: "failed",
+        providerMessageId: null,
+      }).catch(() => undefined);
+      throw sendError;
+    }
 
     const sentBy = user.email ?? user.user_metadata?.full_name ?? user.id;
     const sentDraft = await markVesselReportAsSent(supabase, parsedParams.id, payload.reportId, sentBy, {
       recipients: sendResult.recipients,
       cc: sendResult.cc,
+      bcc,
       subject: sendResult.subject,
       body: sendResult.body,
+    });
+
+    await recordVesselReportSendHistory(supabase, parsedParams.id, {
+      reportId,
+      generatedAt: selectedDraft.generatedAt,
+      generatedBy: selectedDraft.generatedBy,
+      subject: sendResult.subject,
+      recipients: sendResult.recipients,
+      cc: sendResult.cc,
+      bcc,
+      reportContent: sendResult.body,
+      sentAt: new Date().toISOString(),
+      sentBy,
+      deliveryStatus: "sent",
+      providerMessageId: sendResult.gmailMessageId,
     });
     const { history } = await loadVesselReportHistory(supabase, parsedParams.id);
 

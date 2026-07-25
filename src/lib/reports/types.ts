@@ -1,4 +1,4 @@
-import type { Json } from "@/lib/database.types";
+import type { HistoryDateRangeValue } from "@/lib/history-date-range";
 
 export type TemperatureResult = "pass" | "fail" | "not_assessed";
 
@@ -162,6 +162,7 @@ export type VesselOperationAiReportDraft = {
   subject: string;
   recipients: string[];
   cc: string[];
+  bcc: string[];
   body: string;
   generatedContent: string;
   editedContent: string;
@@ -183,6 +184,7 @@ export type VesselOperationAiReportHistoryItem = {
   subject: string;
   recipients: string[];
   cc: string[];
+  bcc: string[];
   generationMode: "ai" | "template";
   status: "draft" | "final" | "sent";
 };
@@ -195,4 +197,115 @@ export type VesselOperationAiReportResponse = {
   emailProviderConfigured?: boolean;
   usedFallback: boolean;
   message: string | null;
+};
+
+export type ExecutiveDashboardTrendPoint = {
+  date: string;
+  label: string;
+  arrivals: number;
+  departures: number;
+  inspections: number;
+  alertsRaised: number;
+  riskEvents: number;
+  compoundOccupancy: number;
+  netCompoundChange: number;
+};
+
+export type ExecutiveDashboardCustomerMetric = {
+  customer: string;
+  trailers: number;
+  exportAllocations: number;
+  overdueAllocations: number;
+  priorityTrailers: number;
+  averageCompoundDwellHours: number;
+  temperatureAlerts: number;
+};
+
+export type ExecutiveDashboardVesselMetric = {
+  vesselName: string;
+  sailingReference: string | null;
+  trailers: number;
+  inspectedTrailers: number;
+  temperatureAlerts: number;
+  damageFlags: number;
+  completionRate: number;
+};
+
+export type ExecutiveDashboardAlertItem = {
+  id: string;
+  title: string;
+  severity: string;
+  trailerNumber: string | null;
+  sourceModule: string;
+  createdAt: string | null;
+};
+
+export type ExecutiveDashboardReportData = {
+  range: HistoryDateRangeValue;
+  generatedAt: string;
+  summary: {
+    compoundTrailers: number;
+    compoundOccupancyPercent: number;
+    activeExportAllocations: number;
+    todaysArrivals: number;
+    todaysDepartures: number;
+    inspectionCompletionRate: number;
+    averageCompoundDwellHours: number;
+    longestCompoundDwellHours: number;
+    longestCompoundDwellTrailer: string | null;
+    prioritySlaPercent: number;
+    temperatureAlerts: number;
+    stockCheckAccuracyPercent: number;
+    waitingCollectionOverdue: number;
+    activeAlerts: number;
+  };
+  compound: {
+    availableEmptyTrailers: number;
+    loadedTrailers: number;
+    maintenanceTrailers: number;
+    positionUtilisationPercent: number;
+    dwellBands: {
+      under24h: number;
+      oneToThreeDays: number;
+      fourToSevenDays: number;
+      overSevenDays: number;
+    };
+    topDwellTrailers: Array<{
+      trailerNumber: string;
+      customer: string | null;
+      compoundPosition: string | null;
+      loadStatus: string | null;
+      dwellHours: number;
+    }>;
+  };
+  vessel: {
+    totalOperations: number;
+    activeOperations: number;
+    completedOperations: number;
+    inspectionPending: number;
+    topOperations: ExecutiveDashboardVesselMetric[];
+  };
+  customers: ExecutiveDashboardCustomerMetric[];
+  trends: ExecutiveDashboardTrendPoint[];
+  alerts: ExecutiveDashboardAlertItem[];
+  exportSla: {
+    overdue: number;
+    waitingLoading: number;
+    collectedLoaded: number;
+    deliveredEmpty: number;
+  };
+  stockCheck: {
+    latestCheckId: string | null;
+    expectedTotal: number;
+    checkedTotal: number;
+    discrepancyTotal: number;
+    missingTotal: number;
+    unexpectedTotal: number;
+    wrongPositionTotal: number;
+    wrongStatusTotal: number;
+  };
+};
+
+export type ExecutiveDashboardResponse = {
+  reportData: ExecutiveDashboardReportData;
 };

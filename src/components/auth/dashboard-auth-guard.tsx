@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import type { ReactNode } from "react";
 import { canAccessModule } from "@/lib/auth/permissions";
@@ -11,32 +11,78 @@ type DashboardAuthGuardProps = {
   children: ReactNode;
 };
 
+const AUTH_GUARD_TIMEOUT_MS = 10_000;
+const isDev = process.env.NODE_ENV !== "production";
+
+const withTimeout = async <T,>(promise: PromiseLike<T>, timeoutMs: number, label: string): Promise<T> => {
+  return await Promise.race([
+    promise,
+    new Promise<never>((_, reject) => {
+      window.setTimeout(() => reject(new Error(`${label} timed out.`)), timeoutMs);
+    }),
+  ]);
+};
+
 export function DashboardAuthGuard({ children }: DashboardAuthGuardProps) {
   const router = useRouter();
   const pathname = usePathname();
-  const { roleKey, isLoading: isLoadingCurrentUser } = useCurrentUser();
+  const { userId, roleKey, loadError, isLoading: isLoadingCurrentUser } = useCurrentUser();
   const [isChecking, setIsChecking] = useState(true);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const hasRedirectedRef = useRef(false);
+
+  const redirectToLogin = useCallback(() => {
+    if (hasRedirectedRef.current) {
+      return;
+    }
+
+    hasRedirectedRef.current = true;
+    if (isDev) {
+      console.info("[auth] redirecting to login", { pathname });
+    }
+    router.replace("/login");
+  }, [pathname, router]);
 
   useEffect(() => {
     let active = true;
-
-    const redirectToLogin = () => {
-      router.replace("/login");
-      router.refresh();
-    };
+    if (isDev) {
+      console.info("[auth] dashboard mounted", { pathname });
+    }
 
     const validateSession = async () => {
-      const { data, error } = await supabase.auth.getSession();
-      if (!active) {
-        return;
-      }
+      try {
+        const { data, error } = await withTimeout(supabase.auth.getSession(), AUTH_GUARD_TIMEOUT_MS, "Supabase auth.getSession");
+        if (!active) {
+          return;
+        }
 
-      if (error || !data.session?.access_token) {
+        if (isDev) {
+          console.info("[auth] session loaded", {
+            hasSession: Boolean(data.session?.access_token),
+            userId: data.session?.user?.id ?? null,
+            hasError: Boolean(error),
+            errorMessage: error?.message ?? null,
+          });
+        }
+
+        if (error || !data.session?.access_token) {
+          setIsChecking(false);
+          redirectToLogin();
+          return;
+        }
+
+        setIsChecking(false);
+      } catch (error) {
+        if (!active) {
+          return;
+        }
+
+        if (isDev) {
+          console.error("[auth] dashboard session validation failed", error);
+        }
+        setIsChecking(false);
         redirectToLogin();
-        return;
       }
-
-      setIsChecking(false);
     };
 
     const {
@@ -46,12 +92,22 @@ export function DashboardAuthGuard({ children }: DashboardAuthGuardProps) {
         return;
       }
 
+      if (isDev) {
+        console.info("[auth] auth state", {
+          event,
+          userId: session?.user?.id ?? null,
+          hasSession: Boolean(session?.access_token),
+        });
+      }
+
       if (event === "SIGNED_OUT" || !session?.access_token) {
+        setIsChecking(false);
         redirectToLogin();
         return;
       }
 
       if (event === "SIGNED_IN" && pathname?.startsWith("/dashboard")) {
+        setAuthError(null);
         setIsChecking(false);
       }
     });
@@ -62,7 +118,48 @@ export function DashboardAuthGuard({ children }: DashboardAuthGuardProps) {
       active = false;
       subscription.unsubscribe();
     };
-  }, [pathname, router]);
+  }, [pathname, redirectToLogin]);
+
+  useEffect(() => {
+    if (!isChecking && !isLoadingCurrentUser && isDev) {
+      console.info("[auth] loading finished", {
+        userId,
+        roleKey,
+        loadError,
+        hasError: Boolean(authError),
+      });
+    }
+  }, [authError, isChecking, isLoadingCurrentUser, loadError, roleKey, userId]);
+
+  useEffect(() => {
+    if (!loadError || isLoadingCurrentUser) {
+      return;
+    }
+
+    setIsChecking(false);
+    redirectToLogin();
+  }, [isLoadingCurrentUser, loadError, redirectToLogin]);
+
+  if (authError) {
+    return (
+      <div className="min-h-screen bg-slate-100 px-4 py-10 text-slate-900 sm:px-6 lg:px-8">
+        <div className="mx-auto max-w-xl rounded-3xl border border-rose-200 bg-white p-8 shadow-sm">
+          <p className="text-sm font-semibold uppercase tracking-[0.25em] text-rose-700">Ferryspeed TrailerHub</p>
+          <h1 className="mt-3 text-2xl font-semibold text-rose-900">Session validation failed</h1>
+          <p className="mt-3 text-sm text-rose-700">{authError}</p>
+          <div className="mt-6">
+            <button
+              type="button"
+              onClick={() => router.replace("/login")}
+              className="rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-900 hover:bg-slate-50"
+            >
+              Go to Login
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (isChecking || isLoadingCurrentUser) {
     return (

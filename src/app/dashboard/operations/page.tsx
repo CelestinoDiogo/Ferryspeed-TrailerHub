@@ -791,7 +791,7 @@ export default function OperationsPage() {
                 Calendar
               </Link>
               <Link
-                href="/dashboard/operations-centre"
+                href="/dashboard/operations-command-centre"
                 className="rounded-2xl border border-white/10 bg-slate-800 px-4 py-3 text-center text-sm font-semibold text-white transition hover:bg-slate-700"
               >
                 Ops Centre

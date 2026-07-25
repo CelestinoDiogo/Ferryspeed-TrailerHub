@@ -8,6 +8,7 @@ import { VesselOperationDetails } from "./components/vessel-operation-details";
 import { VesselOperationHeader } from "./components/vessel-operation-header";
 import { VesselOperationSummary } from "./components/vessel-operation-summary";
 import { VesselTrailerList } from "./components/vessel-trailer-list";
+import { SuccessToast } from "@/components/common/success-toast";
 import { useVesselOperation } from "./hooks/use-vessel-operation";
 
 function VesselOperationDetailsPageContent() {
@@ -28,6 +29,7 @@ function VesselOperationDetailsPageContent() {
     actioningTrailerId,
     error,
     success,
+    dismissSuccess,
     formState,
     bulkText,
     setBulkText,
@@ -63,7 +65,7 @@ function VesselOperationDetailsPageContent() {
         <VesselOperationHeader operation={operation} />
 
         {error ? <div className="rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">{error}</div> : null}
-        {success ? <div className="rounded-2xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">{success}</div> : null}
+        {success ? <SuccessToast message={success} onClose={dismissSuccess} /> : null}
 
         <VesselOperationSummary operation={operation} summary={summary} completionSummary={completionSummary} operationStatus={operationStatus} />
 

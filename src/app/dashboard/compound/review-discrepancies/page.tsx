@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { RotateCw } from "lucide-react";
@@ -10,9 +11,7 @@ import { LoadingState } from "@/components/layout/loading-state";
 import { PageHeader } from "@/components/layout/page-header";
 import { StatCard } from "@/components/layout/stat-card";
 import { formatDateTime, formatStatusLabel, normalizeTrailerNumber, type StockCheck, type StockCheckItem } from "@/lib/compound-stock-check";
-import { OPERATIONAL_STAGE_ORDER, getOperationalStageLabel, type OperationalStage } from "@/lib/operations/operational-stages";
 import { supabase } from "@/lib/supabase";
-import { createTrailerActivity } from "@/lib/trailer-activity";
 import { logTrailerEvent } from "@/lib/trailer-audit-log";
 
 type TrailerLookupRow = {
@@ -51,16 +50,6 @@ type ConfirmDepartedRpcResponse = {
   resolved_by?: string | null;
 };
 
-type PendingOperationalStatusChange = {
-  stockCheckItemId: string;
-  trailerId: string;
-  trailerNumber: string;
-  currentStatus: OperationalStage | null;
-  suggestedStatus: OperationalStage | null;
-  selectedStatus: OperationalStage;
-  reason: string;
-};
-
 const FILTER_OPTIONS: Array<{ key: DiscrepancyFilter; label: string }> = [
   { key: "all", label: "All" },
   { key: "missing", label: "Missing" },
@@ -74,17 +63,6 @@ const FILTER_OPTIONS: Array<{ key: DiscrepancyFilter; label: string }> = [
 const OPEN_STATUSES = ["in_progress", "completed"] as const;
 
 const normalizeText = (value?: string | null) => value?.trim().toLowerCase() ?? "";
-
-const OPERATIONAL_STAGE_SET = new Set<string>(OPERATIONAL_STAGE_ORDER);
-
-const normalizeOperationalStage = (value?: string | null): OperationalStage | null => {
-  const normalized = normalizeText(value);
-  if (!normalized || !OPERATIONAL_STAGE_SET.has(normalized)) {
-    return null;
-  }
-
-  return normalized as OperationalStage;
-};
 
 const normalizePositionDisplay = (value?: string | null) => {
   const normalized = value?.trim().toUpperCase();
@@ -191,24 +169,6 @@ const mapConfirmDepartedErrorMessage = (message: string) => {
   return "Unable to confirm departed right now.";
 };
 
-const mapOperationalStatusErrorMessage = (message: string) => {
-  const normalized = message.trim().toLowerCase();
-
-  if (normalized.includes("not found") && normalized.includes("trailer")) {
-    return "Trailer record not found. Refresh and try again.";
-  }
-
-  if (normalized.includes("not found") && normalized.includes("stock check")) {
-    return "Stock check item not found. Refresh and try again.";
-  }
-
-  if (normalized.includes("network") || normalized.includes("connection") || normalized.includes("failed to fetch")) {
-    return "Connection failed. Please try again.";
-  }
-
-  return "Unable to change operational status right now.";
-};
-
 const isFunctionNotFoundError = (message: string) => {
   const normalized = message.toLowerCase();
   return normalized.includes("function") && (normalized.includes("does not exist") || normalized.includes("not found") || normalized.includes("could not find"));
@@ -260,9 +220,6 @@ export default function CompoundReviewDiscrepanciesPage() {
   const [isConfirmingDeparted, setIsConfirmingDeparted] = useState(false);
   const [activeConfirmingDepartedItemId, setActiveConfirmingDepartedItemId] = useState<string | null>(null);
   const [pendingConfirmDeparted, setPendingConfirmDeparted] = useState<PendingConfirmDeparted | null>(null);
-  const [isChangingOperationalStatus, setIsChangingOperationalStatus] = useState(false);
-  const [activeOperationalStatusItemId, setActiveOperationalStatusItemId] = useState<string | null>(null);
-  const [pendingOperationalStatusChange, setPendingOperationalStatusChange] = useState<PendingOperationalStatusChange | null>(null);
 
   const loadStockChecks = useCallback(async () => {
     setIsLoadingChecks(true);
@@ -535,7 +492,7 @@ export default function CompoundReviewDiscrepanciesPage() {
   }, [rows]);
 
   const handleRefresh = async () => {
-    if (!selectedStockCheckId || isLoadingRows || isRefreshing || isChangingOperationalStatus) {
+    if (!selectedStockCheckId || isLoadingRows || isRefreshing) {
       return;
     }
 
@@ -546,152 +503,6 @@ export default function CompoundReviewDiscrepanciesPage() {
   const handleOpenStockCheck = (message: string) => {
     setNotice(message);
     router.push("/dashboard/compound/stock-check");
-  };
-
-  const openOperationalStatusChange = (row: DiscrepancyRow) => {
-    if (!row.item.trailer_id) {
-      setError("This discrepancy cannot change status because trailer link is missing.");
-      return;
-    }
-
-    const currentStatus = normalizeOperationalStage(row.currentOperationalStatus);
-    const suggestedStatus = normalizeOperationalStage(row.item.system_operational_status);
-    const selectedStatus = suggestedStatus ?? currentStatus ?? OPERATIONAL_STAGE_ORDER[0];
-
-    const reason = row.item.resolution_action?.trim() || row.item.notes?.trim() || categoryLabel(row.category, row.item.discrepancy_type);
-
-    setPendingOperationalStatusChange({
-      stockCheckItemId: row.item.id,
-      trailerId: row.item.trailer_id,
-      trailerNumber: row.item.trailer_number ?? "Unknown",
-      currentStatus,
-      suggestedStatus,
-      selectedStatus,
-      reason,
-    });
-  };
-
-  const handleConfirmOperationalStatusChange = async () => {
-    if (!pendingOperationalStatusChange) {
-      return;
-    }
-
-    if (isChangingOperationalStatus) {
-      return;
-    }
-
-    setIsChangingOperationalStatus(true);
-    setActiveOperationalStatusItemId(pendingOperationalStatusChange.stockCheckItemId);
-    setError(null);
-
-    try {
-      const operatorName = await resolveOperatorName();
-      const resolvedAtIso = new Date().toISOString();
-      const previousStatus = pendingOperationalStatusChange.currentStatus;
-      const newStatus = pendingOperationalStatusChange.selectedStatus;
-
-      const { error: trailerUpdateError } = await supabase
-        .from("trailers")
-        .update({ operational_status: newStatus })
-        .eq("id", pendingOperationalStatusChange.trailerId);
-
-      if (trailerUpdateError) {
-        throw new Error(mapOperationalStatusErrorMessage(trailerUpdateError.message));
-      }
-
-      const resolutionAction = `operational_status_change:${previousStatus ?? "unknown"}->${newStatus}`;
-
-      const { error: itemUpdateError } = await supabase
-        .from("compound_stock_check_items")
-        .update({
-          resolution_status: "resolved",
-          resolved_by: operatorName,
-          resolved_at: resolvedAtIso,
-          resolution_action: resolutionAction,
-          discrepancy_type: "operational_status_reconciled",
-        })
-        .eq("id", pendingOperationalStatusChange.stockCheckItemId);
-
-      if (itemUpdateError) {
-        throw new Error(mapOperationalStatusErrorMessage(itemUpdateError.message));
-      }
-
-      setRows((currentRows) =>
-        currentRows.map((row) => {
-          if (row.item.id !== pendingOperationalStatusChange.stockCheckItemId) {
-            return row;
-          }
-
-          return {
-            ...row,
-            currentOperationalStatus: newStatus,
-            resolved: true,
-            item: {
-              ...row.item,
-              resolution_status: "resolved",
-              resolved_by: operatorName,
-              resolved_at: resolvedAtIso,
-              resolution_action: resolutionAction,
-              discrepancy_type: "operational_status_reconciled",
-            },
-          };
-        }),
-      );
-
-      await logTrailerEvent({
-        trailerId: pendingOperationalStatusChange.trailerId,
-        trailerNumber: pendingOperationalStatusChange.trailerNumber,
-        eventType: "operational_status_changed",
-        description: "Operational status changed from Review Discrepancies.",
-        previousValue: {
-          stock_check_item_id: pendingOperationalStatusChange.stockCheckItemId,
-          operational_status: previousStatus,
-        },
-        newValue: {
-          stock_check_item_id: pendingOperationalStatusChange.stockCheckItemId,
-          operational_status: newStatus,
-          resolution_action: resolutionAction,
-        },
-        sourceModule: "review_discrepancies",
-        performedBy: operatorName,
-        performedAt: resolvedAtIso,
-      });
-
-      try {
-        await createTrailerActivity({
-          trailerId: pendingOperationalStatusChange.trailerId,
-          trailerNumber: pendingOperationalStatusChange.trailerNumber,
-          eventType: "operational_status_changed",
-          eventTitle: "Operational status changed",
-          eventDescription: "Operational status changed from Review Discrepancies.",
-          sourceModule: "review_discrepancies",
-          sourceRecordId: pendingOperationalStatusChange.stockCheckItemId,
-          previousStatus,
-          newStatus,
-          metadata: {
-            stock_check_item_id: pendingOperationalStatusChange.stockCheckItemId,
-            resolution_action: resolutionAction,
-          },
-          performedBy: operatorName,
-          createdAt: resolvedAtIso,
-        });
-      } catch (activityError) {
-        console.error("Unable to log trailer activity for operational status change:", activityError);
-      }
-
-      setNotice(
-        `${normalizeTrailerNumber(pendingOperationalStatusChange.trailerNumber)} operational status changed from ${
-          previousStatus ? getOperationalStageLabel(previousStatus) : "Unknown"
-        } to ${getOperationalStageLabel(newStatus)}.`,
-      );
-      setPendingOperationalStatusChange(null);
-    } catch (statusError) {
-      const message = statusError instanceof Error ? statusError.message : "Unable to change operational status right now.";
-      setError(message);
-    } finally {
-      setIsChangingOperationalStatus(false);
-      setActiveOperationalStatusItemId(null);
-    }
   };
 
   const openConfirmDepartedModal = (row: DiscrepancyRow) => {
@@ -941,8 +752,6 @@ export default function CompoundReviewDiscrepanciesPage() {
                         const trailerNumber = normalizeTrailerNumber(row.item.trailer_number ?? "-");
                         const hasTrailerLink = Boolean(row.item.trailer_id);
                         const hasOperationalDiscrepancy = hasOperationalStatusDiscrepancy(row.item.discrepancy_type);
-                        const currentOperationalStage = normalizeOperationalStage(row.currentOperationalStatus);
-                        const suggestedOperationalStage = normalizeOperationalStage(row.item.system_operational_status);
                         const operationalReason = row.item.resolution_action?.trim() || row.item.notes?.trim() || categoryLabel(row.category, row.item.discrepancy_type);
                         const operationalChangeSummary = row.item.resolution_action?.includes("operational_status_change:") ? row.item.resolution_action : null;
 
@@ -1023,20 +832,18 @@ export default function CompoundReviewDiscrepanciesPage() {
                                 {hasOperationalDiscrepancy ? (
                                   <div className="mt-2 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-2 text-xs text-slate-700">
                                     <p className="font-semibold uppercase tracking-[0.14em] text-slate-500">Operational Status</p>
-                                    <p className="mt-1">Current Status: {currentOperationalStage ? getOperationalStageLabel(currentOperationalStage) : "Unknown"}</p>
-                                    <p>Suggested Status: {suggestedOperationalStage ? getOperationalStageLabel(suggestedOperationalStage) : "Unknown"}</p>
+                                    <p className="mt-1">Current Status: {formatStatusLabel(row.currentOperationalStatus)}</p>
+                                    <p>Suggested Status: {formatStatusLabel(row.item.system_operational_status)}</p>
                                     <p>Reason: {operationalReason || "Operational discrepancy detected."}</p>
                                     {operationalChangeSummary ? <p className="mt-1 text-slate-500">History: {operationalChangeSummary}</p> : null}
-                                    <button
-                                      type="button"
-                                      onClick={() => openOperationalStatusChange(row)}
-                                      disabled={!hasTrailerLink || isChangingOperationalStatus}
-                                      className="mt-2 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
-                                    >
-                                      {activeOperationalStatusItemId === row.item.id && isChangingOperationalStatus
-                                        ? "Changing..."
-                                        : "Change Operational Status"}
-                                    </button>
+                                    {hasTrailerLink ? (
+                                      <Link
+                                        href={`/dashboard/trailers/${row.item.trailer_id}`}
+                                        className="mt-2 inline-flex rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-50"
+                                      >
+                                        Open Trailer Workflow
+                                      </Link>
+                                    ) : null}
                                   </div>
                                 ) : null}
                               </div>
@@ -1083,80 +890,6 @@ export default function CompoundReviewDiscrepanciesPage() {
                   className="rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {isConfirmingDeparted ? "Confirming..." : "Confirm Departed"}
-                </button>
-              </div>
-            </div>
-          </AppCard>
-        </div>
-      ) : null}
-
-      {pendingOperationalStatusChange ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 px-4" role="dialog" aria-modal="true" aria-label="Change operational status">
-          <AppCard className="w-full max-w-xl">
-            <div className="p-5 md:p-6">
-              <h2 className="text-lg font-semibold text-slate-950">Change Operational Status</h2>
-              <p className="mt-2 text-sm text-slate-600">Confirm operational status reconciliation for this discrepancy.</p>
-
-              <dl className="mt-4 grid gap-3 text-sm text-slate-700">
-                <div>
-                  <dt className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Trailer</dt>
-                  <dd className="mt-1 font-semibold text-slate-900">{normalizeTrailerNumber(pendingOperationalStatusChange.trailerNumber)}</dd>
-                </div>
-                <div>
-                  <dt className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Current Status</dt>
-                  <dd className="mt-1">{pendingOperationalStatusChange.currentStatus ? getOperationalStageLabel(pendingOperationalStatusChange.currentStatus) : "Unknown"}</dd>
-                </div>
-                <div>
-                  <dt className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Suggested Status</dt>
-                  <dd className="mt-1">{pendingOperationalStatusChange.suggestedStatus ? getOperationalStageLabel(pendingOperationalStatusChange.suggestedStatus) : "Unknown"}</dd>
-                </div>
-                <div>
-                  <dt className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Reason</dt>
-                  <dd className="mt-1">{pendingOperationalStatusChange.reason || "Operational discrepancy detected."}</dd>
-                </div>
-                <label className="text-sm font-semibold text-slate-900" htmlFor="newOperationalStatus">
-                  New Operational Status
-                  <select
-                    id="newOperationalStatus"
-                    value={pendingOperationalStatusChange.selectedStatus}
-                    onChange={(event) => {
-                      const selected = normalizeOperationalStage(event.target.value);
-                      if (!selected) {
-                        return;
-                      }
-
-                      setPendingOperationalStatusChange((current) => (current ? { ...current, selectedStatus: selected } : current));
-                    }}
-                    disabled={isChangingOperationalStatus}
-                    className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-cyan-500"
-                  >
-                    {OPERATIONAL_STAGE_ORDER.map((stage) => (
-                      <option key={stage} value={stage}>
-                        {getOperationalStageLabel(stage)}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </dl>
-
-              <p className="mt-4 text-sm text-slate-600">This will update trailer operational status and save reconciliation history in Stock Check.</p>
-
-              <div className="mt-5 flex flex-wrap justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={() => setPendingOperationalStatusChange(null)}
-                  disabled={isChangingOperationalStatus}
-                  className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void handleConfirmOperationalStatusChange()}
-                  disabled={isChangingOperationalStatus}
-                  className="rounded-xl bg-cyan-600 px-4 py-2 text-sm font-semibold text-white hover:bg-cyan-500 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {isChangingOperationalStatus ? "Updating..." : "Confirm Change"}
                 </button>
               </div>
             </div>

@@ -21,6 +21,11 @@ const cards = [
     description: "Configure module permissions by role.",
     href: "/dashboard/settings/permissions",
   },
+  {
+    title: "Automation Centre",
+    description: "Configure workflow automation rules, triggers, actions, and scheduler jobs.",
+    href: "/dashboard/settings/automation",
+  },
 ] as const;
 
 export default function SettingsPage() {
@@ -40,7 +45,7 @@ export default function SettingsPage() {
         </div>
       </header>
 
-      <section className="grid gap-4 md:grid-cols-3">
+      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         {cards.map((card) => (
           <Link key={card.href} href={card.href} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm transition hover:border-cyan-300 hover:shadow">
             <h2 className="text-lg font-semibold text-slate-900">{card.title}</h2>

@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { CalendarDays, Clock3, Menu, Search, Settings, UserCircle2 } from "lucide-react";
+import { CalendarDays, Clock3, Menu, Search, Settings, UserCircle2, Bot } from "lucide-react";
+import { OperationsAssistantDrawer } from "@/components/ai/operations-assistant-drawer";
 import { OperationsToolsButton } from "@/components/layout/operations-tools-button";
 import { OperationsToolsDrawer } from "@/components/layout/operations-tools-drawer";
 import { RealtimeOperationsCenter } from "@/components/layout/realtime-operations-center";
@@ -34,6 +35,7 @@ export function TopHeader({ title, subtitle: _subtitle, onMenuClick }: TopHeader
   const [dateText, setDateText] = useState("--");
   const [timeText, setTimeText] = useState("--:--:--");
   const [toolsOpen, setToolsOpen] = useState(false);
+  const [assistantOpen, setAssistantOpen] = useState(false);
   const { userId, fullName, email, roleKey, isActive } = useCurrentUser();
   const [titleLeft, ...titleRest] = title.split(" ");
   const titleRight = titleRest.join(" ");
@@ -88,6 +90,15 @@ export function TopHeader({ title, subtitle: _subtitle, onMenuClick }: TopHeader
           <button className="inline-flex h-11 w-11 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-700 shadow-sm transition hover:bg-slate-50" aria-label="Search">
             <Search className="h-5 w-5" />
           </button>
+          <button
+            type="button"
+            onClick={() => setAssistantOpen(true)}
+            className="inline-flex h-11 w-11 items-center justify-center rounded-2xl border border-slate-200 bg-white text-cyan-700 shadow-sm transition hover:bg-slate-50"
+            aria-label="Open AI Operations Assistant"
+            title="Open AI Operations Assistant"
+          >
+            <Bot className="h-5 w-5" />
+          </button>
           <RealtimeOperationsCenter
             roleKey={roleKey}
             userId={userId}
@@ -107,11 +118,20 @@ export function TopHeader({ title, subtitle: _subtitle, onMenuClick }: TopHeader
         </div>
 
         <div className="flex items-center gap-2 lg:hidden">
+          <button
+            type="button"
+            onClick={() => setAssistantOpen(true)}
+            className="inline-flex h-10 w-10 items-center justify-center rounded-2xl border border-slate-200 bg-white text-cyan-700 shadow-sm"
+            aria-label="Open AI Operations Assistant"
+          >
+            <Bot className="h-5 w-5" />
+          </button>
           <OperationsToolsButton onClick={() => setToolsOpen(true)} />
         </div>
       </div>
 
       <OperationsToolsDrawer open={toolsOpen} onClose={() => setToolsOpen(false)} />
+      <OperationsAssistantDrawer open={assistantOpen} onClose={() => setAssistantOpen(false)} />
     </header>
   );
 }

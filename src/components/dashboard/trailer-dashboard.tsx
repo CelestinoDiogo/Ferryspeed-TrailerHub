@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useState } from "react";
-import { Anchor, ChevronRight, ClipboardList, Package, PlusCircle, ScanSearch, Ship, Truck, Wrench } from "lucide-react";
+import { Anchor, BarChart3, ChevronRight, ClipboardList, Package, PlusCircle, ScanSearch, Ship, Truck, Wrench } from "lucide-react";
 import { PrintButton } from "@/components/print/print-button";
 import { PrintFilters } from "@/components/print/print-filters";
 import { PrintFooter } from "@/components/print/print-footer";
@@ -171,6 +171,27 @@ const defaultOperationalAlertSummary: OperationalAlertSummary = {
 };
 
 const COMPOUND_POSITIONS = 50;
+const isDev = process.env.NODE_ENV !== "production";
+
+type SupabaseErrorShape = {
+  message?: string | null;
+  code?: string | null;
+  details?: string | null;
+  hint?: string | null;
+};
+
+const buildSectionError = (section: string, error: SupabaseErrorShape) => {
+  const baseMessage = error.message || `Unable to load ${section}.`;
+  if (!isDev) {
+    return baseMessage;
+  }
+
+  const extra = [error.code ? `code=${error.code}` : null, error.details ? `details=${error.details}` : null, error.hint ? `hint=${error.hint}` : null]
+    .filter(Boolean)
+    .join(" | ");
+
+  return `[Dashboard:${section}] ${baseMessage}${extra ? ` (${extra})` : ""}`;
+};
 
 const getDateKey = (value?: string | null) => {
   if (!value) return null;
@@ -291,13 +312,13 @@ export function TrailerDashboard() {
               .maybeSingle(),
           ]);
 
-        if (supabaseError) throw supabaseError;
-        if (eventsError) throw eventsError;
-        if (deliveriesError) throw deliveriesError;
-        if (exportAllocationsError) throw exportAllocationsError;
-        if (vesselError) throw vesselError;
-        if (vesselTrailerError) throw vesselTrailerError;
-        if (latestStockCheckError) throw latestStockCheckError;
+        if (supabaseError) throw new Error(buildSectionError("trailers", supabaseError));
+        if (eventsError) throw new Error(buildSectionError("trailer_events", eventsError));
+        if (deliveriesError) throw new Error(buildSectionError("delivery_bookings", deliveriesError));
+        if (exportAllocationsError) throw new Error(buildSectionError("export_allocations", exportAllocationsError));
+        if (vesselError) throw new Error(buildSectionError("vessel_operations", vesselError));
+        if (vesselTrailerError) throw new Error(buildSectionError("vessel_operation_trailers", vesselTrailerError));
+        if (latestStockCheckError) throw new Error(buildSectionError("compound_stock_checks", latestStockCheckError));
 
         const trailers = (data ?? []) as TrailerRecord[];
         setArrivalsTodayCount(
@@ -462,7 +483,7 @@ export function TrailerDashboard() {
             .eq("stock_check_id", latestStockCheck.id);
 
           if (latestItemsError) {
-            throw latestItemsError;
+            throw new Error(buildSectionError("compound_stock_check_items", latestItemsError));
           }
 
           const discrepancyRows = (latestCheckItems ?? []) as StockCheckDiscrepancyRow[];
@@ -632,6 +653,7 @@ export function TrailerDashboard() {
   }).length;
 
   const programmeCards = [
+    { label: "Executive Dashboard", subtitle: "Analytics", value: "BI", href: "/dashboard/business-intelligence", icon: <BarChart3 className="h-6 w-6" /> },
     { label: "Arrivals", subtitle: "Today", value: arrivalsTodayCount, href: "/dashboard/search?filter=arrivals_today", icon: <Ship className="h-6 w-6" /> },
     { label: "Departures", subtitle: "Today", value: departuresTodayCount, href: "/dashboard/search?filter=departures_today", icon: <Package className="h-6 w-6" /> },
     { label: "Deliveries", subtitle: "Today", value: deliveriesTodayCount, href: "/dashboard/deliveries", icon: <Truck className="h-6 w-6" /> },

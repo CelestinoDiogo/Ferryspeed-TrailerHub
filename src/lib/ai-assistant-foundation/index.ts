@@ -1,7 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
 import type { Database } from "@/lib/database.types";
-import type { AiAssistantResponse } from "@/lib/ai-assistant-types";
+import type { AiAssistantContext, AiAssistantResponse } from "@/lib/ai-assistant-types";
 import { detectIntent } from "@/lib/ai-assistant-foundation/intent-detection";
 import { runIntentQuery } from "@/lib/ai-assistant-foundation/query-service";
 import { formatAssistantResponse } from "@/lib/ai-assistant-foundation/response-formatter";
@@ -20,24 +20,27 @@ export async function runAiAssistantFoundationQuery(
   supabase: SupabaseClient<Database>,
   question: string,
   userId: string,
+  pageContext?: AiAssistantContext,
 ): Promise<AiAssistantResponse> {
   const parsed = promptRequestSchema.parse({ question });
   const normalizedQuestion = parsed.question.trim();
 
   if (containsWriteIntent(normalizedQuestion) || looksLikeSql(normalizedQuestion)) {
     return {
+      intent: "unknown",
       title: "Read-only assistant",
       answer: "The AI Assistant is currently read-only. Please use the relevant operational module to make changes.",
       resultType: "text",
       data: [],
-      summary: [{ label: "Access", value: "Read-only" }],
+      summary: "Read-only access",
       links: [],
       queriedAt: new Date().toISOString(),
+      sourceModules: [],
       truncated: false,
     };
   }
 
-  const intent = detectIntent(normalizedQuestion);
-  const result = await runIntentQuery({ supabase, question: normalizedQuestion, userId }, intent);
+  const intent = detectIntent(normalizedQuestion, pageContext);
+  const result = await runIntentQuery({ supabase, question: normalizedQuestion, userId, pageContext }, intent);
   return formatAssistantResponse(result);
 }

@@ -14,12 +14,35 @@ export function PrintButton({
   className = "",
 }: PrintButtonProps) {
   const handleClick = () => {
+    if (disabled) {
+      return;
+    }
+
     if (onPrint) {
       onPrint();
       return;
     }
 
-    window.print();
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        const printRoot = document.getElementById("print-report-root");
+        if (!printRoot) {
+          const message = "Print report is not ready yet. Please try again.";
+          console.warn(message);
+          window.alert(message);
+          return;
+        }
+
+        if (printRoot.childElementCount === 0) {
+          const message = "Print report is still preparing. Please try again.";
+          console.warn(message);
+          window.alert(message);
+          return;
+        }
+
+        window.print();
+      });
+    });
   };
 
   return (

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { AiAssistantResponse } from "@/lib/ai-assistant-types";
+import { aiAssistantContextSchema, type AiAssistantResponse } from "@/lib/ai-assistant-types";
 import { runAiAssistantQuery } from "@/lib/ai-assistant";
 import { bootstrapCurrentUserRole, RbacPermissionError, requireRbacPermission } from "@/lib/rbac/route";
 import {
@@ -13,7 +13,8 @@ export const runtime = "nodejs";
 
 const requestSchema = z.object({
   question: z.string().trim().min(1).max(500),
-});
+  context: aiAssistantContextSchema.optional(),
+}).strict();
 
 const toHex = (bytes: ArrayBuffer) => {
   const view = new Uint8Array(bytes);
@@ -68,17 +69,17 @@ export async function POST(request: Request) {
     await requireRbacPermission(supabase, user.id, "ai_assistant", "view");
 
     const payload = requestSchema.parse(await request.json().catch(() => ({})));
-    const response = await runAiAssistantQuery(supabase, payload.question, user.id);
+    const response = await runAiAssistantQuery(supabase, payload.question, user.id, payload.context);
 
     const elapsedMs = Date.now() - startedAt;
     const questionHash = await hashQuestion(payload.question);
     console.info("AI Assistant query", {
       userId: user.id,
       questionHash,
-      title: response.title ?? null,
-      resultType: response.resultType,
+      intent: response.intent,
       success: true,
       elapsedMs,
+      resultCount: response.count ?? response.items?.length ?? 0,
     });
 
     return Response.json(response satisfies AiAssistantResponse);
@@ -93,9 +94,10 @@ export async function POST(request: Request) {
         intent: "unknown",
         success: false,
         elapsedMs,
+        resultCount: 0,
       });
 
-      return Response.json({ error: "Question must be between 1 and 500 characters." }, { status: 400 });
+      return Response.json({ error: "Invalid assistant request payload." }, { status: 400 });
     }
 
     if (error instanceof SupabaseRouteAuthError) {
@@ -112,6 +114,7 @@ export async function POST(request: Request) {
         intent: "unknown",
         success: false,
         elapsedMs,
+        resultCount: 0,
       });
 
       return Response.json({ error: error.message }, { status: error.status });
@@ -127,8 +130,9 @@ export async function POST(request: Request) {
       intent: "unknown",
       success: false,
       elapsedMs,
+      resultCount: 0,
     });
 
-    return Response.json({ error: error instanceof Error ? error.message : "Unable to process AI Assistant request." }, { status: 500 });
+    return Response.json({ error: "Unable to process AI assistant request right now." }, { status: 500 });
   }
 }

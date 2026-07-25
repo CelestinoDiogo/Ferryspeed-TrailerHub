@@ -99,7 +99,8 @@ const groupedItems: MenuGroup[] = [
       { label: "Users", href: "/dashboard/settings/users", icon: Settings, moduleKey: "user_management" },
       { label: "Roles", href: "/dashboard/settings/roles", icon: Settings, moduleKey: "settings" },
       { label: "Permissions", href: "/dashboard/settings/permissions", icon: Settings, moduleKey: "settings" },
-      { label: "Operations Centre", href: "/dashboard/operations-centre", icon: Settings, moduleKey: "settings" },
+      { label: "Automation Centre", href: "/dashboard/settings/automation", icon: Settings, moduleKey: "settings" },
+      { label: "Operations Centre", href: "/dashboard/operations-command-centre", icon: Settings, moduleKey: "settings" },
     ],
   },
 ];

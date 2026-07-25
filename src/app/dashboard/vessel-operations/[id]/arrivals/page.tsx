@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { SuccessToast } from "@/components/common/success-toast";
+import { TrailerHistoryDrawer } from "@/components/trailers/trailer-history-drawer";
 import { PrintButton } from "@/components/print/print-button";
 import { PrintFilters } from "@/components/print/print-filters";
 import { PrintFooter } from "@/components/print/print-footer";
@@ -12,6 +14,7 @@ import { PrintSummary } from "@/components/print/print-summary";
 import { PrintTable } from "@/components/print/print-table";
 import { ConfirmReceptionModal } from "../components/confirm-reception-modal";
 import { useVesselReception } from "../hooks/use-vessel-reception";
+import { loadVesselArrivalsReportData } from "@/lib/reports/report-data";
 import { supabase } from "@/lib/supabase";
 import { createTrailerActivity } from "@/lib/trailer-activity";
 import {
@@ -130,6 +133,7 @@ function VesselArrivalsPageContent() {
   const [searchText, setSearchText] = useState("");
   const [priorityFilter, setPriorityFilter] = useState<"all" | "priority" | "normal">("all");
   const [actioningTrailerId, setActioningTrailerId] = useState<string | null>(null);
+  const [historyTrailer, setHistoryTrailer] = useState<{ trailerId: string | null; trailerNumber: string | null } | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -145,29 +149,9 @@ function VesselArrivalsPageContent() {
     setError(null);
 
     try {
-      const [operationResult, trailersResult] = await Promise.all([
-        supabase
-          .from("vessel_operations")
-          .select("id, vessel_name, sailing_reference, origin_port, berth, expected_arrival_at, actual_arrival_at, status, list_status, list_confirmed_at, list_confirmed_by, notes, created_at, updated_at")
-          .eq("id", operationId)
-          .single(),
-        supabase
-          .from("vessel_operation_trailers")
-          .select("id, vessel_operation_id, trailer_id, trailer_number, customer, booking_reference, load_status, load_description, temperature_required, expected_front_temperature, expected_rear_temperature, expected_temperature_unit, priority_level, priority_reason, planned_destination, planning_notes, status, arrived_at, arrival_status, arrival_confirmed_at, arrival_record_id, arrival_confirmed_by, inspection_started_at, inspection_completed_at, position_assigned_at, assigned_position, has_damage, has_temperature_alert, created_at, updated_at")
-          .eq("vessel_operation_id", operationId)
-          .order("created_at", { ascending: true }),
-      ]);
-
-      if (operationResult.error || !operationResult.data) {
-        throw operationResult.error ?? new Error("Operation not found.");
-      }
-
-      if (trailersResult.error) {
-        throw trailersResult.error;
-      }
-
-      setOperation(operationResult.data as VesselOperationRecord);
-      setTrailers(sortVesselOperationTrailersForArrivals((trailersResult.data ?? []) as VesselOperationTrailerRecord[]));
+      const result = await loadVesselArrivalsReportData(supabase, operationId);
+      setOperation(result.operation as VesselOperationRecord);
+      setTrailers(sortVesselOperationTrailersForArrivals((result.trailers ?? []) as VesselOperationTrailerRecord[]));
     } catch (loadErr) {
       console.error("Unable to load arrivals:", loadErr);
       setError("Unable to load arrivals.");
@@ -192,6 +176,18 @@ function VesselArrivalsPageContent() {
 
     return () => window.clearTimeout(timeoutId);
   }, [loadArrivals]);
+
+  useEffect(() => {
+    if (!success) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setSuccess(null);
+    }, 2600);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [success]);
 
   const summary = useMemo(() => buildArrivalKpis(trailers), [trailers]);
   const printedAt = getPrintedDateTime();
@@ -500,7 +496,7 @@ function VesselArrivalsPageContent() {
               </p>
             </div>
             <div className="flex flex-wrap gap-2">
-              <PrintButton label="Print / Export" disabled={visibleTrailers.length === 0} />
+              <PrintButton label="Print / Export" disabled={isLoading || visibleTrailers.length === 0} />
               <Link href={`/dashboard/vessel-operations/${operation.id}`} className="rounded-2xl border border-white/10 bg-slate-800 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700">Operation</Link>
             </div>
           </div>
@@ -550,7 +546,7 @@ function VesselArrivalsPageContent() {
         ) : null}
 
         {error ? <div className="rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">{error}</div> : null}
-        {success ? <div className="rounded-2xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">{success}</div> : null}
+        {success ? <SuccessToast message={success} onClose={() => setSuccess(null)} /> : null}
 
         <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
           <div className="rounded-2xl border border-white/10 bg-slate-900/70 p-4"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Expected</p><p className="mt-2 text-lg font-semibold text-white">{summary.expected}</p></div>
@@ -638,9 +634,12 @@ function VesselArrivalsPageContent() {
               const workflowLabel = getVesselArrivalWorkflowLabel(workflowState);
               const inspectionState = getVesselInspectionProgressState(trailer);
               const inspectionLabel = inspectionState === "completed" || inspectionState === "issues_found" ? "Inspected" : "Inspection Pending";
+              const isInspected = inspectionState === "completed" || inspectionState === "issues_found";
               const arrivalLabel = trailer.arrival_status === "arrived" ? "Arrived" : getVesselArrivalWorkflowLabel(workflowState);
               const canMarkArrived = (operation.list_status ?? "draft") === "confirmed" && trailer.arrival_status === "available_for_arrival" && !trailer.arrival_record_id;
               const canUndo = trailer.arrival_status === "arrived" && !trailer.arrival_record_id && !trailer.inspection_started_at && !trailer.inspection_completed_at;
+              const canConfirmReception = canConfirmVesselTrailerReception(trailer, operation);
+              const canOpenInspection = trailer.arrival_status === "arrived" && !trailer.arrival_record_id;
 
               return (
                 <article key={trailer.id} className="rounded-3xl border border-white/10 bg-slate-900/70 p-4 shadow-lg shadow-black/20 backdrop-blur sm:p-5">
@@ -684,29 +683,56 @@ function VesselArrivalsPageContent() {
                         >
                           {actioningTrailerId === trailer.id ? "Updating..." : "Mark Arrived"}
                         </button>
-                      ) : null}
-
-                      {canUndo ? (
-                        <button
-                          type="button"
-                          onClick={() => void handleUndoArrived(trailer)}
-                          disabled={actioningTrailerId === trailer.id}
-                          className="rounded-2xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm font-semibold text-amber-100 hover:bg-amber-500/20 disabled:opacity-60"
-                        >
-                          {actioningTrailerId === trailer.id ? "Reverting..." : "Undo Arrived"}
-                        </button>
-                      ) : null}
-
-                      {canConfirmVesselTrailerReception(trailer, operation) ? (
+                      ) : canConfirmReception ? (
                         <button
                           type="button"
                           onClick={() => void reception.openReception(trailer)}
                           disabled={actioningTrailerId === trailer.id}
-                          className="rounded-2xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm font-semibold text-emerald-100 hover:bg-emerald-500/20 disabled:opacity-60"
+                          className="rounded-2xl bg-emerald-500 px-5 py-4 text-lg font-semibold text-emerald-950 hover:bg-emerald-400 disabled:opacity-60"
                         >
                           Confirm Reception
                         </button>
+                      ) : canOpenInspection ? (
+                        <Link
+                          href={`/dashboard/vessel-operations/${operation.id}/boat-check/${trailer.id}`}
+                          className="rounded-2xl bg-cyan-500 px-5 py-4 text-center text-lg font-semibold text-slate-950 hover:bg-cyan-400"
+                        >
+                          {isInspected ? "View Inspection" : "Start Inspection"}
+                        </Link>
                       ) : null}
+
+                      <details className="group rounded-2xl border border-white/10 bg-slate-950/60">
+                        <summary className="cursor-pointer list-none px-4 py-3 text-sm font-semibold text-slate-100 marker:content-none">More Actions</summary>
+                        <div className="flex flex-col gap-2 border-t border-white/10 px-3 pb-3 pt-2">
+                          {canUndo ? (
+                            <button
+                              type="button"
+                              onClick={() => void handleUndoArrived(trailer)}
+                              disabled={actioningTrailerId === trailer.id}
+                              className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-left text-xs font-semibold text-amber-100 hover:bg-amber-500/20 disabled:opacity-60"
+                            >
+                              {actioningTrailerId === trailer.id ? "Reverting..." : "Undo Arrived"}
+                            </button>
+                          ) : null}
+
+                          {canOpenInspection ? (
+                            <Link
+                              href={`/dashboard/vessel-operations/${operation.id}/boat-check/${trailer.id}`}
+                              className="rounded-xl border border-white/10 bg-slate-800 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-700"
+                            >
+                              {isInspected ? "View Inspection" : "Start Inspection"}
+                            </Link>
+                          ) : null}
+
+                          <button
+                            type="button"
+                            onClick={() => setHistoryTrailer({ trailerId: trailer.trailer_id ?? null, trailerNumber: trailer.trailer_number ?? null })}
+                            className="rounded-xl border border-white/10 bg-slate-800 px-3 py-2 text-left text-xs font-semibold text-white hover:bg-slate-700"
+                          >
+                            History
+                          </button>
+                        </div>
+                      </details>
 
                       {trailer.arrival_record_id ? (
                         <div className="rounded-2xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-100">
@@ -736,6 +762,13 @@ function VesselArrivalsPageContent() {
         onConfirm={reception.submitReception}
         onFieldChange={reception.updateField}
         trailer={reception.selectedTrailer}
+      />
+
+      <TrailerHistoryDrawer
+        isOpen={Boolean(historyTrailer)}
+        trailerId={historyTrailer?.trailerId}
+        trailerNumber={historyTrailer?.trailerNumber}
+        onClose={() => setHistoryTrailer(null)}
       />
     </main>
   );

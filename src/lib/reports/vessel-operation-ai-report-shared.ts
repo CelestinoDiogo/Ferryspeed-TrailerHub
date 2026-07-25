@@ -327,6 +327,7 @@ export function buildDeterministicVesselOperationAiReportDraft(data: VesselOpera
     subject: buildVesselOperationAiReportSubject(data),
     recipients: [],
     cc: [],
+    bcc: [],
     body,
     generatedContent: body,
     editedContent: body,
