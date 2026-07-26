@@ -25,6 +25,10 @@ import {
 } from "lucide-react";
 import { OperationsAssistantDrawer } from "@/components/ai/operations-assistant-drawer";
 import { PermissionGuard } from "@/components/auth/permission-guard";
+import {
+  MobileInspectionPanel,
+  type MobileInspectionProgress,
+} from "@/components/mobile/mobile-inspection-panel";
 import { VoiceOperationsPanel } from "@/components/mobile/voice-operations-panel";
 import { canAccessModule, canPerformAction } from "@/lib/auth/permissions";
 import { toRoleLabel, type RoleKey } from "@/lib/auth/roles";
@@ -42,15 +46,30 @@ import {
 import {
   createMobileActionQueueItem,
   classifyActionFailure,
+  getMaxRetryCount,
+  getRetryBackoffMs,
   loadMobileActionQueue,
-  removeQueuedAction,
   saveMobileActionQueue,
-  type MobileActionQueueItem,
   updateQueuedAction,
 } from "@/lib/mobile/mobile-action-queue";
+import {
+  getMobileActionLabel,
+  mobileActionRequestSchema,
+  type MobileActionQueueItem,
+  type MobileActionRequest,
+  type MobileActionType,
+} from "@/lib/mobile/mobile-actions";
 import { useOperationalRealtime } from "@/lib/realtime/operational-realtime";
+import { getTemperatureToleranceSettingsFromStorage, isTemperatureOutOfRange } from "@/lib/temperature-tolerance";
+import { getTrailerActivity, type TrailerActivityRow } from "@/lib/trailer-activity";
 import { getTrailerCurrentLocationLabel } from "@/lib/trailer-location";
+import {
+  normalizeTrailerNumber,
+  resolveExpectedFrontTemperature,
+  resolveExpectedRearTemperature,
+} from "@/lib/vessel-operations";
 import { supabase } from "@/lib/supabase";
+import { type VoiceActionIntentName, type VoiceEntities } from "@/lib/voice/types";
 import { getSessionToken } from "@/lib/voice/session";
 
 type TrailerRow = Database["public"]["Tables"]["trailers"]["Row"];
@@ -86,16 +105,34 @@ type MobileOperationCard = {
   title: string;
   detail: string;
   trailerNumber?: string | null;
-  commandText: string;
+  vesselTrailerId?: string | null;
+  actionType?: MobileActionType;
+  actionPayload?: MobileActionRequest["payload"];
   actionLabel: string;
   severity: "high" | "medium" | "low";
+};
+
+type MobileVesselTrailerCard = {
+  vesselTrailerId: string;
+  vesselOperationId: string;
+  trailerId: string | null;
+  trailerNumber: string;
+  arrivalStatus: string | null;
+  status: string | null;
+  inspectionStartedAt: string | null;
+  inspectionCompletedAt: string | null;
+  expectedFrontTemperature: number | null;
+  expectedRearTemperature: number | null;
+  expectedTemperatureUnit: string | null;
+  hasDamage: boolean;
+  hasTemperatureAlert: boolean;
 };
 
 type MobileSyncLog = {
   id: string;
   label: string;
   resolvedAt: string;
-  status: "completed" | "failed" | "conflict";
+  status: "completed" | "failed" | "conflict" | "cancelled";
   detail: string;
 };
 
@@ -126,6 +163,28 @@ const toDateKey = (value?: string | null) => {
 
 const todayKey = () => new Date().toISOString().slice(0, 10);
 
+const initialInspectionProgress: MobileInspectionProgress = {
+  frontTemperature: "",
+  rearTemperature: "",
+  damage: "no",
+  damageType: "",
+  damageLocation: "",
+  damageDescription: "",
+  notes: "",
+};
+
+const parseTemperatureInput = (value: string) => {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const numeric = Number(trimmed);
+  return Number.isFinite(numeric) ? numeric : null;
+};
+
+const sanitizeFileName = (name: string) => name.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
+
 const tabConfig: Array<{ key: MobileTabKey; label: string; icon: ReactNode }> = [
   { key: "home", label: "Home", icon: <Home className="h-4 w-4" /> },
   { key: "operations", label: "Ops", icon: <Sparkles className="h-4 w-4" /> },
@@ -144,15 +203,23 @@ export function SupervisorMobileDashboard() {
   const [loadStatus, setLoadStatus] = useState<"Loaded" | "Empty">("Loaded");
   const [kpis, setKpis] = useState<MobileKpis>(emptyKpis);
   const [trailers, setTrailers] = useState<MobileTrailerCard[]>([]);
+  const [vesselTrailers, setVesselTrailers] = useState<MobileVesselTrailerCard[]>([]);
   const [operations, setOperations] = useState<MobileOperationCard[]>([]);
   const [queueItems, setQueueItems] = useState<MobileActionQueueItem[]>([]);
   const [syncLog, setSyncLog] = useState<MobileSyncLog[]>([]);
   const [isOnline, setIsOnline] = useState(true);
   const [isSyncingQueue, setIsSyncingQueue] = useState(false);
+  const [lastSuccessfulSyncAt, setLastSuccessfulSyncAt] = useState<string | null>(null);
   const [queueError, setQueueError] = useState<string | null>(null);
   const [isDataLoading, setIsDataLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [assistantOpen, setAssistantOpen] = useState(false);
+  const [inspectionPanelOpen, setInspectionPanelOpen] = useState(false);
+  const [inspectionProgress, setInspectionProgress] = useState<MobileInspectionProgress>(initialInspectionProgress);
+  const [inspectionActivityRows, setInspectionActivityRows] = useState<TrailerActivityRow[]>([]);
+  const [inspectionActivityLoading, setInspectionActivityLoading] = useState(false);
+  const [isExecutingInspectionAction, setIsExecutingInspectionAction] = useState(false);
 
   const selectedTrailer = useMemo(
     () => trailers.find((trailer) => trailer.id === selectedTrailerId) ?? null,
@@ -160,6 +227,15 @@ export function SupervisorMobileDashboard() {
   );
 
   const selectedTrailerNumber = selectedTrailer?.trailerNumber ?? null;
+
+  const selectedVesselTrailer = useMemo(() => {
+    if (!selectedTrailerNumber) {
+      return null;
+    }
+
+    const normalized = normalizeTrailerNumber(selectedTrailerNumber);
+    return vesselTrailers.find((row) => normalizeTrailerNumber(row.trailerNumber) === normalized) ?? null;
+  }, [selectedTrailerNumber, vesselTrailers]);
 
   const loadData = useCallback(async () => {
     setIsDataLoading(true);
@@ -186,7 +262,7 @@ export function SupervisorMobileDashboard() {
           .limit(260),
         supabase
           .from("vessel_operation_trailers")
-          .select("id, trailer_number, arrival_status, inspection_completed_at, has_temperature_alert, has_damage")
+          .select("id, vessel_operation_id, trailer_id, trailer_number, arrival_status, status, inspection_started_at, inspection_completed_at, expected_front_temperature, expected_rear_temperature, expected_temperature_unit, has_temperature_alert, has_damage")
           .limit(420),
       ]);
 
@@ -201,6 +277,24 @@ export function SupervisorMobileDashboard() {
       const activeExportByTrailer = buildActiveExportStatusByTrailerId(activeExportAllocations);
       const deliveryRows = (deliveryResult.data ?? []) as unknown as DeliveryBookingRow[];
       const vesselRows = (vesselTrailerResult.data ?? []) as VesselTrailerRow[];
+
+      const vesselCards: MobileVesselTrailerCard[] = vesselRows
+        .filter((row) => Boolean(row.id) && Boolean(row.vessel_operation_id))
+        .map((row) => ({
+          vesselTrailerId: row.id,
+          vesselOperationId: row.vessel_operation_id,
+          trailerId: row.trailer_id ?? null,
+          trailerNumber: row.trailer_number ?? "Unknown",
+          arrivalStatus: row.arrival_status ?? null,
+          status: row.status ?? null,
+          inspectionStartedAt: row.inspection_started_at ?? null,
+          inspectionCompletedAt: row.inspection_completed_at ?? null,
+          expectedFrontTemperature: row.expected_front_temperature ?? null,
+          expectedRearTemperature: row.expected_rear_temperature ?? null,
+          expectedTemperatureUnit: row.expected_temperature_unit ?? null,
+          hasDamage: row.has_damage === true,
+          hasTemperatureAlert: row.has_temperature_alert === true,
+        }));
 
       const visibleTrailers = trailerRows.filter((row) => isTrailerEligibleForCompoundViews(row, activeExportByTrailer.get(row.id)));
       const compoundTrailers = visibleTrailers.filter((row) => row.is_local !== true && isTrailerPresentInCompoundInventory(row, activeExportByTrailer.get(row.id)));
@@ -242,6 +336,7 @@ export function SupervisorMobileDashboard() {
       }));
 
       setTrailers(cards);
+      setVesselTrailers(vesselCards);
       setKpis({
         inCompound: compoundTrailers.length,
         arrivalsToday: trailerRows.filter((row) => toDateKey(row.arrival_date) === todayKey()).length,
@@ -262,53 +357,79 @@ export function SupervisorMobileDashboard() {
           title: `${trailerNumber ?? "Trailer"} waiting collection`,
           detail: "Move the trailer through the collection workflow.",
           trailerNumber,
-          commandText: `where is trailer ${trailerNumber ?? ""}`.trim(),
-          actionLabel: "Locate",
+          actionLabel: "Review",
           severity: "high",
         });
       });
 
-      vesselRows
-        .filter((row) => normalizeText(row.arrival_status) === "arrived" && !row.inspection_completed_at)
+      vesselCards
+        .filter((row) => normalizeText(row.arrivalStatus) === "arrived" && !row.inspectionCompletedAt)
         .slice(0, 3)
         .forEach((row) => {
           operationCards.push({
-            id: `inspection-${row.id}`,
-            title: `Inspection pending ${row.trailer_number}`,
+            id: `inspection-${row.vesselTrailerId}`,
+            title: `Inspection pending ${row.trailerNumber}`,
             detail: "Boat Check has not been completed yet.",
-            trailerNumber: row.trailer_number,
-            commandText: `start inspection for trailer ${row.trailer_number ?? ""}`.trim(),
+            trailerNumber: row.trailerNumber,
+            vesselTrailerId: row.vesselTrailerId,
+            actionType: "START_INSPECTION",
+            actionPayload: {
+              vesselTrailerId: row.vesselTrailerId,
+              trailerNumber: row.trailerNumber,
+            },
             actionLabel: "Inspect",
             severity: "high",
           });
         });
 
-      vesselRows
-        .filter((row) => row.has_temperature_alert === true || row.has_damage === true)
+      vesselCards
+        .filter((row) => row.hasTemperatureAlert || row.hasDamage)
         .slice(0, 3)
         .forEach((row) => {
           operationCards.push({
-            id: `alert-${row.id}`,
-            title: `${row.trailer_number} needs attention`,
-            detail: row.has_temperature_alert ? "Temperature alert is active." : "Damage alert is active.",
-            trailerNumber: row.trailer_number,
-            commandText: `where is trailer ${row.trailer_number ?? ""}`.trim(),
-            actionLabel: "Locate",
+            id: `alert-${row.vesselTrailerId}`,
+            title: `${row.trailerNumber} needs attention`,
+            detail: row.hasTemperatureAlert ? "Temperature alert is active." : "Damage alert is active.",
+            trailerNumber: row.trailerNumber,
+            vesselTrailerId: row.vesselTrailerId,
+            actionType: "SAVE_INSPECTION_PROGRESS",
+            actionPayload: {
+              vesselTrailerId: row.vesselTrailerId,
+              trailerNumber: row.trailerNumber,
+              frontTemperature: null,
+              rearTemperature: null,
+              unit: row.expectedTemperatureUnit ?? "C",
+              notes: "",
+              damage: {
+                hasDamage: row.hasDamage,
+                damageDescription: row.hasDamage ? "Review required from mobile." : null,
+              },
+            },
+            actionLabel: "Review",
             severity: "medium",
           });
         });
 
-      cards.slice(0, 2).forEach((row) => {
-        operationCards.push({
-          id: `compound-${row.id}`,
-          title: row.trailerNumber,
-          detail: `${row.currentLocation} · ${row.compoundPosition}`,
-          trailerNumber: row.trailerNumber,
-          commandText: `mark trailer ${row.trailerNumber} arrived`,
-          actionLabel: "Arrived",
-          severity: row.hasAlerts ? "high" : "low",
+      vesselCards
+        .filter((row) => normalizeText(row.arrivalStatus) === "available_for_arrival" || normalizeText(row.arrivalStatus) === "expected")
+        .slice(0, 2)
+        .forEach((row) => {
+          operationCards.push({
+            id: `arrive-${row.vesselTrailerId}`,
+            title: row.trailerNumber,
+            detail: "Available to confirm arrival from vessel list.",
+            trailerNumber: row.trailerNumber,
+            vesselTrailerId: row.vesselTrailerId,
+            actionType: "MARK_ARRIVED",
+            actionPayload: {
+              vesselTrailerId: row.vesselTrailerId,
+              trailerNumber: row.trailerNumber,
+              operationId: row.vesselOperationId,
+            },
+            actionLabel: "Arrived",
+            severity: "high",
+          });
         });
-      });
 
       setOperations(operationCards.slice(0, 8));
       setQueueItems(loadMobileActionQueue());
@@ -345,13 +466,97 @@ export function SupervisorMobileDashboard() {
     saveMobileActionQueue(queueItems);
   }, [queueItems]);
 
+  useEffect(() => {
+    if (!toastMessage) {
+      return;
+    }
+
+    const timeout = window.setTimeout(() => {
+      setToastMessage(null);
+    }, 2600);
+
+    return () => window.clearTimeout(timeout);
+  }, [toastMessage]);
+
   useOperationalRealtime(["dashboard"], () => {
     void loadData();
   }, { debounceMs: 900 });
 
+  const applyServerUpdates = useCallback((payload: {
+    updatedTrailer?: {
+      trailerId: string | null;
+      trailerNumber: string | null;
+      loadStatus: string | null;
+      compoundPosition: string | null;
+      operationalStatus: string | null;
+    } | null;
+    updatedVesselTrailer?: {
+      vesselTrailerId: string;
+      trailerNumber: string | null;
+      arrivalStatus: string | null;
+      status: string | null;
+      inspectionStartedAt: string | null;
+      inspectionCompletedAt: string | null;
+      hasDamage: boolean | null;
+      hasTemperatureAlert: boolean | null;
+    } | null;
+  }) => {
+    if (payload.updatedTrailer) {
+      setTrailers((current) =>
+        current.map((row) => {
+          const sameId = payload.updatedTrailer?.trailerId && row.id === payload.updatedTrailer.trailerId;
+          const sameNumber =
+            payload.updatedTrailer?.trailerNumber &&
+            normalizeTrailerNumber(row.trailerNumber) === normalizeTrailerNumber(payload.updatedTrailer.trailerNumber);
+
+          if (!sameId && !sameNumber) {
+            return row;
+          }
+
+          return {
+            ...row,
+            loadStatus: payload.updatedTrailer?.loadStatus ?? row.loadStatus,
+            compoundPosition: payload.updatedTrailer?.compoundPosition ?? row.compoundPosition,
+            operationalStatus: payload.updatedTrailer?.operationalStatus ?? row.operationalStatus,
+          };
+        }),
+      );
+    }
+
+    if (payload.updatedVesselTrailer) {
+      setVesselTrailers((current) =>
+        current.map((row) =>
+          row.vesselTrailerId === payload.updatedVesselTrailer?.vesselTrailerId
+            ? {
+                ...row,
+                arrivalStatus: payload.updatedVesselTrailer.arrivalStatus,
+                status: payload.updatedVesselTrailer.status,
+                inspectionStartedAt: payload.updatedVesselTrailer.inspectionStartedAt,
+                inspectionCompletedAt: payload.updatedVesselTrailer.inspectionCompletedAt,
+                hasDamage: payload.updatedVesselTrailer.hasDamage === true,
+                hasTemperatureAlert: payload.updatedVesselTrailer.hasTemperatureAlert === true,
+              }
+            : row,
+        ),
+      );
+    }
+  }, []);
+
   const syncQueuedActions = useCallback(
     async (itemsToSync?: MobileActionQueueItem[]) => {
-      const pendingItems = (itemsToSync ?? queueItems).filter((item) => item.status === "pending" || item.status === "failed");
+      const nowMs = Date.now();
+      const pendingItems = (itemsToSync ?? queueItems).filter((item) => {
+        if (item.state !== "pending" && item.state !== "failed") {
+          return false;
+        }
+
+        if (!item.nextRetryAt) {
+          return true;
+        }
+
+        return new Date(item.nextRetryAt).getTime() <= nowMs;
+      });
+
       if (pendingItems.length === 0 || isSyncingQueue || !isOnline) {
         return;
       }
@@ -363,35 +568,133 @@ export function SupervisorMobileDashboard() {
         const token = await getSessionToken();
 
         for (const item of pendingItems.sort((left, right) => left.createdAt.localeCompare(right.createdAt))) {
-          setQueueItems((current) => updateQueuedAction(current, item.id, { status: "syncing", attempts: item.attempts + 1, error: null }));
+          const nextRetryCount = item.retryCount + 1;
+          setQueueItems((current) =>
+            updateQueuedAction(current, item.id, {
+              state: "syncing",
+              retryCount: nextRetryCount,
+              lastError: null,
+              conflict: null,
+              nextRetryAt: null,
+            }),
+          );
 
           try {
-            const response = await fetch("/api/voice-operations", {
+            const response = await fetch("/api/mobile-actions", {
               method: "POST",
               headers: {
                 "Content-Type": "application/json",
                 Authorization: `Bearer ${token}`,
               },
               body: JSON.stringify({
-                commandText: item.commandText,
-                context: { lastTrailerNumber: item.trailerNumber ?? null, lastIntent: null, lastCustomer: null },
-                confirmed: true,
+                actionId: item.id,
+                action: {
+                  actionType: item.actionType,
+                  payload: item.payload,
+                },
               }),
             });
 
-            const payload = (await response.json()) as { error?: string; message?: string };
+            const payload = (await response.json()) as {
+              error?: string;
+              message?: string;
+              status?: "success" | "failed" | "conflict";
+              retryable?: boolean;
+              conflict?: { code: string; message: string; serverState?: Record<string, unknown> | null } | null;
+              updatedTrailer?: {
+                trailerId: string | null;
+                trailerNumber: string | null;
+                loadStatus: string | null;
+                compoundPosition: string | null;
+                operationalStatus: string | null;
+              } | null;
+              updatedVesselTrailer?: {
+                vesselTrailerId: string;
+                trailerNumber: string | null;
+                arrivalStatus: string | null;
+                status: string | null;
+                inspectionStartedAt: string | null;
+                inspectionCompletedAt: string | null;
+                hasDamage: boolean | null;
+                hasTemperatureAlert: boolean | null;
+              } | null;
+            };
+
             if (response.status === 401) {
               throw new Error("Your session has expired. Please sign in again.");
             }
 
-            if (!response.ok) {
-              throw new Error(payload.error ?? payload.message ?? "Action rejected by the server.");
+            if (!response.ok || payload.status === "failed") {
+              const failureMessage = payload.error ?? payload.message ?? "Action rejected by the server.";
+              const classified = classifyActionFailure(new Error(failureMessage));
+              const isPermanentFailure = payload.retryable === false || !classified.retryable;
+              const reachedRetryLimit = nextRetryCount >= getMaxRetryCount();
+
+              setQueueItems((current) =>
+                updateQueuedAction(current, item.id, {
+                  state: "failed",
+                  retryCount: nextRetryCount,
+                  lastError: failureMessage,
+                  nextRetryAt: !isPermanentFailure && !reachedRetryLimit
+                    ? new Date(Date.now() + getRetryBackoffMs(nextRetryCount)).toISOString()
+                    : null,
+                }),
+              );
+
+              const failedEntry: MobileSyncLog = {
+                id: item.id,
+                label: getMobileActionLabel(item),
+                resolvedAt: new Date().toISOString(),
+                status: "failed",
+                detail: failureMessage,
+              };
+
+              setSyncLog((current) => [failedEntry, ...current].slice(0, 12));
+              continue;
             }
 
-            setQueueItems((current) => removeQueuedAction(current, item.id));
+            if (payload.status === "conflict") {
+              setQueueItems((current) =>
+                updateQueuedAction(current, item.id, {
+                  state: "conflict",
+                  retryCount: nextRetryCount,
+                  lastError: payload.message ?? payload.conflict?.message ?? "Conflict detected.",
+                  conflict: payload.conflict ?? null,
+                  nextRetryAt: null,
+                }),
+              );
+
+              const conflictEntry: MobileSyncLog = {
+                id: item.id,
+                label: getMobileActionLabel(item),
+                resolvedAt: new Date().toISOString(),
+                status: "conflict",
+                detail: payload.message ?? payload.conflict?.message ?? "Conflict detected.",
+              };
+
+              setSyncLog((current) => [conflictEntry, ...current].slice(0, 12));
+              continue;
+            }
+
+            setQueueItems((current) =>
+              updateQueuedAction(current, item.id, {
+                state: "completed",
+                retryCount: nextRetryCount,
+                lastError: null,
+                conflict: null,
+                nextRetryAt: null,
+              }),
+            );
+
+            applyServerUpdates({
+              updatedTrailer: payload.updatedTrailer ?? null,
+              updatedVesselTrailer: payload.updatedVesselTrailer ?? null,
+            });
+
+            setLastSuccessfulSyncAt(new Date().toISOString());
             const syncEntry: MobileSyncLog = {
               id: item.id,
-              label: item.label,
+              label: getMobileActionLabel(item),
               resolvedAt: new Date().toISOString(),
               status: "completed",
               detail: payload.message ?? "Synced successfully.",
@@ -399,20 +702,32 @@ export function SupervisorMobileDashboard() {
             setSyncLog((current) => [
               syncEntry,
               ...current,
-            ].slice(0, 8));
+            ].slice(0, 12));
+            setToastMessage(payload.message ?? "Action synced.");
           } catch (syncError) {
             const classified = classifyActionFailure(syncError);
-            setQueueItems((current) => updateQueuedAction(current, item.id, { status: classified.status, error: classified.message }));
+            const reachedRetryLimit = nextRetryCount >= getMaxRetryCount();
+
+            setQueueItems((current) =>
+              updateQueuedAction(current, item.id, {
+                state: classified.state,
+                retryCount: nextRetryCount,
+                lastError: classified.message,
+                nextRetryAt: classified.retryable && !reachedRetryLimit
+                  ? new Date(Date.now() + getRetryBackoffMs(nextRetryCount)).toISOString()
+                  : null,
+              }),
+            );
             setSyncLog((current) => [
               {
                 id: item.id,
-                label: item.label,
+                label: getMobileActionLabel(item),
                 resolvedAt: new Date().toISOString(),
-                status: classified.status as MobileSyncLog["status"],
+                status: classified.state as MobileSyncLog["status"],
                 detail: classified.message,
               },
               ...current,
-            ].slice(0, 8));
+            ].slice(0, 12));
           }
         }
       } catch (syncError) {
@@ -421,11 +736,11 @@ export function SupervisorMobileDashboard() {
         setIsSyncingQueue(false);
       }
     },
-    [isOnline, isSyncingQueue, queueItems],
+    [applyServerUpdates, isOnline, isSyncingQueue, queueItems],
   );
 
   useEffect(() => {
-    if (isOnline && queueItems.some((item) => item.status === "pending")) {
+    if (isOnline && queueItems.some((item) => item.state === "pending" || item.state === "failed")) {
       void syncQueuedActions();
     }
   }, [isOnline, queueItems, syncQueuedActions]);
@@ -452,7 +767,10 @@ export function SupervisorMobileDashboard() {
     [trailers],
   );
 
-  const pendingQueueCount = queueItems.filter((item) => item.status === "pending" || item.status === "failed" || item.status === "conflict").length;
+  const pendingQueueCount = queueItems.filter((item) => item.state === "pending").length;
+  const syncingQueueCount = queueItems.filter((item) => item.state === "syncing").length;
+  const failedQueueCount = queueItems.filter((item) => item.state === "failed").length;
+  const conflictQueueCount = queueItems.filter((item) => item.state === "conflict").length;
   const connectionLabel = isOnline ? "Live" : "Offline";
 
   const mobileRoleKey = roleKey as RoleKey | null;
@@ -466,60 +784,438 @@ export function SupervisorMobileDashboard() {
   const canChangeLoad = mobileRoleKey ? canPerformAction(mobileRoleKey, "compound", "edit") : false;
   const canTimeline = mobileRoleKey ? canAccessModule(mobileRoleKey, "timeline") : false;
 
-  const enqueueAction = useCallback(
-    (input: { source: MobileTabKey; label: string; commandText: string; trailerNumber?: string | null }) => {
-      const nextItem = createMobileActionQueueItem(input);
+  const enqueueTypedAction = useCallback(
+    (input: {
+      actionType: MobileActionType;
+      payload: MobileActionRequest["payload"];
+      trailerNumber?: string | null;
+    }) => {
+      const parsed = mobileActionRequestSchema.safeParse({
+        actionType: input.actionType,
+        payload: input.payload,
+      });
+
+      if (!parsed.success) {
+        setQueueError("Invalid action payload.");
+        return null;
+      }
+
+      const nextItem = createMobileActionQueueItem({
+        actionType: parsed.data.actionType,
+        payload: parsed.data.payload,
+        trailerNumber: input.trailerNumber ?? null,
+        operator: userLabel,
+      });
+
       const nextQueue = [nextItem, ...queueItems].slice(0, 30);
       setQueueItems(nextQueue);
       setQueueError(null);
+      setToastMessage(`${getMobileActionLabel(nextItem)} queued.`);
 
       if (isOnline) {
         void syncQueuedActions(nextQueue);
       }
+
+      return nextItem;
     },
-    [isOnline, queueItems, syncQueuedActions],
+    [isOnline, queueItems, syncQueuedActions, userLabel],
+  );
+
+  const executeTypedActionNow = useCallback(
+    async (input: {
+      actionType: MobileActionType;
+      payload: MobileActionRequest["payload"];
+      trailerNumber?: string | null;
+    }) => {
+      const queued = enqueueTypedAction(input);
+      if (!queued) {
+        throw new Error("Unable to queue action.");
+      }
+
+      if (!isOnline) {
+        return { message: `${getMobileActionLabel(queued)} queued for sync.` };
+      }
+
+      await syncQueuedActions([queued]);
+      return { message: `${getMobileActionLabel(queued)} queued.` };
+    },
+    [enqueueTypedAction, isOnline, syncQueuedActions],
   );
 
   const handleQueueMove = useCallback(() => {
-    if (!selectedTrailerNumber || !movePosition.trim()) {
+    if (!selectedTrailer || !movePosition.trim()) {
       return;
     }
 
-    enqueueAction({
-      source: "compound",
-      label: `Move ${selectedTrailerNumber} to ${movePosition.toUpperCase()}`,
-      commandText: `move trailer ${selectedTrailerNumber} to position ${movePosition.toUpperCase()}`,
-      trailerNumber: selectedTrailerNumber,
+    enqueueTypedAction({
+      actionType: "MOVE_COMPOUND_POSITION",
+      payload: {
+        trailerId: selectedTrailer.id,
+        trailerNumber: selectedTrailer.trailerNumber,
+        targetPosition: movePosition.toUpperCase(),
+        expectedCurrentPosition: selectedTrailer.compoundPosition,
+        reason: "Master Mobile move",
+      },
+      trailerNumber: selectedTrailer.trailerNumber,
     });
     setMovePosition("");
-  }, [enqueueAction, movePosition, selectedTrailerNumber]);
+  }, [enqueueTypedAction, movePosition, selectedTrailer]);
 
   const handleQueueLoadStatus = useCallback(() => {
-    if (!selectedTrailerNumber) {
+    if (!selectedTrailer) {
       return;
     }
 
-    enqueueAction({
-      source: "compound",
-      label: `Set ${selectedTrailerNumber} ${loadStatus.toLowerCase()}`,
-      commandText: `mark trailer ${selectedTrailerNumber} ${loadStatus.toLowerCase()}`,
-      trailerNumber: selectedTrailerNumber,
+    enqueueTypedAction({
+      actionType: "CHANGE_LOAD_STATUS",
+      payload: {
+        trailerId: selectedTrailer.id,
+        trailerNumber: selectedTrailer.trailerNumber,
+        nextLoadStatus: loadStatus,
+        expectedCurrentLoadStatus: selectedTrailer.loadStatus,
+      },
+      trailerNumber: selectedTrailer.trailerNumber,
     });
-  }, [enqueueAction, loadStatus, selectedTrailerNumber]);
+  }, [enqueueTypedAction, loadStatus, selectedTrailer]);
 
   const handleQueueVoiceCommand = useCallback(() => {
     if (!quickCommand.trim()) {
       return;
     }
 
-    enqueueAction({
-      source: "more",
-      label: quickCommand.trim(),
-      commandText: quickCommand.trim(),
-      trailerNumber: selectedTrailerNumber,
-    });
+    setQueueError("Use voice actions from the Voice Operations panel to create typed actions.");
     setQuickCommand("");
-  }, [enqueueAction, quickCommand, selectedTrailerNumber]);
+  }, [quickCommand]);
+
+  const openInspectionPanel = useCallback(async () => {
+    if (!selectedVesselTrailer) {
+      setQueueError("Select a trailer linked to vessel operations first.");
+      return;
+    }
+
+    setInspectionPanelOpen(true);
+    setInspectionProgress(initialInspectionProgress);
+    setInspectionActivityLoading(true);
+
+    try {
+      const rows = await getTrailerActivity({
+        trailerId: selectedVesselTrailer.trailerId,
+        trailerNumber: selectedVesselTrailer.trailerNumber,
+        limit: 40,
+      });
+
+      setInspectionActivityRows(rows);
+    } catch (activityError) {
+      setInspectionActivityRows([]);
+      setQueueError(activityError instanceof Error ? activityError.message : "Unable to load inspection activity.");
+    } finally {
+      setInspectionActivityLoading(false);
+    }
+  }, [selectedVesselTrailer]);
+
+  const toInspectionPayload = useCallback(() => {
+    if (!selectedVesselTrailer) {
+      return null;
+    }
+
+    return {
+      vesselTrailerId: selectedVesselTrailer.vesselTrailerId,
+      trailerNumber: selectedVesselTrailer.trailerNumber,
+      frontTemperature: parseTemperatureInput(inspectionProgress.frontTemperature),
+      rearTemperature: parseTemperatureInput(inspectionProgress.rearTemperature),
+      unit: selectedVesselTrailer.expectedTemperatureUnit ?? "C",
+      notes: inspectionProgress.notes,
+      damage: {
+        hasDamage: inspectionProgress.damage === "yes",
+        damageType: inspectionProgress.damageType,
+        damageLocation: inspectionProgress.damageLocation,
+        damageDescription: inspectionProgress.damageDescription,
+      },
+    };
+  }, [inspectionProgress, selectedVesselTrailer]);
+
+  const handleStartInspection = useCallback(async () => {
+    if (!selectedVesselTrailer) {
+      return;
+    }
+
+    setIsExecutingInspectionAction(true);
+    try {
+      await executeTypedActionNow({
+        actionType: "START_INSPECTION",
+        payload: {
+          vesselTrailerId: selectedVesselTrailer.vesselTrailerId,
+          trailerNumber: selectedVesselTrailer.trailerNumber,
+        },
+        trailerNumber: selectedVesselTrailer.trailerNumber,
+      });
+    } finally {
+      setIsExecutingInspectionAction(false);
+    }
+  }, [executeTypedActionNow, selectedVesselTrailer]);
+
+  const handleSaveInspectionProgress = useCallback(async () => {
+    if (!selectedVesselTrailer) {
+      return;
+    }
+
+    const payload = toInspectionPayload();
+    if (!payload) {
+      return;
+    }
+
+    setIsExecutingInspectionAction(true);
+    try {
+      await executeTypedActionNow({
+        actionType: "SAVE_INSPECTION_PROGRESS",
+        payload,
+        trailerNumber: selectedVesselTrailer.trailerNumber,
+      });
+    } finally {
+      setIsExecutingInspectionAction(false);
+    }
+  }, [executeTypedActionNow, selectedVesselTrailer, toInspectionPayload]);
+
+  const handleCompleteInspection = useCallback(async () => {
+    if (!selectedVesselTrailer) {
+      return;
+    }
+
+    const payload = toInspectionPayload();
+    if (!payload) {
+      return;
+    }
+
+    const expectedFront = resolveExpectedFrontTemperature({
+      expected_front_temperature: selectedVesselTrailer.expectedFrontTemperature,
+      temperature_required: null,
+    });
+    const expectedRear = resolveExpectedRearTemperature({
+      expected_rear_temperature: selectedVesselTrailer.expectedRearTemperature,
+    });
+    const tolerance = getTemperatureToleranceSettingsFromStorage();
+    const frontOut = isTemperatureOutOfRange(payload.frontTemperature, expectedFront, tolerance);
+    const rearOut = isTemperatureOutOfRange(payload.rearTemperature, expectedRear, tolerance);
+
+    setInspectionProgress((current) => ({
+      ...current,
+      notes:
+        frontOut || rearOut
+          ? `${current.notes}\nTemperature alert detected during completion.`.trim()
+          : current.notes,
+    }));
+
+    setIsExecutingInspectionAction(true);
+    try {
+      await executeTypedActionNow({
+        actionType: "COMPLETE_INSPECTION",
+        payload,
+        trailerNumber: selectedVesselTrailer.trailerNumber,
+      });
+    } finally {
+      setIsExecutingInspectionAction(false);
+    }
+  }, [executeTypedActionNow, selectedVesselTrailer, toInspectionPayload]);
+
+  const handleUploadInspectionPhoto = useCallback(
+    async (input: { file: File; category: string; description: string | null }) => {
+      if (!selectedVesselTrailer) {
+        throw new Error("Select a vessel trailer before uploading a photo.");
+      }
+
+      if (!isOnline) {
+        throw new Error("Photo upload requires a connection.");
+      }
+
+      const nowIso = new Date().toISOString();
+      const normalizedTrailerNumber = normalizeTrailerNumber(selectedVesselTrailer.trailerNumber);
+      if (!normalizedTrailerNumber) {
+        throw new Error("Trailer number is required before uploading photos.");
+      }
+
+      const storagePath = `vessel-operations/${selectedVesselTrailer.vesselOperationId}/${selectedVesselTrailer.vesselTrailerId}/${Date.now()}-${sanitizeFileName(input.file.name || "photo")}`;
+
+      const { error: uploadError } = await supabase.storage.from("vessel-inspection-photos").upload(storagePath, input.file, {
+        cacheControl: "3600",
+        upsert: false,
+        contentType: input.file.type,
+      });
+
+      if (uploadError) {
+        throw new Error(uploadError.message || "Unable to upload inspection photo.");
+      }
+
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+
+      const uploadedBy = session?.user?.email?.trim() || session?.user?.id || null;
+
+      const { error: photoInsertError } = await supabase.from("vessel_inspection_photos").insert({
+        vessel_trailer_id: selectedVesselTrailer.vesselTrailerId,
+        trailer_id: selectedVesselTrailer.trailerId,
+        trailer_number: normalizedTrailerNumber,
+        vessel_operation_id: selectedVesselTrailer.vesselOperationId,
+        category: input.category,
+        storage_path: storagePath,
+        file_name: input.file.name,
+        description: input.description,
+        uploaded_at: nowIso,
+        uploaded_by: uploadedBy ?? "TrailerHub User",
+      } as never);
+
+      if (photoInsertError) {
+        await supabase.storage.from("vessel-inspection-photos").remove([storagePath]);
+        throw new Error(photoInsertError.message || "Unable to register uploaded photo.");
+      }
+
+      const rows = await getTrailerActivity({
+        trailerId: selectedVesselTrailer.trailerId,
+        trailerNumber: selectedVesselTrailer.trailerNumber,
+        limit: 40,
+      });
+      setInspectionActivityRows(rows);
+      setToastMessage("Inspection photo uploaded.");
+    },
+    [isOnline, selectedVesselTrailer],
+  );
+
+  const resolveTouchOperationAction = useCallback(
+    async (operation: MobileOperationCard) => {
+      if (operation.actionType && operation.actionPayload) {
+        await executeTypedActionNow({
+          actionType: operation.actionType,
+          payload: operation.actionPayload,
+          trailerNumber: operation.trailerNumber ?? null,
+        });
+
+        if (operation.actionType === "START_INSPECTION" || operation.actionType === "SAVE_INSPECTION_PROGRESS") {
+          setSelectedTrailerId(
+            trailers.find((row) => normalizeTrailerNumber(row.trailerNumber) === normalizeTrailerNumber(operation.trailerNumber ?? ""))?.id ?? null,
+          );
+          await openInspectionPanel();
+        }
+        return;
+      }
+
+      if (operation.trailerNumber) {
+        const match = trailers.find((row) => normalizeTrailerNumber(row.trailerNumber) === normalizeTrailerNumber(operation.trailerNumber));
+        if (match) {
+          setSelectedTrailerId(match.id);
+        }
+      }
+    },
+    [executeTypedActionNow, openInspectionPanel, trailers],
+  );
+
+  const mapVoiceActionToTypedAction = useCallback(
+    async (input: {
+      intent: VoiceActionIntentName;
+      entities: VoiceEntities;
+      commandText: string;
+    }) => {
+      const trailerNumber = normalizeTrailerNumber(input.entities.trailerNumber ?? selectedTrailerNumber ?? "");
+      if (!trailerNumber) {
+        throw new Error("Please provide the trailer number.");
+      }
+
+      const trailerMatch = trailers.find((row) => normalizeTrailerNumber(row.trailerNumber) === trailerNumber) ?? null;
+      const vesselMatch = vesselTrailers.find((row) => normalizeTrailerNumber(row.trailerNumber) === trailerNumber) ?? null;
+
+      if (input.intent === "mark_arrived") {
+        if (!vesselMatch) {
+          throw new Error("Trailer is not available in vessel arrivals.");
+        }
+
+        await executeTypedActionNow({
+          actionType: "MARK_ARRIVED",
+          payload: {
+            vesselTrailerId: vesselMatch.vesselTrailerId,
+            trailerNumber: vesselMatch.trailerNumber,
+            operationId: vesselMatch.vesselOperationId,
+          },
+          trailerNumber: vesselMatch.trailerNumber,
+        });
+        return { message: `Queued arrival confirmation for ${vesselMatch.trailerNumber}.` };
+      }
+
+      if (input.intent === "change_compound_position") {
+        if (!trailerMatch || !input.entities.compoundPosition) {
+          throw new Error("Trailer and destination position are required.");
+        }
+
+        await executeTypedActionNow({
+          actionType: "MOVE_COMPOUND_POSITION",
+          payload: {
+            trailerId: trailerMatch.id,
+            trailerNumber: trailerMatch.trailerNumber,
+            targetPosition: input.entities.compoundPosition,
+            expectedCurrentPosition: trailerMatch.compoundPosition,
+            reason: "Voice command",
+          },
+          trailerNumber: trailerMatch.trailerNumber,
+        });
+        return { message: `Queued move for ${trailerMatch.trailerNumber} to ${input.entities.compoundPosition}.` };
+      }
+
+      if (input.intent === "change_load_status") {
+        if (!trailerMatch || !input.entities.loadStatus) {
+          throw new Error("Trailer and load status are required.");
+        }
+
+        await executeTypedActionNow({
+          actionType: "CHANGE_LOAD_STATUS",
+          payload: {
+            trailerId: trailerMatch.id,
+            trailerNumber: trailerMatch.trailerNumber,
+            nextLoadStatus: input.entities.loadStatus,
+            expectedCurrentLoadStatus: trailerMatch.loadStatus,
+          },
+          trailerNumber: trailerMatch.trailerNumber,
+        });
+        return { message: `Queued load status change for ${trailerMatch.trailerNumber}.` };
+      }
+
+      if (input.intent === "start_inspection" || input.intent === "complete_inspection") {
+        if (!vesselMatch) {
+          throw new Error("Trailer is not available in vessel inspections.");
+        }
+
+        await executeTypedActionNow({
+          actionType: input.intent === "start_inspection" ? "START_INSPECTION" : "COMPLETE_INSPECTION",
+          payload:
+            input.intent === "start_inspection"
+              ? {
+                  vesselTrailerId: vesselMatch.vesselTrailerId,
+                  trailerNumber: vesselMatch.trailerNumber,
+                }
+              : {
+                  vesselTrailerId: vesselMatch.vesselTrailerId,
+                  trailerNumber: vesselMatch.trailerNumber,
+                  frontTemperature: null,
+                  rearTemperature: null,
+                  unit: vesselMatch.expectedTemperatureUnit ?? "C",
+                  notes: "Completed via voice.",
+                  damage: {
+                    hasDamage: false,
+                    damageDescription: null,
+                  },
+                },
+          trailerNumber: vesselMatch.trailerNumber,
+        });
+
+        return {
+          message:
+            input.intent === "start_inspection"
+              ? `Queued inspection start for ${vesselMatch.trailerNumber}.`
+              : `Queued inspection completion for ${vesselMatch.trailerNumber}.`,
+        };
+      }
+
+      throw new Error("This voice command is not supported for typed mobile execution.");
+    },
+    [executeTypedActionNow, selectedTrailerNumber, trailers, vesselTrailers],
+  );
 
   return (
     <PermissionGuard roleKey={mobileRoleKey} moduleKey="dashboard" action="view" allowWhenRoleMissing={false}>
@@ -547,7 +1243,7 @@ export function SupervisorMobileDashboard() {
                     {isOnline ? <Wifi className="h-4 w-4 text-cyan-300" /> : <WifiOff className="h-4 w-4 text-amber-300" />}
                     {connectionLabel}
                   </div>
-                  <p className="mt-1">Queue: {pendingQueueCount} pending</p>
+                  <p className="mt-1">Queue: {pendingQueueCount} pending · {syncingQueueCount} syncing</p>
                 </div>
               </div>
               <div className="mt-4 grid grid-cols-2 gap-2 text-xs text-slate-200">
@@ -557,7 +1253,7 @@ export function SupervisorMobileDashboard() {
                 </div>
                 <div className="rounded-2xl border border-white/10 bg-white/5 px-3 py-2">
                   <p className="text-[10px] uppercase tracking-[0.18em] text-slate-400">Sync</p>
-                  <p className="mt-1 font-medium text-white">{isSyncingQueue ? "Processing" : "Ready"}</p>
+                  <p className="mt-1 font-medium text-white">{isSyncingQueue ? "Processing" : "Ready"}{lastSuccessfulSyncAt ? ` · ${new Date(lastSuccessfulSyncAt).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}` : ""}</p>
                 </div>
               </div>
             </header>
@@ -620,6 +1316,7 @@ export function SupervisorMobileDashboard() {
 
             {error ? <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</div> : null}
             {queueError ? <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">{queueError}</div> : null}
+            {toastMessage ? <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">{toastMessage}</div> : null}
 
             {activeTab === "home" ? (
               <HomeTab
@@ -629,7 +1326,7 @@ export function SupervisorMobileDashboard() {
                 trailers={trailers.slice(0, 6)}
                 selectedTrailer={selectedTrailer}
                 onSelectTrailer={setSelectedTrailerId}
-                onQueueAction={enqueueAction}
+                onAction={resolveTouchOperationAction}
                 canAccessAi={canAccessAi}
                 onOpenAssistant={() => setAssistantOpen(true)}
               />
@@ -641,11 +1338,12 @@ export function SupervisorMobileDashboard() {
                 operations={operations}
                 trailers={trailers}
                 onSelectTrailer={setSelectedTrailerId}
-                onQueueAction={enqueueAction}
+                onAction={resolveTouchOperationAction}
                 canArrive={canArrive}
                 canInspect={canInspect}
                 canChangeLoad={canChangeLoad}
                 canTimeline={canTimeline}
+                onOpenInspectionPanel={() => void openInspectionPanel()}
               />
             ) : null}
 
@@ -672,7 +1370,12 @@ export function SupervisorMobileDashboard() {
                 trailers={filteredTrailers}
                 onQueryChange={setSearchQuery}
                 onSelectTrailer={setSelectedTrailerId}
-                onQueueAction={enqueueAction}
+                onQueueLocate={(trailerNumber) => {
+                  const match = trailers.find((row) => normalizeTrailerNumber(row.trailerNumber) === normalizeTrailerNumber(trailerNumber));
+                  if (match) {
+                    setSelectedTrailerId(match.id);
+                  }
+                }}
               />
             ) : null}
 
@@ -682,13 +1385,28 @@ export function SupervisorMobileDashboard() {
                 roleLabel={roleLabel}
                 queueItems={queueItems}
                 syncLog={syncLog}
+                pendingCount={pendingQueueCount}
+                syncingCount={syncingQueueCount}
+                failedCount={failedQueueCount}
+                conflictCount={conflictQueueCount}
+                lastSuccessfulSyncAt={lastSuccessfulSyncAt}
                 canAccessAi={canAccessAi}
                 onOpenAssistant={() => setAssistantOpen(true)}
                 onClearResolved={() => {
-                  setQueueItems((current) => current.filter((item) => item.status === "pending" || item.status === "syncing"));
+                  setQueueItems((current) => current.filter((item) => item.state === "pending" || item.state === "syncing" || item.state === "failed" || item.state === "conflict"));
                   setSyncLog([]);
                 }}
                 onRetrySync={() => void syncQueuedActions()}
+                onCancelPending={(itemId) => {
+                  setQueueItems((current) =>
+                    updateQueuedAction(current, itemId, {
+                      state: "cancelled",
+                      lastError: "Cancelled by operator.",
+                      nextRetryAt: null,
+                    }),
+                  );
+                }}
+                onQueueActionFromVoice={mapVoiceActionToTypedAction}
               />
             ) : null}
 
@@ -730,6 +1448,40 @@ export function SupervisorMobileDashboard() {
                 pathname: "/dashboard/mobile",
                 selectedCompoundFilter: searchQuery || selectedTrailerNumber || undefined,
               }}
+            />
+
+            <MobileInspectionPanel
+              open={inspectionPanelOpen}
+              trailer={
+                selectedVesselTrailer
+                  ? {
+                      vesselTrailerId: selectedVesselTrailer.vesselTrailerId,
+                      trailerId: selectedVesselTrailer.trailerId,
+                      trailerNumber: selectedVesselTrailer.trailerNumber,
+                      operationId: selectedVesselTrailer.vesselOperationId,
+                      status: selectedVesselTrailer.status,
+                      arrivalStatus: selectedVesselTrailer.arrivalStatus,
+                      inspectionStartedAt: selectedVesselTrailer.inspectionStartedAt,
+                      inspectionCompletedAt: selectedVesselTrailer.inspectionCompletedAt,
+                      expectedFrontTemperature: selectedVesselTrailer.expectedFrontTemperature,
+                      expectedRearTemperature: selectedVesselTrailer.expectedRearTemperature,
+                      expectedTemperatureUnit: selectedVesselTrailer.expectedTemperatureUnit,
+                      hasDamage: selectedVesselTrailer.hasDamage,
+                      hasTemperatureAlert: selectedVesselTrailer.hasTemperatureAlert,
+                    }
+                  : null
+              }
+              progress={inspectionProgress}
+              activityRows={inspectionActivityRows}
+              activityLoading={inspectionActivityLoading}
+              isOnline={isOnline}
+              isSubmitting={isExecutingInspectionAction}
+              onClose={() => setInspectionPanelOpen(false)}
+              onProgressChange={(patch) => setInspectionProgress((current) => ({ ...current, ...patch }))}
+              onStartInspection={() => void handleStartInspection()}
+              onSaveProgress={() => void handleSaveInspectionProgress()}
+              onCompleteInspection={() => void handleCompleteInspection()}
+              onUploadPhoto={handleUploadInspectionPhoto}
             />
           </div>
         </main>
@@ -818,12 +1570,12 @@ type HomeTabProps = {
   trailers: MobileTrailerCard[];
   selectedTrailer: MobileTrailerCard | null;
   onSelectTrailer: (trailerId: string) => void;
-  onQueueAction: (input: { source: MobileTabKey; label: string; commandText: string; trailerNumber?: string | null }) => void;
+  onAction: (operation: MobileOperationCard) => Promise<void>;
   canAccessAi: boolean;
   onOpenAssistant: () => void;
 };
 
-function HomeTab({ loading, trailerCount, operations, trailers, selectedTrailer, onSelectTrailer, onQueueAction, canAccessAi, onOpenAssistant }: HomeTabProps) {
+function HomeTab({ loading, trailerCount, operations, trailers, selectedTrailer, onSelectTrailer, onAction, canAccessAi, onOpenAssistant }: HomeTabProps) {
   return (
     <section className="space-y-3 pb-24">
       <CardShell title="Today at a glance" subtitle={`${trailerCount} trailers currently visible in the mobile fleet view`}>
@@ -838,7 +1590,9 @@ function HomeTab({ loading, trailerCount, operations, trailers, selectedTrailer,
                 detail={operation.detail}
                 severity={operation.severity}
                 actionLabel={operation.actionLabel}
-                onAction={() => onQueueAction({ source: "home", label: operation.title, commandText: operation.commandText, trailerNumber: operation.trailerNumber })}
+                onAction={() => {
+                  void onAction(operation);
+                }}
               />
             ))}
           </div>
@@ -884,14 +1638,15 @@ type OperationsTabProps = {
   operations: MobileOperationCard[];
   trailers: MobileTrailerCard[];
   onSelectTrailer: (trailerId: string) => void;
-  onQueueAction: (input: { source: MobileTabKey; label: string; commandText: string; trailerNumber?: string | null }) => void;
+  onAction: (operation: MobileOperationCard) => Promise<void>;
   canArrive: boolean;
   canInspect: boolean;
   canChangeLoad: boolean;
   canTimeline: boolean;
+  onOpenInspectionPanel: () => void;
 };
 
-function OperationsTab({ loading, operations, trailers, onSelectTrailer, onQueueAction, canArrive, canInspect, canChangeLoad, canTimeline }: OperationsTabProps) {
+function OperationsTab({ loading, operations, trailers, onSelectTrailer, onAction, canArrive, canInspect, canChangeLoad, canTimeline, onOpenInspectionPanel }: OperationsTabProps) {
   return (
     <section className="space-y-3 pb-24">
       <CardShell title="Operational queue" subtitle="High-priority work items from the live yard state">
@@ -908,7 +1663,9 @@ function OperationsTab({ loading, operations, trailers, onSelectTrailer, onQueue
                 detail={operation.detail}
                 severity={operation.severity}
                 actionLabel={operation.actionLabel}
-                onAction={() => onQueueAction({ source: "operations", label: operation.title, commandText: operation.commandText, trailerNumber: operation.trailerNumber })}
+                onAction={() => {
+                  void onAction(operation);
+                }}
               />
             ))}
           </div>
@@ -922,6 +1679,13 @@ function OperationsTab({ loading, operations, trailers, onSelectTrailer, onQueue
           <QuickActionButton label="Change Load" href="/dashboard/load-trailer" enabled={canChangeLoad} />
           <QuickActionButton label="Timeline" href="/dashboard/trailer-timeline" enabled={canTimeline} />
         </div>
+        <button
+          type="button"
+          onClick={onOpenInspectionPanel}
+          className="mt-2 w-full rounded-2xl border border-cyan-200 bg-cyan-50 px-3 py-2 text-xs font-semibold text-cyan-800"
+        >
+          Open Mobile Inspection Panel
+        </button>
       </CardShell>
 
       <CardShell title="Recent trailers" subtitle="Tap a trailer to reuse it in other tabs">
@@ -1019,10 +1783,10 @@ type SearchTabProps = {
   trailers: MobileTrailerCard[];
   onQueryChange: (query: string) => void;
   onSelectTrailer: (trailerId: string) => void;
-  onQueueAction: (input: { source: MobileTabKey; label: string; commandText: string; trailerNumber?: string | null }) => void;
+  onQueueLocate: (trailerNumber: string) => void;
 };
 
-function SearchTab({ loading, query, trailers, onQueryChange, onSelectTrailer, onQueueAction }: SearchTabProps) {
+function SearchTab({ loading, query, trailers, onQueryChange, onSelectTrailer, onQueueLocate }: SearchTabProps) {
   return (
     <section className="space-y-3 pb-24">
       <CardShell title="Search" subtitle="Find a trailer, then run a command from the result card">
@@ -1062,7 +1826,7 @@ function SearchTab({ loading, query, trailers, onQueryChange, onSelectTrailer, o
               </dl>
 
               <div className="mt-3 grid grid-cols-2 gap-2">
-                <button type="button" onClick={() => onQueueAction({ source: "search", label: `Locate ${trailer.trailerNumber}`, commandText: `where is trailer ${trailer.trailerNumber}`, trailerNumber: trailer.trailerNumber })} className="rounded-2xl bg-cyan-600 px-3 py-2 text-xs font-semibold text-white">
+                <button type="button" onClick={() => onQueueLocate(trailer.trailerNumber)} className="rounded-2xl bg-cyan-600 px-3 py-2 text-xs font-semibold text-white">
                   Locate
                 </button>
                 <Link href={`/dashboard/trailers/${trailer.id}`} className="inline-flex items-center justify-center gap-1 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700">
@@ -1082,20 +1846,34 @@ type MoreTabProps = {
   roleLabel: string;
   queueItems: MobileActionQueueItem[];
   syncLog: MobileSyncLog[];
+  pendingCount: number;
+  syncingCount: number;
+  failedCount: number;
+  conflictCount: number;
+  lastSuccessfulSyncAt: string | null;
   canAccessAi: boolean;
   onOpenAssistant: () => void;
   onClearResolved: () => void;
   onRetrySync: () => void;
+  onCancelPending: (itemId: string) => void;
+  onQueueActionFromVoice: (input: { intent: VoiceActionIntentName; entities: VoiceEntities; commandText: string }) => Promise<{ message: string }>;
 };
 
-function MoreTab({ roleKey, roleLabel, queueItems, syncLog, canAccessAi, onOpenAssistant, onClearResolved, onRetrySync }: MoreTabProps) {
+function MoreTab({ roleKey, roleLabel, queueItems, syncLog, pendingCount, syncingCount, failedCount, conflictCount, lastSuccessfulSyncAt, canAccessAi, onOpenAssistant, onClearResolved, onRetrySync, onCancelPending, onQueueActionFromVoice }: MoreTabProps) {
   return (
     <section className="space-y-3 pb-24">
       <CardShell title="Voice operations" subtitle={`Current role is ${roleLabel}`}>
-        <VoiceOperationsPanel roleKey={roleKey} />
+        <VoiceOperationsPanel roleKey={roleKey} onQueueAction={onQueueActionFromVoice} />
       </CardShell>
 
       <CardShell title="Queue status" subtitle="Pending actions are stored locally until they can be replayed">
+        <div className="mb-3 grid grid-cols-2 gap-2 rounded-2xl border border-slate-200 bg-slate-50 p-2 text-xs text-slate-700">
+          <p>Pending: {pendingCount}</p>
+          <p>Syncing: {syncingCount}</p>
+          <p>Failed: {failedCount}</p>
+          <p>Conflict: {conflictCount}</p>
+          <p className="col-span-2">Last sync: {lastSuccessfulSyncAt ? new Date(lastSuccessfulSyncAt).toLocaleString("en-GB") : "No successful sync yet"}</p>
+        </div>
         <div className="flex gap-2">
           <button type="button" onClick={onRetrySync} className="rounded-2xl bg-slate-950 px-3 py-2 text-xs font-semibold text-white">
             Retry sync
@@ -1113,14 +1891,25 @@ function MoreTab({ roleKey, roleLabel, queueItems, syncLog, canAccessAi, onOpenA
               <div key={item.id} className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3">
                 <div className="flex items-start justify-between gap-2">
                   <div>
-                    <p className="text-sm font-semibold text-slate-900">{item.label}</p>
-                    <p className="text-xs text-slate-500">{item.commandText}</p>
+                    <p className="text-sm font-semibold text-slate-900">{getMobileActionLabel(item)}</p>
+                    <p className="text-xs text-slate-500">{item.trailerNumber ?? "No trailer"} · {new Date(item.createdAt).toLocaleString("en-GB")}</p>
                   </div>
-                  <span className={`rounded-full px-2 py-1 text-[10px] font-semibold ${item.status === "conflict" ? "bg-amber-100 text-amber-700" : item.status === "failed" ? "bg-rose-100 text-rose-700" : item.status === "syncing" ? "bg-cyan-100 text-cyan-700" : "bg-slate-200 text-slate-700"}`}>
-                    {item.status}
+                  <span className={`rounded-full px-2 py-1 text-[10px] font-semibold ${item.state === "conflict" ? "bg-amber-100 text-amber-700" : item.state === "failed" ? "bg-rose-100 text-rose-700" : item.state === "syncing" ? "bg-cyan-100 text-cyan-700" : item.state === "completed" ? "bg-emerald-100 text-emerald-700" : "bg-slate-200 text-slate-700"}`}>
+                    {item.state}
                   </span>
                 </div>
-                {item.error ? <p className="mt-2 text-xs text-rose-700">{item.error}</p> : null}
+                {item.lastError ? <p className="mt-2 text-xs text-rose-700">{item.lastError}</p> : null}
+                {item.conflict?.serverState ? <p className="mt-1 text-xs text-amber-800">Server state: {JSON.stringify(item.conflict.serverState)}</p> : null}
+                {(item.state === "pending" || item.state === "failed" || item.state === "conflict") ? (
+                  <div className="mt-2 flex gap-2">
+                    <button type="button" onClick={() => onRetrySync()} className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-[11px] font-semibold text-slate-700">
+                      Retry
+                    </button>
+                    <button type="button" onClick={() => onCancelPending(item.id)} className="rounded-lg border border-rose-200 bg-rose-50 px-2 py-1 text-[11px] font-semibold text-rose-700">
+                      Cancel
+                    </button>
+                  </div>
+                ) : null}
               </div>
             ))
           )}

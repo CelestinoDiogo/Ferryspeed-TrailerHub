@@ -1,19 +1,8 @@
-export type MobileActionQueueSource = "home" | "operations" | "compound" | "search" | "more";
-
-export type MobileActionQueueStatus = "pending" | "syncing" | "failed" | "conflict";
-
-export type MobileActionQueueItem = {
-  id: string;
-  createdAt: string;
-  updatedAt: string;
-  source: MobileActionQueueSource;
-  label: string;
-  commandText: string;
-  trailerNumber?: string | null;
-  status: MobileActionQueueStatus;
-  attempts: number;
-  error?: string | null;
-};
+import {
+  coerceQueueItem,
+  createMobileActionQueueItem,
+  type MobileActionQueueItem,
+} from "@/lib/mobile/mobile-actions";
 
 const STORAGE_KEY = "trailerhub.mobile.action-queue.v1";
 const MAX_ITEMS = 30;
@@ -31,20 +20,9 @@ const safeParse = (value: string | null): MobileActionQueueItem[] => {
       return [];
     }
 
-    return parsed.filter((item): item is MobileActionQueueItem => {
-      return Boolean(
-        item &&
-          typeof item === "object" &&
-          typeof item.id === "string" &&
-          typeof item.createdAt === "string" &&
-          typeof item.updatedAt === "string" &&
-          typeof item.label === "string" &&
-          typeof item.commandText === "string" &&
-          typeof item.source === "string" &&
-          typeof item.status === "string" &&
-          typeof item.attempts === "number",
-      );
-    });
+    return parsed
+      .map((item) => coerceQueueItem(item))
+      .filter((item): item is MobileActionQueueItem => Boolean(item));
   } catch {
     return [];
   }
@@ -66,39 +44,24 @@ export const saveMobileActionQueue = (items: MobileActionQueueItem[]) => {
   window.localStorage.setItem(STORAGE_KEY, JSON.stringify(items.slice(0, MAX_ITEMS)));
 };
 
-export const createMobileActionQueueItem = (input: {
-  source: MobileActionQueueSource;
-  label: string;
-  commandText: string;
-  trailerNumber?: string | null;
-}): MobileActionQueueItem => {
-  const now = new Date().toISOString();
-
-  return {
-    id: globalThis.crypto?.randomUUID?.() ?? `mobile-action-${now}-${Math.random().toString(16).slice(2)}`,
-    createdAt: now,
-    updatedAt: now,
-    source: input.source,
-    label: input.label,
-    commandText: input.commandText,
-    trailerNumber: input.trailerNumber ?? null,
-    status: "pending",
-    attempts: 0,
-    error: null,
-  };
-};
+export { createMobileActionQueueItem };
 
 export const updateQueuedAction = (
   items: MobileActionQueueItem[],
   itemId: string,
-  patch: Partial<Pick<MobileActionQueueItem, "status" | "attempts" | "error">>,
+  patch: Partial<
+    Pick<
+      MobileActionQueueItem,
+      "state" | "retryCount" | "lastError" | "conflict" | "lastAttemptAt" | "nextRetryAt"
+    >
+  >,
 ) => {
   return items.map((item) =>
     item.id === itemId
       ? {
           ...item,
           ...patch,
-          updatedAt: new Date().toISOString(),
+          lastAttemptAt: patch.lastAttemptAt ?? new Date().toISOString(),
         }
       : item,
   );
@@ -113,8 +76,19 @@ export const classifyActionFailure = (error: unknown) => {
   const normalized = message.toLowerCase();
 
   if (normalized.includes("conflict") || normalized.includes("already") || normalized.includes("stale") || normalized.includes("missing")) {
-    return { status: "conflict" as const, message };
+    return { state: "conflict" as const, message, retryable: false };
   }
 
-  return { status: "failed" as const, message };
+  if (normalized.includes("permission") || normalized.includes("unauthorized") || normalized.includes("forbidden") || normalized.includes("invalid")) {
+    return { state: "failed" as const, message, retryable: false };
+  }
+
+  return { state: "failed" as const, message, retryable: true };
 };
+
+export const getRetryBackoffMs = (retryCount: number) => {
+  const bounded = Math.max(0, Math.min(retryCount, 6));
+  return 1000 * 2 ** bounded;
+};
+
+export const getMaxRetryCount = () => 5;

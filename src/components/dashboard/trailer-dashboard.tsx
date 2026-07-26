@@ -308,8 +308,7 @@ export function TrailerDashboard() {
               .from("compound_stock_checks")
               .select("id, started_at, status")
               .order("started_at", { ascending: false })
-              .limit(1)
-              .maybeSingle(),
+              .limit(1),
           ]);
 
         if (supabaseError) throw new Error(buildSectionError("trailers", supabaseError));
@@ -470,7 +469,7 @@ export function TrailerDashboard() {
         }).length;
         setAllocatedInCompoundCount(allocatedInCompound);
 
-        const latestStockCheck = (latestStockCheckData ?? null) as StockCheckHeadline | null;
+        const latestStockCheck = ((latestStockCheckData ?? []) as StockCheckHeadline[])[0] ?? null;
         setLatestStockCheckId(latestStockCheck?.id ?? null);
 
         let latestMissing = 0;

@@ -13,17 +13,34 @@ import {
   setVoiceResponsesEnabled,
   speakVoiceResponse,
 } from "@/lib/voice/speech-synthesis";
-import { initialVoiceContext, isVoiceActionIntent, type VoiceContext, type VoiceExecutionResponse } from "@/lib/voice/types";
+import {
+  initialVoiceContext,
+  isVoiceActionIntent,
+  type VoiceActionIntentName,
+  type VoiceContext,
+  type VoiceEntities,
+  type VoiceExecutionResponse,
+} from "@/lib/voice/types";
 
 type VoiceOperationsPanelProps = {
   roleKey: RoleKey | null;
+  onQueueAction?: (input: {
+    intent: VoiceActionIntentName;
+    entities: VoiceEntities;
+    commandText: string;
+  }) => Promise<{ message: string }>;
 };
 
-export function VoiceOperationsPanel({ roleKey }: VoiceOperationsPanelProps) {
+export function VoiceOperationsPanel({ roleKey, onQueueAction }: VoiceOperationsPanelProps) {
   const [draft, setDraft] = useState("");
   const [context, setContext] = useState<VoiceContext>(initialVoiceContext);
   const [response, setResponse] = useState<VoiceExecutionResponse | null>(null);
   const [pendingConfirmationText, setPendingConfirmationText] = useState<string | null>(null);
+  const [pendingConfirmationIntent, setPendingConfirmationIntent] = useState<{
+    intent: VoiceActionIntentName;
+    entities: VoiceEntities;
+    commandText: string;
+  } | null>(null);
   const [isExecuting, setIsExecuting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [voiceResponsesEnabled, setVoiceResponsesState] = useState(getVoiceResponsesEnabled());
@@ -110,26 +127,72 @@ export function VoiceOperationsPanel({ roleKey }: VoiceOperationsPanelProps) {
     if (parsed.clarification) {
       setResponse(null);
       setPendingConfirmationText(null);
+        setPendingConfirmationIntent(null);
       setError(parsed.clarification);
       return;
     }
 
     if (isVoiceActionIntent(parsed.intent)) {
       setPendingConfirmationText(text);
+        setPendingConfirmationIntent({
+          intent: parsed.intent,
+          entities: parsed.entities,
+          commandText: text,
+        });
+
+        setResponse({
+          ok: true,
+          mode: "action",
+          intent: parsed.intent,
+          entities: parsed.entities,
+          message: "Confirmation required before this action is queued for sync.",
+          actionPlan: null,
+          assistantResult: null,
+          context: nextContext,
+        });
     } else {
       setPendingConfirmationText(null);
+        setPendingConfirmationIntent(null);
+        await executeVoiceCommand(text, false);
     }
-
-    await executeVoiceCommand(text, false);
   }, [context, currentInput, executeVoiceCommand, isExecuting]);
 
   const handleConfirm = useCallback(async () => {
-    if (!pendingConfirmationText || isExecuting) {
+    if (!pendingConfirmationText || !pendingConfirmationIntent || isExecuting) {
       return;
     }
 
-    await executeVoiceCommand(pendingConfirmationText, true);
-  }, [executeVoiceCommand, isExecuting, pendingConfirmationText]);
+    if (!onQueueAction) {
+      await executeVoiceCommand(pendingConfirmationText, true);
+      return;
+    }
+
+    setIsExecuting(true);
+    setError(null);
+
+    try {
+      const queued = await onQueueAction(pendingConfirmationIntent);
+      setPendingConfirmationText(null);
+      setPendingConfirmationIntent(null);
+      setResponse({
+        ok: true,
+        mode: "action",
+        intent: pendingConfirmationIntent.intent,
+        entities: pendingConfirmationIntent.entities,
+        message: queued.message,
+        actionPlan: null,
+        assistantResult: null,
+        context,
+      });
+      if (voiceResponsesEnabled && isSpeechSynthesisSupported()) {
+        speakVoiceResponse(queued.message);
+      }
+    } catch (queueError) {
+      setError(queueError instanceof Error ? queueError.message : "Unable to queue action.");
+    } finally {
+      setIsExecuting(false);
+    }
+  }, [context, executeVoiceCommand, isExecuting, onQueueAction, pendingConfirmationIntent, pendingConfirmationText, voiceResponsesEnabled]);
 
   const handleToggleVoiceResponses = useCallback(() => {
     const nextValue = !voiceResponsesEnabled;
@@ -196,6 +259,7 @@ export function VoiceOperationsPanel({ roleKey }: VoiceOperationsPanelProps) {
             setDraft("");
             resetTranscript();
             setPendingConfirmationText(null);
+            setPendingConfirmationIntent(null);
             setResponse(null);
             setError(null);
           }}

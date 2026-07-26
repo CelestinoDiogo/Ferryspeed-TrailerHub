@@ -61,6 +61,7 @@ const groupedItems: MenuGroup[] = [
     title: "OPERATIONS",
     items: [
       { label: "Vessel Operations", href: "/dashboard/vessel-operations", icon: Ship, moduleKey: "vessel_operations" },
+      { label: "Master Mobile", href: "/dashboard/mobile", icon: Bot, moduleKey: "dashboard" },
       { label: "Arrivals", href: "/dashboard/search?filter=arrivals_today", icon: MapPin, moduleKey: "arrivals" },
       { label: "Export Operations", href: "/dashboard/export-operations", icon: Upload, moduleKey: "export_operations" },
       { label: "Deliveries", href: "/dashboard/deliveries", icon: Truck, moduleKey: "arrivals" },
