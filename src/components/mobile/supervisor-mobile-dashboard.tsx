@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import {
   Bot,
@@ -54,6 +54,7 @@ import {
 } from "@/lib/mobile/mobile-action-queue";
 import {
   getMobileActionLabel,
+  getMobileActionDedupeKey,
   mobileActionRequestSchema,
   type MobileActionQueueItem,
   type MobileActionRequest,
@@ -77,6 +78,8 @@ type DeliveryBookingRow = Database["public"]["Tables"]["delivery_bookings"]["Row
 type VesselTrailerRow = Database["public"]["Tables"]["vessel_operation_trailers"]["Row"];
 
 type MobileTabKey = "home" | "operations" | "compound" | "search" | "more";
+
+type CompoundSortKey = "position" | "trailer_number" | "customer";
 
 type MobileKpis = {
   inCompound: number;
@@ -163,6 +166,66 @@ const toDateKey = (value?: string | null) => {
 
 const todayKey = () => new Date().toISOString().slice(0, 10);
 
+const MOBILE_UI_STATE_KEY = "trailerhub.mobile.ui-state.v1";
+
+type MobileUiState = {
+  activeTab?: MobileTabKey;
+  searchQuery?: string;
+  selectedTrailerId?: string | null;
+  compoundFilter?: string;
+  compoundSort?: CompoundSortKey;
+  scrollByTab?: Partial<Record<MobileTabKey, number>>;
+};
+
+const isMobileTabKey = (value: unknown): value is MobileTabKey => {
+  return value === "home" || value === "operations" || value === "compound" || value === "search" || value === "more";
+};
+
+const isCompoundSortKey = (value: unknown): value is CompoundSortKey => {
+  return value === "position" || value === "trailer_number" || value === "customer";
+};
+
+const loadMobileUiState = (): MobileUiState => {
+  if (typeof window === "undefined") {
+    return {};
+  }
+
+  try {
+    const raw = window.sessionStorage.getItem(MOBILE_UI_STATE_KEY);
+    if (!raw) {
+      return {};
+    }
+
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const scrollByTab = parsed.scrollByTab && typeof parsed.scrollByTab === "object"
+      ? Object.fromEntries(
+          Object.entries(parsed.scrollByTab as Record<string, unknown>).filter(
+            (entry): entry is [MobileTabKey, number] => isMobileTabKey(entry[0]) && typeof entry[1] === "number" && Number.isFinite(entry[1]),
+          ),
+        )
+      : undefined;
+
+    return {
+      activeTab: isMobileTabKey(parsed.activeTab) ? parsed.activeTab : undefined,
+      searchQuery: typeof parsed.searchQuery === "string" ? parsed.searchQuery : undefined,
+      selectedTrailerId: typeof parsed.selectedTrailerId === "string" ? parsed.selectedTrailerId : null,
+      compoundFilter: typeof parsed.compoundFilter === "string" ? parsed.compoundFilter : undefined,
+      compoundSort: isCompoundSortKey(parsed.compoundSort) ? parsed.compoundSort : undefined,
+      scrollByTab,
+    };
+  } catch {
+    return {};
+  }
+};
+
+const saveMobileUiState = (state: MobileUiState) => {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.sessionStorage.setItem(MOBILE_UI_STATE_KEY, JSON.stringify(state));
+};
+
 const initialInspectionProgress: MobileInspectionProgress = {
   frontTemperature: "",
   rearTemperature: "",
@@ -194,20 +257,23 @@ const tabConfig: Array<{ key: MobileTabKey; label: string; icon: ReactNode }> = 
 ];
 
 export function SupervisorMobileDashboard() {
+  const initialUiState = loadMobileUiState();
   const { roleKey, fullName, email, isLoading } = useCurrentUser();
-  const [activeTab, setActiveTab] = useState<MobileTabKey>("home");
-  const [searchQuery, setSearchQuery] = useState("");
+  const [activeTab, setActiveTab] = useState<MobileTabKey>(initialUiState.activeTab ?? "home");
+  const [searchQuery, setSearchQuery] = useState(initialUiState.searchQuery ?? "");
   const [quickCommand, setQuickCommand] = useState("");
-  const [selectedTrailerId, setSelectedTrailerId] = useState<string | null>(null);
+  const [selectedTrailerId, setSelectedTrailerId] = useState<string | null>(initialUiState.selectedTrailerId ?? null);
   const [movePosition, setMovePosition] = useState("");
   const [loadStatus, setLoadStatus] = useState<"Loaded" | "Empty">("Loaded");
+  const [compoundFilter, setCompoundFilter] = useState(initialUiState.compoundFilter ?? "");
+  const [compoundSort, setCompoundSort] = useState<CompoundSortKey>(initialUiState.compoundSort ?? "position");
   const [kpis, setKpis] = useState<MobileKpis>(emptyKpis);
   const [trailers, setTrailers] = useState<MobileTrailerCard[]>([]);
   const [vesselTrailers, setVesselTrailers] = useState<MobileVesselTrailerCard[]>([]);
   const [operations, setOperations] = useState<MobileOperationCard[]>([]);
-  const [queueItems, setQueueItems] = useState<MobileActionQueueItem[]>([]);
+  const [queueItems, setQueueItems] = useState<MobileActionQueueItem[]>(() => loadMobileActionQueue());
   const [syncLog, setSyncLog] = useState<MobileSyncLog[]>([]);
-  const [isOnline, setIsOnline] = useState(true);
+  const [isOnline, setIsOnline] = useState(() => (typeof window === "undefined" ? true : window.navigator.onLine));
   const [isSyncingQueue, setIsSyncingQueue] = useState(false);
   const [lastSuccessfulSyncAt, setLastSuccessfulSyncAt] = useState<string | null>(null);
   const [queueError, setQueueError] = useState<string | null>(null);
@@ -220,6 +286,24 @@ export function SupervisorMobileDashboard() {
   const [inspectionActivityRows, setInspectionActivityRows] = useState<TrailerActivityRow[]>([]);
   const [inspectionActivityLoading, setInspectionActivityLoading] = useState(false);
   const [isExecutingInspectionAction, setIsExecutingInspectionAction] = useState(false);
+  const queueItemsRef = useRef(queueItems);
+  const isSyncingQueueRef = useRef(false);
+  const scrollByTabRef = useRef<Partial<Record<MobileTabKey, number>>>(initialUiState.scrollByTab ?? {});
+
+  useEffect(() => {
+    queueItemsRef.current = queueItems;
+  }, [queueItems]);
+
+  useEffect(() => {
+    saveMobileUiState({
+      activeTab,
+      searchQuery,
+      selectedTrailerId,
+      compoundFilter,
+      compoundSort,
+      scrollByTab: scrollByTabRef.current,
+    });
+  }, [activeTab, compoundFilter, compoundSort, searchQuery, selectedTrailerId]);
 
   const selectedTrailer = useMemo(
     () => trailers.find((trailer) => trailer.id === selectedTrailerId) ?? null,
@@ -432,7 +516,6 @@ export function SupervisorMobileDashboard() {
         });
 
       setOperations(operationCards.slice(0, 8));
-      setQueueItems(loadMobileActionQueue());
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Unable to load mobile dashboard.");
     } finally {
@@ -441,7 +524,11 @@ export function SupervisorMobileDashboard() {
   }, []);
 
   useEffect(() => {
-    void loadData();
+    const timeoutId = window.setTimeout(() => {
+      void loadData();
+    }, 0);
+
+    return () => window.clearTimeout(timeoutId);
   }, [loadData]);
 
   useEffect(() => {
@@ -452,7 +539,6 @@ export function SupervisorMobileDashboard() {
     const handleOnline = () => setIsOnline(true);
     const handleOffline = () => setIsOnline(false);
 
-    setIsOnline(window.navigator.onLine);
     window.addEventListener("online", handleOnline);
     window.addEventListener("offline", handleOffline);
 
@@ -481,6 +567,35 @@ export function SupervisorMobileDashboard() {
   useOperationalRealtime(["dashboard"], () => {
     void loadData();
   }, { debounceMs: 900 });
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const restoreId = window.requestAnimationFrame(() => {
+      window.scrollTo({ top: scrollByTabRef.current[activeTab] ?? 0, behavior: "auto" });
+    });
+
+    const handleScroll = () => {
+      scrollByTabRef.current[activeTab] = window.scrollY;
+      saveMobileUiState({
+        activeTab,
+        searchQuery,
+        selectedTrailerId,
+        compoundFilter,
+        compoundSort,
+        scrollByTab: scrollByTabRef.current,
+      });
+    };
+
+    window.addEventListener("scroll", handleScroll, { passive: true });
+
+    return () => {
+      window.cancelAnimationFrame(restoreId);
+      window.removeEventListener("scroll", handleScroll);
+    };
+  }, [activeTab, compoundFilter, compoundSort, searchQuery, selectedTrailerId]);
 
   const applyServerUpdates = useCallback((payload: {
     updatedTrailer?: {
@@ -524,20 +639,40 @@ export function SupervisorMobileDashboard() {
     }
 
     if (payload.updatedVesselTrailer) {
+      const updatedVesselTrailer = payload.updatedVesselTrailer;
+
       setVesselTrailers((current) =>
         current.map((row) =>
-          row.vesselTrailerId === payload.updatedVesselTrailer?.vesselTrailerId
+          row.vesselTrailerId === updatedVesselTrailer.vesselTrailerId
             ? {
                 ...row,
-                arrivalStatus: payload.updatedVesselTrailer.arrivalStatus,
-                status: payload.updatedVesselTrailer.status,
-                inspectionStartedAt: payload.updatedVesselTrailer.inspectionStartedAt,
-                inspectionCompletedAt: payload.updatedVesselTrailer.inspectionCompletedAt,
-                hasDamage: payload.updatedVesselTrailer.hasDamage === true,
-                hasTemperatureAlert: payload.updatedVesselTrailer.hasTemperatureAlert === true,
+                arrivalStatus: updatedVesselTrailer.arrivalStatus,
+                status: updatedVesselTrailer.status,
+                inspectionStartedAt: updatedVesselTrailer.inspectionStartedAt,
+                inspectionCompletedAt: updatedVesselTrailer.inspectionCompletedAt,
+                hasDamage: updatedVesselTrailer.hasDamage === true,
+                hasTemperatureAlert: updatedVesselTrailer.hasTemperatureAlert === true,
               }
             : row,
         ),
+      );
+
+      setOperations((current) =>
+        current.filter((row) => {
+          if (row.vesselTrailerId !== updatedVesselTrailer.vesselTrailerId) {
+            return true;
+          }
+
+          if (row.actionType === "MARK_ARRIVED" && updatedVesselTrailer.arrivalStatus === "arrived") {
+            return false;
+          }
+
+          if ((row.actionType === "START_INSPECTION" || row.actionType === "SAVE_INSPECTION_PROGRESS") && updatedVesselTrailer.inspectionCompletedAt) {
+            return false;
+          }
+
+          return true;
+        }),
       );
     }
   }, []);
@@ -545,7 +680,7 @@ export function SupervisorMobileDashboard() {
   const syncQueuedActions = useCallback(
     async (itemsToSync?: MobileActionQueueItem[]) => {
       const nowMs = Date.now();
-      const pendingItems = (itemsToSync ?? queueItems).filter((item) => {
+      const pendingItems = (itemsToSync ?? queueItemsRef.current).filter((item) => {
         if (item.state !== "pending" && item.state !== "failed") {
           return false;
         }
@@ -557,10 +692,11 @@ export function SupervisorMobileDashboard() {
         return new Date(item.nextRetryAt).getTime() <= nowMs;
       });
 
-      if (pendingItems.length === 0 || isSyncingQueue || !isOnline) {
+      if (pendingItems.length === 0 || isSyncingQueueRef.current || !isOnline) {
         return;
       }
 
+      isSyncingQueueRef.current = true;
       setIsSyncingQueue(true);
       setQueueError(null);
 
@@ -733,16 +869,23 @@ export function SupervisorMobileDashboard() {
       } catch (syncError) {
         setQueueError(syncError instanceof Error ? syncError.message : "Unable to sync queued actions.");
       } finally {
+        isSyncingQueueRef.current = false;
         setIsSyncingQueue(false);
       }
     },
-    [applyServerUpdates, isOnline, isSyncingQueue, queueItems],
+    [applyServerUpdates, isOnline],
   );
 
   useEffect(() => {
-    if (isOnline && queueItems.some((item) => item.state === "pending" || item.state === "failed")) {
-      void syncQueuedActions();
+    if (!isOnline || !queueItems.some((item) => item.state === "pending" || item.state === "failed")) {
+      return;
     }
+
+    const timeoutId = window.setTimeout(() => {
+      void syncQueuedActions();
+    }, 0);
+
+    return () => window.clearTimeout(timeoutId);
   }, [isOnline, queueItems, syncQueuedActions]);
 
   const filteredTrailers = useMemo(() => {
@@ -762,10 +905,38 @@ export function SupervisorMobileDashboard() {
       .slice(0, 40);
   }, [searchQuery, trailers]);
 
-  const compoundTrailers = useMemo(
-    () => trailers.filter((trailer) => trailer.isLocal === false).slice(0, 24),
-    [trailers],
-  );
+  const compoundTrailers = useMemo(() => {
+    const normalizedFilter = compoundFilter.trim().toLowerCase();
+    const filteredRows = trailers.filter((trailer) => {
+      if (trailer.isLocal) {
+        return false;
+      }
+
+      if (!normalizedFilter) {
+        return true;
+      }
+
+      return (
+        trailer.trailerNumber.toLowerCase().includes(normalizedFilter) ||
+        trailer.compoundPosition.toLowerCase().includes(normalizedFilter) ||
+        trailer.customer.toLowerCase().includes(normalizedFilter)
+      );
+    });
+
+    const sortedRows = [...filteredRows].sort((left, right) => {
+      if (compoundSort === "trailer_number") {
+        return left.trailerNumber.localeCompare(right.trailerNumber, "en-GB", { numeric: true });
+      }
+
+      if (compoundSort === "customer") {
+        return left.customer.localeCompare(right.customer, "en-GB", { numeric: true });
+      }
+
+      return left.compoundPosition.localeCompare(right.compoundPosition, "en-GB", { numeric: true });
+    });
+
+    return sortedRows.slice(0, 24);
+  }, [compoundFilter, compoundSort, trailers]);
 
   const pendingQueueCount = queueItems.filter((item) => item.state === "pending").length;
   const syncingQueueCount = queueItems.filter((item) => item.state === "syncing").length;
@@ -783,6 +954,32 @@ export function SupervisorMobileDashboard() {
   const canInspect = mobileRoleKey ? canPerformAction(mobileRoleKey, "vessel_operations", "edit") : false;
   const canChangeLoad = mobileRoleKey ? canPerformAction(mobileRoleKey, "compound", "edit") : false;
   const canTimeline = mobileRoleKey ? canAccessModule(mobileRoleKey, "timeline") : false;
+  const activeActionKeys = useMemo(
+    () => new Set(queueItems.filter((item) => item.state === "pending" || item.state === "syncing").map((item) => item.dedupeKey)),
+    [queueItems],
+  );
+
+  const isActionPending = useCallback(
+    (input: { actionType: MobileActionType; payload: MobileActionRequest["payload"]; trailerNumber?: string | null }) => {
+      return activeActionKeys.has(getMobileActionDedupeKey(input));
+    },
+    [activeActionKeys],
+  );
+
+  const isOperationPending = useCallback(
+    (operation: MobileOperationCard) => {
+      if (!operation.actionType || !operation.actionPayload) {
+        return false;
+      }
+
+      return isActionPending({
+        actionType: operation.actionType,
+        payload: operation.actionPayload,
+        trailerNumber: operation.trailerNumber ?? null,
+      });
+    },
+    [isActionPending],
+  );
 
   const enqueueTypedAction = useCallback(
     (input: {
@@ -806,19 +1003,34 @@ export function SupervisorMobileDashboard() {
         trailerNumber: input.trailerNumber ?? null,
         operator: userLabel,
       });
+      const currentQueue = queueItemsRef.current;
+      const duplicateItem = currentQueue.find(
+        (item) =>
+          item.dedupeKey === nextItem.dedupeKey &&
+          (item.state === "pending" || item.state === "syncing" || item.state === "failed" || item.state === "conflict"),
+      ) ?? null;
 
-      const nextQueue = [nextItem, ...queueItems].slice(0, 30);
-      setQueueItems(nextQueue);
+      if (duplicateItem) {
+        setQueueError(`${getMobileActionLabel(duplicateItem)} is already queued or syncing.`);
+        setToastMessage(`${getMobileActionLabel(duplicateItem)} already pending.`);
+        return duplicateItem;
+      }
+
+      const nextQueueSnapshot = [nextItem, ...currentQueue].slice(0, 30);
+
+      queueItemsRef.current = nextQueueSnapshot;
+      setQueueItems(nextQueueSnapshot);
+
       setQueueError(null);
       setToastMessage(`${getMobileActionLabel(nextItem)} queued.`);
 
       if (isOnline) {
-        void syncQueuedActions(nextQueue);
+        void syncQueuedActions(nextQueueSnapshot);
       }
 
       return nextItem;
     },
-    [isOnline, queueItems, syncQueuedActions, userLabel],
+    [isOnline, syncQueuedActions, userLabel],
   );
 
   const executeTypedActionNow = useCallback(
@@ -886,6 +1098,17 @@ export function SupervisorMobileDashboard() {
     setQueueError("Use voice actions from the Voice Operations panel to create typed actions.");
     setQuickCommand("");
   }, [quickCommand]);
+
+  const handleTabChange = useCallback(
+    (nextTab: MobileTabKey) => {
+      if (typeof window !== "undefined") {
+        scrollByTabRef.current[activeTab] = window.scrollY;
+      }
+
+      setActiveTab(nextTab);
+    },
+    [activeTab],
+  );
 
   const openInspectionPanel = useCallback(async () => {
     if (!selectedVesselTrailer) {
@@ -1327,6 +1550,7 @@ export function SupervisorMobileDashboard() {
                 selectedTrailer={selectedTrailer}
                 onSelectTrailer={setSelectedTrailerId}
                 onAction={resolveTouchOperationAction}
+                isOperationPending={isOperationPending}
                 canAccessAi={canAccessAi}
                 onOpenAssistant={() => setAssistantOpen(true)}
               />
@@ -1339,6 +1563,7 @@ export function SupervisorMobileDashboard() {
                 trailers={trailers}
                 onSelectTrailer={setSelectedTrailerId}
                 onAction={resolveTouchOperationAction}
+                isOperationPending={isOperationPending}
                 canArrive={canArrive}
                 canInspect={canInspect}
                 canChangeLoad={canChangeLoad}
@@ -1353,13 +1578,45 @@ export function SupervisorMobileDashboard() {
                 selectedTrailer={selectedTrailer}
                 selectedTrailerNumber={selectedTrailerNumber}
                 compoundTrailers={compoundTrailers}
+                compoundFilter={compoundFilter}
+                compoundSort={compoundSort}
                 movePosition={movePosition}
                 loadStatus={loadStatus}
                 onSelectTrailer={setSelectedTrailerId}
+                onCompoundFilterChange={setCompoundFilter}
+                onCompoundSortChange={setCompoundSort}
                 onMovePositionChange={setMovePosition}
                 onLoadStatusChange={setLoadStatus}
                 onQueueMove={handleQueueMove}
                 onQueueLoadStatus={handleQueueLoadStatus}
+                moveDisabled={
+                  !selectedTrailer ||
+                  movePosition.trim().length === 0 ||
+                  isActionPending({
+                    actionType: "MOVE_COMPOUND_POSITION",
+                    payload: {
+                      trailerId: selectedTrailer.id,
+                      trailerNumber: selectedTrailer.trailerNumber,
+                      targetPosition: movePosition.toUpperCase(),
+                      expectedCurrentPosition: selectedTrailer.compoundPosition,
+                      reason: "Master Mobile move",
+                    },
+                    trailerNumber: selectedTrailer.trailerNumber,
+                  })
+                }
+                loadDisabled={
+                  !selectedTrailer ||
+                  isActionPending({
+                    actionType: "CHANGE_LOAD_STATUS",
+                    payload: {
+                      trailerId: selectedTrailer.id,
+                      trailerNumber: selectedTrailer.trailerNumber,
+                      nextLoadStatus: loadStatus,
+                      expectedCurrentLoadStatus: selectedTrailer.loadStatus,
+                    },
+                    trailerNumber: selectedTrailer.trailerNumber,
+                  })
+                }
               />
             ) : null}
 
@@ -1418,7 +1675,7 @@ export function SupervisorMobileDashboard() {
                     <button
                       key={tab.key}
                       type="button"
-                      onClick={() => setActiveTab(tab.key)}
+                      onClick={() => handleTabChange(tab.key)}
                       className={`flex flex-col items-center gap-1 rounded-2xl px-2 py-2 text-[11px] font-semibold transition ${isActive ? "bg-slate-950 text-white shadow-sm" : "text-slate-500"}`}
                     >
                       {tab.icon}
@@ -1450,39 +1707,89 @@ export function SupervisorMobileDashboard() {
               }}
             />
 
-            <MobileInspectionPanel
-              open={inspectionPanelOpen}
-              trailer={
-                selectedVesselTrailer
-                  ? {
-                      vesselTrailerId: selectedVesselTrailer.vesselTrailerId,
-                      trailerId: selectedVesselTrailer.trailerId,
-                      trailerNumber: selectedVesselTrailer.trailerNumber,
-                      operationId: selectedVesselTrailer.vesselOperationId,
-                      status: selectedVesselTrailer.status,
-                      arrivalStatus: selectedVesselTrailer.arrivalStatus,
-                      inspectionStartedAt: selectedVesselTrailer.inspectionStartedAt,
-                      inspectionCompletedAt: selectedVesselTrailer.inspectionCompletedAt,
-                      expectedFrontTemperature: selectedVesselTrailer.expectedFrontTemperature,
-                      expectedRearTemperature: selectedVesselTrailer.expectedRearTemperature,
-                      expectedTemperatureUnit: selectedVesselTrailer.expectedTemperatureUnit,
-                      hasDamage: selectedVesselTrailer.hasDamage,
-                      hasTemperatureAlert: selectedVesselTrailer.hasTemperatureAlert,
-                    }
-                  : null
-              }
-              progress={inspectionProgress}
-              activityRows={inspectionActivityRows}
-              activityLoading={inspectionActivityLoading}
-              isOnline={isOnline}
-              isSubmitting={isExecutingInspectionAction}
-              onClose={() => setInspectionPanelOpen(false)}
-              onProgressChange={(patch) => setInspectionProgress((current) => ({ ...current, ...patch }))}
-              onStartInspection={() => void handleStartInspection()}
-              onSaveProgress={() => void handleSaveInspectionProgress()}
-              onCompleteInspection={() => void handleCompleteInspection()}
-              onUploadPhoto={handleUploadInspectionPhoto}
-            />
+            {inspectionPanelOpen ? (
+              <MobileInspectionPanel
+                open={inspectionPanelOpen}
+                trailer={
+                  selectedVesselTrailer
+                    ? {
+                        vesselTrailerId: selectedVesselTrailer.vesselTrailerId,
+                        trailerId: selectedVesselTrailer.trailerId,
+                        trailerNumber: selectedVesselTrailer.trailerNumber,
+                        operationId: selectedVesselTrailer.vesselOperationId,
+                        status: selectedVesselTrailer.status,
+                        arrivalStatus: selectedVesselTrailer.arrivalStatus,
+                        inspectionStartedAt: selectedVesselTrailer.inspectionStartedAt,
+                        inspectionCompletedAt: selectedVesselTrailer.inspectionCompletedAt,
+                        expectedFrontTemperature: selectedVesselTrailer.expectedFrontTemperature,
+                        expectedRearTemperature: selectedVesselTrailer.expectedRearTemperature,
+                        expectedTemperatureUnit: selectedVesselTrailer.expectedTemperatureUnit,
+                        hasDamage: selectedVesselTrailer.hasDamage,
+                        hasTemperatureAlert: selectedVesselTrailer.hasTemperatureAlert,
+                      }
+                    : null
+                }
+                progress={inspectionProgress}
+                activityRows={inspectionActivityRows}
+                activityLoading={inspectionActivityLoading}
+                isOnline={isOnline}
+                isSubmitting={
+                  isExecutingInspectionAction ||
+                  (selectedVesselTrailer
+                    ? isActionPending({
+                        actionType: "START_INSPECTION",
+                        payload: {
+                          vesselTrailerId: selectedVesselTrailer.vesselTrailerId,
+                          trailerNumber: selectedVesselTrailer.trailerNumber,
+                        },
+                        trailerNumber: selectedVesselTrailer.trailerNumber,
+                      }) ||
+                      isActionPending({
+                        actionType: "SAVE_INSPECTION_PROGRESS",
+                        payload: {
+                          vesselTrailerId: selectedVesselTrailer.vesselTrailerId,
+                          trailerNumber: selectedVesselTrailer.trailerNumber,
+                          frontTemperature: parseTemperatureInput(inspectionProgress.frontTemperature),
+                          rearTemperature: parseTemperatureInput(inspectionProgress.rearTemperature),
+                          unit: selectedVesselTrailer.expectedTemperatureUnit ?? "C",
+                          notes: inspectionProgress.notes,
+                          damage: {
+                            hasDamage: inspectionProgress.damage === "yes",
+                            damageType: inspectionProgress.damageType,
+                            damageLocation: inspectionProgress.damageLocation,
+                            damageDescription: inspectionProgress.damageDescription,
+                          },
+                        },
+                        trailerNumber: selectedVesselTrailer.trailerNumber,
+                      }) ||
+                      isActionPending({
+                        actionType: "COMPLETE_INSPECTION",
+                        payload: {
+                          vesselTrailerId: selectedVesselTrailer.vesselTrailerId,
+                          trailerNumber: selectedVesselTrailer.trailerNumber,
+                          frontTemperature: parseTemperatureInput(inspectionProgress.frontTemperature),
+                          rearTemperature: parseTemperatureInput(inspectionProgress.rearTemperature),
+                          unit: selectedVesselTrailer.expectedTemperatureUnit ?? "C",
+                          notes: inspectionProgress.notes,
+                          damage: {
+                            hasDamage: inspectionProgress.damage === "yes",
+                            damageType: inspectionProgress.damageType,
+                            damageLocation: inspectionProgress.damageLocation,
+                            damageDescription: inspectionProgress.damageDescription,
+                          },
+                        },
+                        trailerNumber: selectedVesselTrailer.trailerNumber,
+                      })
+                    : false)
+                }
+                onClose={() => setInspectionPanelOpen(false)}
+                onProgressChange={(patch) => setInspectionProgress((current) => ({ ...current, ...patch }))}
+                onStartInspection={() => void handleStartInspection()}
+                onSaveProgress={() => void handleSaveInspectionProgress()}
+                onCompleteInspection={() => void handleCompleteInspection()}
+                onUploadPhoto={handleUploadInspectionPhoto}
+              />
+            ) : null}
           </div>
         </main>
       ) : null}
@@ -1571,11 +1878,12 @@ type HomeTabProps = {
   selectedTrailer: MobileTrailerCard | null;
   onSelectTrailer: (trailerId: string) => void;
   onAction: (operation: MobileOperationCard) => Promise<void>;
+  isOperationPending: (operation: MobileOperationCard) => boolean;
   canAccessAi: boolean;
   onOpenAssistant: () => void;
 };
 
-function HomeTab({ loading, trailerCount, operations, trailers, selectedTrailer, onSelectTrailer, onAction, canAccessAi, onOpenAssistant }: HomeTabProps) {
+function HomeTab({ loading, trailerCount, operations, trailers, selectedTrailer, onSelectTrailer, onAction, isOperationPending, canAccessAi, onOpenAssistant }: HomeTabProps) {
   return (
     <section className="space-y-3 pb-24">
       <CardShell title="Today at a glance" subtitle={`${trailerCount} trailers currently visible in the mobile fleet view`}>
@@ -1590,6 +1898,7 @@ function HomeTab({ loading, trailerCount, operations, trailers, selectedTrailer,
                 detail={operation.detail}
                 severity={operation.severity}
                 actionLabel={operation.actionLabel}
+                disabled={isOperationPending(operation)}
                 onAction={() => {
                   void onAction(operation);
                 }}
@@ -1639,6 +1948,7 @@ type OperationsTabProps = {
   trailers: MobileTrailerCard[];
   onSelectTrailer: (trailerId: string) => void;
   onAction: (operation: MobileOperationCard) => Promise<void>;
+  isOperationPending: (operation: MobileOperationCard) => boolean;
   canArrive: boolean;
   canInspect: boolean;
   canChangeLoad: boolean;
@@ -1646,7 +1956,7 @@ type OperationsTabProps = {
   onOpenInspectionPanel: () => void;
 };
 
-function OperationsTab({ loading, operations, trailers, onSelectTrailer, onAction, canArrive, canInspect, canChangeLoad, canTimeline, onOpenInspectionPanel }: OperationsTabProps) {
+function OperationsTab({ loading, operations, trailers, onSelectTrailer, onAction, isOperationPending, canArrive, canInspect, canChangeLoad, canTimeline, onOpenInspectionPanel }: OperationsTabProps) {
   return (
     <section className="space-y-3 pb-24">
       <CardShell title="Operational queue" subtitle="High-priority work items from the live yard state">
@@ -1663,6 +1973,7 @@ function OperationsTab({ loading, operations, trailers, onSelectTrailer, onActio
                 detail={operation.detail}
                 severity={operation.severity}
                 actionLabel={operation.actionLabel}
+                disabled={isOperationPending(operation)}
                 onAction={() => {
                   void onAction(operation);
                 }}
@@ -1712,16 +2023,22 @@ type CompoundTabProps = {
   selectedTrailer: MobileTrailerCard | null;
   selectedTrailerNumber: string | null;
   compoundTrailers: MobileTrailerCard[];
+  compoundFilter: string;
+  compoundSort: CompoundSortKey;
   movePosition: string;
   loadStatus: "Loaded" | "Empty";
   onSelectTrailer: (trailerId: string) => void;
+  onCompoundFilterChange: (value: string) => void;
+  onCompoundSortChange: (value: CompoundSortKey) => void;
   onMovePositionChange: (value: string) => void;
   onLoadStatusChange: (value: "Loaded" | "Empty") => void;
   onQueueMove: () => void;
   onQueueLoadStatus: () => void;
+  moveDisabled: boolean;
+  loadDisabled: boolean;
 };
 
-function CompoundTab({ loading, selectedTrailer, selectedTrailerNumber, compoundTrailers, movePosition, loadStatus, onSelectTrailer, onMovePositionChange, onLoadStatusChange, onQueueMove, onQueueLoadStatus }: CompoundTabProps) {
+function CompoundTab({ loading, selectedTrailer, selectedTrailerNumber, compoundTrailers, compoundFilter, compoundSort, movePosition, loadStatus, onSelectTrailer, onCompoundFilterChange, onCompoundSortChange, onMovePositionChange, onLoadStatusChange, onQueueMove, onQueueLoadStatus, moveDisabled, loadDisabled }: CompoundTabProps) {
   return (
     <section className="space-y-3 pb-24">
       <CardShell title="Compound tools" subtitle="Move, locate and update the selected trailer">
@@ -1742,8 +2059,8 @@ function CompoundTab({ loading, selectedTrailer, selectedTrailerNumber, compound
             placeholder="Move to position P12"
             className="rounded-2xl border border-slate-200 bg-white px-3 py-3 text-sm outline-none"
           />
-          <button type="button" onClick={onQueueMove} disabled={!selectedTrailerNumber || movePosition.trim().length === 0} className="rounded-2xl bg-cyan-600 px-3 py-3 text-sm font-semibold text-white disabled:bg-cyan-300">
-            Move
+          <button type="button" onClick={onQueueMove} disabled={moveDisabled} className="rounded-2xl bg-cyan-600 px-3 py-3 text-sm font-semibold text-white disabled:bg-cyan-300">
+            {moveDisabled && selectedTrailerNumber ? "Pending" : "Move"}
           </button>
         </div>
 
@@ -1752,13 +2069,26 @@ function CompoundTab({ loading, selectedTrailer, selectedTrailerNumber, compound
             <option value="Loaded">Loaded</option>
             <option value="Empty">Empty</option>
           </select>
-          <button type="button" onClick={onQueueLoadStatus} disabled={!selectedTrailerNumber} className="rounded-2xl bg-slate-950 px-3 py-3 text-sm font-semibold text-white disabled:bg-slate-300">
-            Set load
+          <button type="button" onClick={onQueueLoadStatus} disabled={loadDisabled} className="rounded-2xl bg-slate-950 px-3 py-3 text-sm font-semibold text-white disabled:bg-slate-300">
+            {loadDisabled && selectedTrailerNumber ? "Pending" : "Set load"}
           </button>
         </div>
       </CardShell>
 
       <CardShell title="Compound trailers" subtitle={loading ? "Refreshing live positions" : "Tap to select a trailer for the tools above"}>
+        <div className="mb-3 grid grid-cols-[1fr_auto] gap-2">
+          <input
+            value={compoundFilter}
+            onChange={(event) => onCompoundFilterChange(event.target.value)}
+            placeholder="Filter by trailer, position or customer"
+            className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3 text-sm outline-none"
+          />
+          <select value={compoundSort} onChange={(event) => onCompoundSortChange(event.target.value as CompoundSortKey)} className="rounded-2xl border border-slate-200 bg-white px-3 py-3 text-sm outline-none">
+            <option value="position">Sort: Position</option>
+            <option value="trailer_number">Sort: Trailer</option>
+            <option value="customer">Sort: Customer</option>
+          </select>
+        </div>
         <div className="space-y-2">
           {compoundTrailers.map((trailer) => (
             <button key={trailer.id} type="button" onClick={() => onSelectTrailer(trailer.id)} className="flex w-full items-center justify-between rounded-2xl border border-slate-200 bg-white px-3 py-3 text-left">
@@ -1969,10 +2299,11 @@ type MobileActionRowProps = {
   detail: string;
   severity: "high" | "medium" | "low";
   actionLabel: string;
+  disabled?: boolean;
   onAction: () => void;
 };
 
-function MobileActionRow({ title, detail, severity, actionLabel, onAction }: MobileActionRowProps) {
+function MobileActionRow({ title, detail, severity, actionLabel, disabled = false, onAction }: MobileActionRowProps) {
   return (
     <div className="rounded-3xl border border-slate-200 bg-slate-50 p-3">
       <div className="flex items-start justify-between gap-3">
@@ -1984,8 +2315,8 @@ function MobileActionRow({ title, detail, severity, actionLabel, onAction }: Mob
           {severity}
         </span>
       </div>
-      <button type="button" onClick={onAction} className="mt-3 inline-flex items-center gap-1 rounded-2xl bg-slate-950 px-3 py-2 text-xs font-semibold text-white">
-        {actionLabel}
+      <button type="button" onClick={onAction} disabled={disabled} className="mt-3 inline-flex items-center gap-1 rounded-2xl bg-slate-950 px-3 py-2 text-xs font-semibold text-white disabled:bg-slate-400">
+        {disabled ? "Pending" : actionLabel}
         <MoveRight className="h-3.5 w-3.5" />
       </button>
     </div>

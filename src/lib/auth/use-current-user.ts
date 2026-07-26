@@ -7,7 +7,7 @@ import type { User } from "@supabase/supabase-js";
 const AUTH_LOADING_TIMEOUT_MS = 10_000;
 const isDev = process.env.NODE_ENV !== "production";
 
-type RoleSource = "session_user_metadata" | "default";
+type RoleSource = "database" | "session_user_metadata" | "unassigned";
 
 let cachedResolvedState: Omit<CurrentUserState, "isLoading"> | null = null;
 let inFlightStatePromise: Promise<Omit<CurrentUserState, "isLoading">> | null = null;
@@ -39,11 +39,27 @@ const toRoleKeyOrNull = (value: unknown): RoleKey | null => {
   return roleKeys.includes(normalized as RoleKey) ? (normalized as RoleKey) : null;
 };
 
-const buildCurrentUserStateFromSessionUser = (user: User): Omit<CurrentUserState, "isLoading"> => {
+const buildCurrentUserStateFromSessionUser = async (user: User): Promise<Omit<CurrentUserState, "isLoading">> => {
   const metadata = user.user_metadata as Record<string, unknown> | undefined;
   const roleFromMetadata = toRoleKeyOrNull(metadata?.role_key) ?? toRoleKeyOrNull(metadata?.role);
-  const roleKey = roleFromMetadata ?? "administrator";
-  const roleSource: RoleSource = roleFromMetadata ? "session_user_metadata" : "default";
+
+  const { data: roleRow, error: roleError } = await supabase
+    .from("app_user_roles")
+    .select("role_key, is_active")
+    .eq("user_id", user.id)
+    .maybeSingle();
+
+  if (roleError && isDev) {
+    console.warn("[auth] app_user_roles lookup failed", {
+      userId: user.id,
+      message: roleError.message,
+      code: roleError.code,
+    });
+  }
+
+  const roleFromDatabase = toRoleKeyOrNull(roleRow?.role_key);
+  const roleKey = roleFromDatabase ?? roleFromMetadata ?? null;
+  const roleSource: RoleSource = roleFromDatabase ? "database" : roleFromMetadata ? "session_user_metadata" : "unassigned";
 
   const fullNameFromMetadata = typeof metadata?.full_name === "string" ? metadata.full_name.trim() : "";
   const nameFromMetadata = typeof metadata?.name === "string" ? metadata.name.trim() : "";
@@ -62,7 +78,7 @@ const buildCurrentUserStateFromSessionUser = (user: User): Omit<CurrentUserState
     email: user.email ?? null,
     fullName,
     roleKey,
-    isActive: true,
+    isActive: roleRow?.is_active ?? true,
     loadError: null,
   };
 };

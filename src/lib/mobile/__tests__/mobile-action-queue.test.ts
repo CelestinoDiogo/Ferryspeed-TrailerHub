@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   coerceQueueItem,
   createMobileActionQueueItem,
+  getMobileActionDedupeKey,
   getMobileActionLabel,
 } from "@/lib/mobile/mobile-actions";
 import {
@@ -73,5 +74,40 @@ describe("mobile typed queue", () => {
     expect(getRetryBackoffMs(0)).toBe(1000);
     expect(getRetryBackoffMs(3)).toBe(8000);
     expect(getMaxRetryCount()).toBe(5);
+  });
+
+  it("generates stable dedupe keys for repeated actions on the same target", () => {
+    const first = getMobileActionDedupeKey({
+      actionType: "MARK_ARRIVED",
+      payload: {
+        vesselTrailerId: "11111111-1111-4111-8111-111111111111",
+        trailerNumber: "FS1234",
+        operationId: "22222222-2222-4222-8222-222222222222",
+      },
+      trailerNumber: "FS1234",
+    });
+
+    const second = getMobileActionDedupeKey({
+      actionType: "MARK_ARRIVED",
+      payload: {
+        vesselTrailerId: "11111111-1111-4111-8111-111111111111",
+        trailerNumber: "fs1234",
+        operationId: "22222222-2222-4222-8222-222222222222",
+      },
+      trailerNumber: "fs1234",
+    });
+
+    const different = getMobileActionDedupeKey({
+      actionType: "MOVE_COMPOUND_POSITION",
+      payload: {
+        trailerId: "11111111-1111-4111-8111-111111111111",
+        trailerNumber: "FS1234",
+        targetPosition: "P12",
+      },
+      trailerNumber: "FS1234",
+    });
+
+    expect(first).toBe(second);
+    expect(first).not.toBe(different);
   });
 });

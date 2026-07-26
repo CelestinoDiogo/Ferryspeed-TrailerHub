@@ -67,7 +67,7 @@ export async function POST(request: Request) {
 
     return Response.json(
       {
-        error: error instanceof Error ? error.message : "Unable to execute mobile action.",
+        error: "Unable to execute mobile action right now.",
       },
       { status: 500 },
     );

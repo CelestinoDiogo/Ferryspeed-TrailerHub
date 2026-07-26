@@ -139,11 +139,11 @@ export function Sidebar({ onNavigate, mobile = false }: SidebarProps) {
   const filteredGroups = groupedItems
     .map((group) => ({
       ...group,
-      items: group.items.filter((item) => (roleKey ? canAccessModule(roleKey, item.moduleKey) : true)),
+      items: group.items.filter((item) => (roleKey ? canAccessModule(roleKey, item.moduleKey) : false)),
     }))
     .filter((group) => group.items.length > 0);
 
-  const canSeeDashboardItem = roleKey ? canAccessModule(roleKey, dashboardItem.moduleKey) : true;
+  const canSeeDashboardItem = roleKey ? canAccessModule(roleKey, dashboardItem.moduleKey) : false;
 
   return (
     <aside

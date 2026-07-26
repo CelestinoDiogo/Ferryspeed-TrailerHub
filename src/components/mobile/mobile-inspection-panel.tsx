@@ -1,8 +1,11 @@
 "use client";
 
+import Image from "next/image";
 import { useEffect, useMemo, useState } from "react";
 import { Camera, Upload } from "lucide-react";
 import type { TrailerActivityRow } from "@/lib/trailer-activity";
+
+const MAX_PHOTO_SIZE = 10 * 1024 * 1024;
 
 export type MobileInspectionTrailer = {
   vesselTrailerId: string;
@@ -76,23 +79,19 @@ export function MobileInspectionPanel({
   const [uploadMessage, setUploadMessage] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState(false);
-
-  useEffect(() => {
-    if (!open) {
-      setUploadMessage(null);
-      setUploadError(null);
-      setSelectedPhoto(null);
-      setSelectedPreviewUrl(null);
-    }
-  }, [open]);
+  const [uploadedPhotos, setUploadedPhotos] = useState<Array<{ id: string; previewUrl: string; label: string }>>([]);
 
   useEffect(() => {
     return () => {
       if (selectedPreviewUrl) {
         URL.revokeObjectURL(selectedPreviewUrl);
       }
+
+      uploadedPhotos.forEach((photo) => {
+        URL.revokeObjectURL(photo.previewUrl);
+      });
     };
-  }, [selectedPreviewUrl]);
+  }, [selectedPreviewUrl, uploadedPhotos]);
 
   const inspectionStateLabel = useMemo(() => {
     if (!trailer) {
@@ -117,6 +116,38 @@ export function MobileInspectionPanel({
   const expectedUnit = trailer.expectedTemperatureUnit?.trim().toUpperCase() || "C";
   const frontRequired = trailer.expectedFrontTemperature !== null;
   const rearRequired = trailer.expectedRearTemperature !== null;
+  const missingCompletionRequirements = [
+    frontRequired && !progress.frontTemperature.trim() ? `Front temperature (${expectedUnit}) is required.` : null,
+    rearRequired && !progress.rearTemperature.trim() ? `Rear temperature (${expectedUnit}) is required.` : null,
+    progress.damage === "yes" && !progress.damageDescription.trim() ? "Damage description is required when damage is marked as yes." : null,
+  ].filter((item): item is string => Boolean(item));
+
+  const handleSelectPhoto = (file: File | null) => {
+    if (!file) {
+      return;
+    }
+
+    if (!file.type.toLowerCase().startsWith("image/")) {
+      setUploadError(`Only image files can be uploaded. Rejected ${file.name}.`);
+      setUploadMessage(null);
+      return;
+    }
+
+    if (file.size > MAX_PHOTO_SIZE) {
+      setUploadError(`Photo size must be 10 MB or less. Rejected ${file.name}.`);
+      setUploadMessage(null);
+      return;
+    }
+
+    if (selectedPreviewUrl) {
+      URL.revokeObjectURL(selectedPreviewUrl);
+    }
+
+    setSelectedPhoto(file);
+    setSelectedPreviewUrl(URL.createObjectURL(file));
+    setUploadError(null);
+    setUploadMessage(null);
+  };
 
   return (
     <div className="fixed inset-0 z-[95] bg-slate-950/70 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label="Inspection panel">
@@ -256,20 +287,9 @@ export function MobileInspectionPanel({
                 accept="image/*"
                 capture="environment"
                 className="hidden"
+                disabled={isUploading}
                 onChange={(event) => {
-                  const file = event.target.files?.[0] ?? null;
-                  if (!file) {
-                    return;
-                  }
-
-                  if (selectedPreviewUrl) {
-                    URL.revokeObjectURL(selectedPreviewUrl);
-                  }
-
-                  setSelectedPhoto(file);
-                  setSelectedPreviewUrl(URL.createObjectURL(file));
-                  setUploadError(null);
-                  setUploadMessage(null);
+                  handleSelectPhoto(event.target.files?.[0] ?? null);
                   event.target.value = "";
                 }}
               />
@@ -282,20 +302,9 @@ export function MobileInspectionPanel({
                 type="file"
                 accept="image/*"
                 className="hidden"
+                disabled={isUploading}
                 onChange={(event) => {
-                  const file = event.target.files?.[0] ?? null;
-                  if (!file) {
-                    return;
-                  }
-
-                  if (selectedPreviewUrl) {
-                    URL.revokeObjectURL(selectedPreviewUrl);
-                  }
-
-                  setSelectedPhoto(file);
-                  setSelectedPreviewUrl(URL.createObjectURL(file));
-                  setUploadError(null);
-                  setUploadMessage(null);
+                  handleSelectPhoto(event.target.files?.[0] ?? null);
                   event.target.value = "";
                 }}
               />
@@ -303,7 +312,27 @@ export function MobileInspectionPanel({
           </div>
 
           {selectedPreviewUrl ? (
-            <img src={selectedPreviewUrl} alt="Selected inspection preview" className="h-28 w-full rounded-xl border border-slate-200 object-cover" />
+            <div className="space-y-2">
+              <div className="relative h-28 w-full overflow-hidden rounded-xl border border-slate-200">
+                <Image src={selectedPreviewUrl} alt="Selected inspection preview" fill unoptimized className="object-cover" />
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  if (selectedPreviewUrl) {
+                    URL.revokeObjectURL(selectedPreviewUrl);
+                  }
+
+                  setSelectedPhoto(null);
+                  setSelectedPreviewUrl(null);
+                  setUploadError(null);
+                  setUploadMessage("Photo selection removed.");
+                }}
+                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700"
+              >
+                Remove selected photo
+              </button>
+            </div>
           ) : null}
 
           <button
@@ -325,11 +354,19 @@ export function MobileInspectionPanel({
                   description: uploadDescription.trim() || null,
                 });
 
+                if (selectedPreviewUrl) {
+                  setUploadedPhotos((current) => [
+                    {
+                      id: `${Date.now()}`,
+                      previewUrl: selectedPreviewUrl,
+                      label: uploadCategory,
+                    },
+                    ...current,
+                  ].slice(0, 4));
+                }
+
                 setUploadMessage("Photo uploaded.");
                 setSelectedPhoto(null);
-                if (selectedPreviewUrl) {
-                  URL.revokeObjectURL(selectedPreviewUrl);
-                }
                 setSelectedPreviewUrl(null);
               } catch (error) {
                 setUploadError(error instanceof Error ? error.message : "Unable to upload photo.");
@@ -341,6 +378,22 @@ export function MobileInspectionPanel({
           >
             {isUploading ? "Uploading..." : "Upload photo"}
           </button>
+
+          {uploadedPhotos.length > 0 ? (
+            <div>
+              <p className="text-xs font-semibold text-slate-700">Uploaded in this session</p>
+              <div className="mt-2 grid grid-cols-4 gap-2">
+                {uploadedPhotos.map((photo) => (
+                  <div key={photo.id} className="space-y-1">
+                    <div className="relative h-16 w-full overflow-hidden rounded-lg border border-slate-200">
+                      <Image src={photo.previewUrl} alt={`${photo.label} uploaded preview`} fill unoptimized className="object-cover" />
+                    </div>
+                    <p className="text-[10px] text-slate-500">{photo.label}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
 
           {uploadMessage ? <p className="text-xs text-emerald-700">{uploadMessage}</p> : null}
           {uploadError ? <p className="text-xs text-rose-700">{uploadError}</p> : null}
@@ -362,6 +415,17 @@ export function MobileInspectionPanel({
           </div>
         </section>
 
+        {missingCompletionRequirements.length > 0 ? (
+          <section className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+            <p className="font-semibold uppercase tracking-[0.15em]">Completion checklist</p>
+            <div className="mt-2 space-y-1">
+              {missingCompletionRequirements.map((item) => (
+                <p key={item}>{item}</p>
+              ))}
+            </div>
+          </section>
+        ) : null}
+
         <div className="mt-4 grid grid-cols-3 gap-2 pb-3">
           <button
             type="button"
@@ -382,7 +446,7 @@ export function MobileInspectionPanel({
           <button
             type="button"
             onClick={onCompleteInspection}
-            disabled={isSubmitting}
+            disabled={isSubmitting || missingCompletionRequirements.length > 0}
             className="rounded-xl bg-slate-950 px-2 py-3 text-xs font-semibold text-white disabled:bg-slate-400"
           >
             Complete

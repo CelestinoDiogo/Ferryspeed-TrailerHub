@@ -97,6 +97,7 @@ export type MobileActionQueueItem = {
   id: string;
   actionType: MobileActionType;
   payload: MobileActionRequest["payload"];
+  dedupeKey: string;
   trailerNumber?: string | null;
   createdAt: string;
   operator: string;
@@ -186,6 +187,13 @@ export const coerceQueueItem = (value: unknown): MobileActionQueueItem | null =>
       id,
       actionType: payloadResult.data.actionType,
       payload: payloadResult.data.payload,
+      dedupeKey:
+        toStringOrNull(row.dedupeKey) ??
+        getMobileActionDedupeKey({
+          actionType: payloadResult.data.actionType,
+          payload: payloadResult.data.payload,
+          trailerNumber: toStringOrNull(row.trailerNumber),
+        }),
       trailerNumber: toStringOrNull(row.trailerNumber),
       createdAt: toIsoString(row.createdAt, nowIso),
       operator: toStringOrNull(row.operator) ?? "Unknown Operator",
@@ -235,6 +243,13 @@ export const coerceQueueItem = (value: unknown): MobileActionQueueItem | null =>
     payload: {
       trailerNumber: normalizedTrailerNumber || undefined,
     },
+    dedupeKey: getMobileActionDedupeKey({
+      actionType: "MARK_ARRIVED",
+      payload: {
+        trailerNumber: normalizedTrailerNumber || undefined,
+      },
+      trailerNumber: normalizedTrailerNumber || null,
+    }),
     trailerNumber: normalizedTrailerNumber || null,
     createdAt: toIsoString(legacy.createdAt, nowIso),
     operator: "Unknown Operator",
@@ -268,6 +283,54 @@ export const getMobileActionLabel = (item: Pick<MobileActionQueueItem, "actionTy
   }
 };
 
+const normalizeDedupeValue = (value: unknown) => {
+  if (typeof value !== "string") {
+    return "";
+  }
+
+  return value.trim().toUpperCase();
+};
+
+export const getMobileActionDedupeKey = (input: {
+  actionType: MobileActionType;
+  payload: MobileActionRequest["payload"];
+  trailerNumber?: string | null;
+}) => {
+  switch (input.actionType) {
+    case "MARK_ARRIVED": {
+      const payload = input.payload as Extract<MobileActionRequest, { actionType: "MARK_ARRIVED" }>["payload"];
+      return [
+        input.actionType,
+        normalizeDedupeValue(payload.vesselTrailerId),
+        normalizeDedupeValue(payload.operationId),
+        normalizeDedupeValue(payload.trailerNumber ?? input.trailerNumber),
+      ].join("::");
+    }
+    case "MOVE_COMPOUND_POSITION": {
+      const payload = input.payload as Extract<MobileActionRequest, { actionType: "MOVE_COMPOUND_POSITION" }>["payload"];
+      return [input.actionType, normalizeDedupeValue(payload.trailerId), normalizeDedupeValue(payload.targetPosition)].join("::");
+    }
+    case "CHANGE_LOAD_STATUS": {
+      const payload = input.payload as Extract<MobileActionRequest, { actionType: "CHANGE_LOAD_STATUS" }>["payload"];
+      return [input.actionType, normalizeDedupeValue(payload.trailerId), normalizeDedupeValue(payload.nextLoadStatus)].join("::");
+    }
+    case "START_INSPECTION": {
+      const payload = input.payload as Extract<MobileActionRequest, { actionType: "START_INSPECTION" }>["payload"];
+      return [input.actionType, normalizeDedupeValue(payload.vesselTrailerId)].join("::");
+    }
+    case "SAVE_INSPECTION_PROGRESS": {
+      const payload = input.payload as Extract<MobileActionRequest, { actionType: "SAVE_INSPECTION_PROGRESS" }>["payload"];
+      return [input.actionType, normalizeDedupeValue(payload.vesselTrailerId)].join("::");
+    }
+    case "COMPLETE_INSPECTION": {
+      const payload = input.payload as Extract<MobileActionRequest, { actionType: "COMPLETE_INSPECTION" }>["payload"];
+      return [input.actionType, normalizeDedupeValue(payload.vesselTrailerId)].join("::");
+    }
+    default:
+      return [input.actionType, normalizeDedupeValue(input.trailerNumber)].join("::");
+  }
+};
+
 export const createMobileActionQueueItem = (input: {
   actionType: MobileActionType;
   payload: MobileActionRequest["payload"];
@@ -280,6 +343,7 @@ export const createMobileActionQueueItem = (input: {
     id: globalThis.crypto?.randomUUID?.() ?? `mobile-action-${nowIso}-${Math.random().toString(16).slice(2)}`,
     actionType: input.actionType,
     payload: input.payload,
+    dedupeKey: getMobileActionDedupeKey(input),
     trailerNumber: input.trailerNumber ?? null,
     createdAt: nowIso,
     operator: input.operator,
