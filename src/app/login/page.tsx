@@ -1,19 +1,37 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useEffect, useMemo, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
+import { isStandaloneDisplay, resolvePostLoginPath } from "@/lib/pwa/install-state";
 
 const INVALID_CREDENTIALS_MESSAGE = "Invalid email or password.";
 const UNEXPECTED_SIGN_IN_MESSAGE = "Unable to sign in. Please try again.";
 
-export default function LoginPage() {
+function LoginContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isCheckingSession, setIsCheckingSession] = useState(true);
+  const returnTo = useMemo(() => searchParams.get("returnTo"), [searchParams]);
+
+  const postLoginPath = useMemo(
+    () =>
+      resolvePostLoginPath({
+        returnTo,
+        standalone:
+          typeof window !== "undefined"
+            ? isStandaloneDisplay({
+                matchMediaStandalone: window.matchMedia("(display-mode: standalone)").matches,
+                navigatorStandalone: (window.navigator as Navigator & { standalone?: boolean }).standalone,
+              })
+            : false,
+      }),
+    [returnTo],
+  );
 
   const canSubmit = useMemo(() => {
     return !isCheckingSession && !isSubmitting && email.trim().length > 0 && password.length > 0;
@@ -34,7 +52,7 @@ export default function LoginPage() {
       }
 
       if (data.session?.access_token) {
-        router.replace("/dashboard");
+        router.replace(postLoginPath);
         router.refresh();
         return;
       }
@@ -50,7 +68,7 @@ export default function LoginPage() {
       }
 
       if (event === "SIGNED_IN" && session?.access_token) {
-        router.replace("/dashboard");
+        router.replace(postLoginPath);
         router.refresh();
       }
     });
@@ -61,7 +79,7 @@ export default function LoginPage() {
       active = false;
       subscription.unsubscribe();
     };
-  }, [router]);
+  }, [postLoginPath, router]);
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -95,7 +113,7 @@ export default function LoginPage() {
         return;
       }
 
-      router.replace("/dashboard");
+      router.replace(postLoginPath);
       router.refresh();
     } catch {
       setError(UNEXPECTED_SIGN_IN_MESSAGE);
@@ -160,5 +178,13 @@ export default function LoginPage() {
         </form>
       </div>
     </main>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense fallback={<main className="min-h-screen bg-slate-100 px-4 py-10 text-slate-900 sm:px-6 lg:px-8" />}>
+      <LoginContent />
+    </Suspense>
   );
 }

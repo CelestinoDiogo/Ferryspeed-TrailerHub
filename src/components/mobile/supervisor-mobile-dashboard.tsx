@@ -25,6 +25,8 @@ import {
 } from "lucide-react";
 import { OperationsAssistantDrawer } from "@/components/ai/operations-assistant-drawer";
 import { PermissionGuard } from "@/components/auth/permission-guard";
+import { usePwa } from "@/components/pwa/pwa-provider";
+import { PwaStatusCard } from "@/components/pwa/pwa-status-card";
 import {
   MobileInspectionPanel,
   type MobileInspectionProgress,
@@ -286,6 +288,7 @@ export function SupervisorMobileDashboard() {
   const [inspectionActivityRows, setInspectionActivityRows] = useState<TrailerActivityRow[]>([]);
   const [inspectionActivityLoading, setInspectionActivityLoading] = useState(false);
   const [isExecutingInspectionAction, setIsExecutingInspectionAction] = useState(false);
+  const { showInstallAction, showIosInstallGuide, isInstalled, updateAvailable, promptInstall, dismissInstall, applyUpdate, setOperationallyBusy } = usePwa();
   const queueItemsRef = useRef(queueItems);
   const isSyncingQueueRef = useRef(false);
   const scrollByTabRef = useRef<Partial<Record<MobileTabKey, number>>>(initialUiState.scrollByTab ?? {});
@@ -293,6 +296,10 @@ export function SupervisorMobileDashboard() {
   useEffect(() => {
     queueItemsRef.current = queueItems;
   }, [queueItems]);
+
+  useEffect(() => {
+    setOperationallyBusy(isSyncingQueue || isExecutingInspectionAction || queueItems.some((item) => item.state === "pending" || item.state === "syncing"));
+  }, [isExecutingInspectionAction, isSyncingQueue, queueItems, setOperationallyBusy]);
 
   useEffect(() => {
     saveMobileUiState({
@@ -1452,7 +1459,7 @@ export function SupervisorMobileDashboard() {
       ) : null}
 
       {isSupervisorMobileRole ? (
-        <main className="min-h-screen bg-[radial-gradient(circle_at_top,_rgba(6,182,212,0.18),_transparent_35%),linear-gradient(180deg,_#07111f_0%,_#f5f7fb_18%,_#eef6ff_100%)] px-3 pb-28 pt-3 text-slate-900 md:hidden">
+        <main className="mobile-safe-shell min-h-screen bg-[radial-gradient(circle_at_top,_rgba(6,182,212,0.18),_transparent_35%),linear-gradient(180deg,_#07111f_0%,_#f5f7fb_18%,_#eef6ff_100%)] text-slate-900 md:hidden">
           <div className="mx-auto flex max-w-lg flex-col gap-4">
             <header className="overflow-hidden rounded-[1.75rem] border border-cyan-100/80 bg-slate-950 px-4 py-4 text-white shadow-[0_20px_60px_rgba(15,23,42,0.22)]">
               <div className="flex items-start justify-between gap-3">
@@ -1540,6 +1547,24 @@ export function SupervisorMobileDashboard() {
             {error ? <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</div> : null}
             {queueError ? <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">{queueError}</div> : null}
             {toastMessage ? <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">{toastMessage}</div> : null}
+            {updateAvailable ? (
+              <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="font-semibold">Update available</p>
+                    <p className="text-xs text-amber-800">Reload only when no action is pending or syncing.</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={applyUpdate}
+                    disabled={queueItems.some((item) => item.state === "pending" || item.state === "syncing") || isSyncingQueue || isExecutingInspectionAction}
+                    className="rounded-xl bg-amber-600 px-3 py-2 text-xs font-semibold text-white disabled:bg-amber-300"
+                  >
+                    Reload
+                  </button>
+                </div>
+              </div>
+            ) : null}
 
             {activeTab === "home" ? (
               <HomeTab
@@ -1647,8 +1672,16 @@ export function SupervisorMobileDashboard() {
                 failedCount={failedQueueCount}
                 conflictCount={conflictQueueCount}
                 lastSuccessfulSyncAt={lastSuccessfulSyncAt}
+                showInstallAction={showInstallAction}
+                showIosInstallGuide={showIosInstallGuide}
+                isInstalled={isInstalled}
+                updateAvailable={updateAvailable}
+                canApplyUpdate={!queueItems.some((item) => item.state === "pending" || item.state === "syncing") && !isSyncingQueue && !isExecutingInspectionAction}
                 canAccessAi={canAccessAi}
                 onOpenAssistant={() => setAssistantOpen(true)}
+                onInstall={promptInstall}
+                onDismissInstall={dismissInstall}
+                onApplyUpdate={applyUpdate}
                 onClearResolved={() => {
                   setQueueItems((current) => current.filter((item) => item.state === "pending" || item.state === "syncing" || item.state === "failed" || item.state === "conflict"));
                   setSyncLog([]);
@@ -1667,7 +1700,7 @@ export function SupervisorMobileDashboard() {
               />
             ) : null}
 
-            <div className="fixed inset-x-3 bottom-3 z-20 mx-auto max-w-lg rounded-[1.4rem] border border-slate-200/80 bg-white/95 px-2 py-2 shadow-[0_12px_40px_rgba(15,23,42,0.16)] backdrop-blur">
+            <div className="mobile-safe-nav fixed z-20 mx-auto max-w-lg rounded-[1.4rem] border border-slate-200/80 bg-white/95 px-2 py-2 shadow-[0_12px_40px_rgba(15,23,42,0.16)] backdrop-blur">
               <div className="grid grid-cols-5 gap-1">
                 {tabConfig.map((tab) => {
                   const isActive = tab.key === activeTab;
@@ -1690,7 +1723,7 @@ export function SupervisorMobileDashboard() {
               <button
                 type="button"
                 onClick={() => setAssistantOpen(true)}
-                className="fixed right-4 top-16 inline-flex h-14 w-14 items-center justify-center rounded-full bg-cyan-600 text-white shadow-lg shadow-cyan-700/30"
+                className="mobile-safe-fab fixed inline-flex h-14 w-14 items-center justify-center rounded-full bg-cyan-600 text-white shadow-lg shadow-cyan-700/30"
                 aria-label="Open AI Assistant"
               >
                 <Bot className="h-6 w-6" />
@@ -2181,17 +2214,38 @@ type MoreTabProps = {
   failedCount: number;
   conflictCount: number;
   lastSuccessfulSyncAt: string | null;
+  showInstallAction: boolean;
+  showIosInstallGuide: boolean;
+  isInstalled: boolean;
+  updateAvailable: boolean;
+  canApplyUpdate: boolean;
   canAccessAi: boolean;
   onOpenAssistant: () => void;
+  onInstall: () => Promise<void>;
+  onDismissInstall: () => void;
+  onApplyUpdate: () => void;
   onClearResolved: () => void;
   onRetrySync: () => void;
   onCancelPending: (itemId: string) => void;
   onQueueActionFromVoice: (input: { intent: VoiceActionIntentName; entities: VoiceEntities; commandText: string }) => Promise<{ message: string }>;
 };
 
-function MoreTab({ roleKey, roleLabel, queueItems, syncLog, pendingCount, syncingCount, failedCount, conflictCount, lastSuccessfulSyncAt, canAccessAi, onOpenAssistant, onClearResolved, onRetrySync, onCancelPending, onQueueActionFromVoice }: MoreTabProps) {
+function MoreTab({ roleKey, roleLabel, queueItems, syncLog, pendingCount, syncingCount, failedCount, conflictCount, lastSuccessfulSyncAt, showInstallAction, showIosInstallGuide, isInstalled, updateAvailable, canApplyUpdate, canAccessAi, onOpenAssistant, onInstall, onDismissInstall, onApplyUpdate, onClearResolved, onRetrySync, onCancelPending, onQueueActionFromVoice }: MoreTabProps) {
   return (
     <section className="space-y-3 pb-24">
+      <PwaStatusCard
+        showInstallAction={showInstallAction}
+        showIosInstallGuide={showIosInstallGuide}
+        isInstalled={isInstalled}
+        updateAvailable={updateAvailable}
+        canApplyUpdate={canApplyUpdate}
+        onInstall={() => {
+          void onInstall();
+        }}
+        onDismissInstall={onDismissInstall}
+        onApplyUpdate={onApplyUpdate}
+      />
+
       <CardShell title="Voice operations" subtitle={`Current role is ${roleLabel}`}>
         <VoiceOperationsPanel roleKey={roleKey} onQueueAction={onQueueActionFromVoice} />
       </CardShell>

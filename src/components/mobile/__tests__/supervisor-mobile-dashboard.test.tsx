@@ -24,6 +24,22 @@ const { getTrailerActivityMock, fetchMock, supabaseMock } = vi.hoisted(() => ({
   },
 }));
 
+vi.mock("@/components/pwa/pwa-provider", () => ({
+  usePwa: () => ({
+    showInstallAction: false,
+    showIosInstallGuide: false,
+    isInstalled: false,
+    updateAvailable: false,
+    canApplyUpdate: true,
+    dismissInstall: vi.fn(),
+    promptInstall: vi.fn(),
+    applyUpdate: vi.fn(),
+    setOperationallyBusy: vi.fn(),
+    installDismissed: false,
+    isInstallSupported: false,
+  }),
+}));
+
 class QueryMock {
   constructor(private readonly table: string) {}
 

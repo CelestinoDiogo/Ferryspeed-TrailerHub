@@ -1,10 +1,5 @@
-import { Suspense } from "react";
-import { TrailerDashboard } from "@/components/dashboard/trailer-dashboard";
+import { redirect } from "next/navigation";
 
 export default function Home() {
-  return (
-    <Suspense fallback={<div className="min-h-screen bg-slate-950 p-6 text-slate-200">Loading dashboard...</div>}>
-      <TrailerDashboard />
-    </Suspense>
-  );
+  redirect("/dashboard");
 }

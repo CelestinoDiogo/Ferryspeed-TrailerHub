@@ -1,6 +1,5 @@
 "use client";
 
-import Image from "next/image";
 import { Suspense, useState } from "react";
 import type { ReactNode } from "react";
 import { Sidebar } from "@/components/layout/sidebar";

@@ -40,7 +40,8 @@ export function DashboardAuthGuard({ children }: DashboardAuthGuardProps) {
     if (isDev) {
       console.info("[auth] redirecting to login", { pathname });
     }
-    router.replace("/login");
+    const returnTo = pathname?.startsWith("/") ? pathname : "/dashboard";
+    router.replace(`/login?returnTo=${encodeURIComponent(returnTo)}`);
   }, [pathname, router]);
 
   useEffect(() => {
@@ -136,7 +137,6 @@ export function DashboardAuthGuard({ children }: DashboardAuthGuardProps) {
       return;
     }
 
-    setIsChecking(false);
     redirectToLogin();
   }, [isLoadingCurrentUser, loadError, redirectToLogin]);
 
