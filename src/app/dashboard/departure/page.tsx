@@ -35,12 +35,13 @@ type DepartureTransitionSnapshot = {
   previousOperationalStatus: string | null;
 };
 
-type DepartureLoadFilter = "all" | "empty" | "loaded";
+type DepartureStatusFilter = string;
 type DepartureSort = "trailer_asc" | "trailer_desc" | "arrival_desc";
 
 const normalizeText = (value?: string | null) => value?.trim().toLowerCase() ?? "";
 const normalizeFilterValue = (value?: string | null) => value?.trim() ?? "";
 const isAllFilterValue = (value?: string | null) => normalizeText(value) === "all";
+const normalizeOperationalStatus = (value?: string | null) => normalizeText(value);
 
 const isMissingDepartureDate = (value?: string | null) => {
   if (value === null || value === undefined) {
@@ -79,11 +80,20 @@ const isEligibleForDeparture = (trailer: TrailerRecord) => {
     return false;
   }
 
-  if (operationalStatus && operationalStatus !== "in compound" && operationalStatus !== "waiting position") {
-    return false;
+  return true;
+};
+
+const formatOperationalStatus = (value?: string | null) => {
+  const normalized = normalizeOperationalStatus(value);
+  if (!normalized) {
+    return "Status not set";
   }
 
-  return true;
+  return normalized
+    .split(" ")
+    .filter(Boolean)
+    .map((token) => token.charAt(0).toUpperCase() + token.slice(1))
+    .join(" ");
 };
 
 export default function DeparturePage() {
@@ -97,7 +107,7 @@ export default function DeparturePage() {
   const [panelTrailerId, setPanelTrailerId] = useState<string | null>(null);
   const [lastDepartureSnapshot, setLastDepartureSnapshot] = useState<DepartureTransitionSnapshot | null>(null);
   const [search, setSearch] = useState("");
-  const [loadFilter, setLoadFilter] = useState<DepartureLoadFilter>("all");
+  const [statusFilter, setStatusFilter] = useState<DepartureStatusFilter>("all");
   const [customerFilter, setCustomerFilter] = useState<string>("all");
   const [prefixFilter, setPrefixFilter] = useState<string>("all");
   const [sortBy, setSortBy] = useState<DepartureSort>("trailer_asc");
@@ -115,7 +125,6 @@ export default function DeparturePage() {
         .from("trailers")
         .select("id, trailer_number, trailer_type, load_status, load_description, customer, consignee, container_number, compound_position, arrival_date, departure_date, departure_time, operational_status, is_local")
         .is("departure_date", null)
-        .in("operational_status", ["In Compound", "Waiting Position"])
         .order("arrival_date", { ascending: false });
 
       if (supabaseError) {
@@ -195,10 +204,8 @@ export default function DeparturePage() {
     setRequestedTrailerNumber(params.get("trailer"));
     setSearch(params.get("search") ?? "");
 
-    const nextLoad = (params.get("load") ?? "all").toLowerCase();
-    if (nextLoad === "all" || nextLoad === "empty" || nextLoad === "loaded") {
-      setLoadFilter(nextLoad);
-    }
+    const nextStatus = normalizeFilterValue(params.get("status") ?? params.get("load") ?? "all");
+    setStatusFilter(!nextStatus || isAllFilterValue(nextStatus) ? "all" : normalizeOperationalStatus(nextStatus));
 
     const nextSort = (params.get("sort") ?? "trailer_asc").toLowerCase();
     if (nextSort === "trailer_asc" || nextSort === "trailer_desc" || nextSort === "arrival_desc") {
@@ -245,6 +252,27 @@ export default function DeparturePage() {
     return Array.from(prefixes).sort((left, right) => left.localeCompare(right, undefined, { sensitivity: "base" }));
   }, [trailers]);
 
+  const statusOptions = useMemo(() => {
+    const statuses = new Map<string, string>();
+
+    trailers.forEach((trailer) => {
+      const normalized = normalizeOperationalStatus(trailer.operational_status);
+      if (!normalized) {
+        return;
+      }
+
+      if (!statuses.has(normalized)) {
+        statuses.set(normalized, formatOperationalStatus(trailer.operational_status));
+      }
+    });
+
+    const sorted = Array.from(statuses.entries())
+      .sort((left, right) => left[1].localeCompare(right[1], undefined, { sensitivity: "base" }))
+      .map(([value, label]) => ({ value, label }));
+
+    return [{ value: "all", label: "All" }, ...sorted];
+  }, [trailers]);
+
   const filteredTrailers = useMemo(() => {
     const term = search.trim().toLowerCase();
 
@@ -260,7 +288,7 @@ export default function DeparturePage() {
         .join(" ")
         .toLowerCase();
 
-      const normalizedLoad = normalizeText(trailer.load_status);
+      const statusFilterValue = normalizeOperationalStatus(trailer.operational_status);
       const normalizedCustomer = normalizeText(trailer.customer);
       const normalizedCustomerFilter = normalizeText(customerFilter);
       const trailerPrefix = normalizeTrailerPrefix(trailer.trailer_number);
@@ -270,11 +298,7 @@ export default function DeparturePage() {
         return false;
       }
 
-      if (loadFilter === "empty" && !normalizedLoad.includes("empty")) {
-        return false;
-      }
-
-      if (loadFilter === "loaded" && !normalizedLoad.includes("loaded")) {
+      if (!isAllFilterValue(statusFilter) && statusFilterValue !== normalizeOperationalStatus(statusFilter)) {
         return false;
       }
 
@@ -318,7 +342,7 @@ export default function DeparturePage() {
 
       return sortBy === "trailer_desc" ? -base : base;
     });
-  }, [customerFilter, loadFilter, prefixFilter, search, sortBy, trailers]);
+  }, [customerFilter, prefixFilter, search, sortBy, statusFilter, trailers]);
 
   const eligibleVisibleIds = useMemo(
     () => filteredTrailers.filter((trailer) => isEligibleForDeparture(trailer)).map((trailer) => trailer.id),
@@ -342,10 +366,12 @@ export default function DeparturePage() {
       params.delete("search");
     }
 
-    if (loadFilter === "all") {
+    if (isAllFilterValue(statusFilter)) {
+      params.delete("status");
       params.delete("load");
     } else {
-      params.set("load", loadFilter);
+      params.set("status", normalizeOperationalStatus(statusFilter));
+      params.delete("load");
     }
 
     if (isAllFilterValue(customerFilter)) {
@@ -372,7 +398,7 @@ export default function DeparturePage() {
     if (nextUrl !== currentUrl) {
       window.history.replaceState({}, "", nextUrl);
     }
-  }, [customerFilter, loadFilter, prefixFilter, search, sortBy]);
+  }, [customerFilter, prefixFilter, search, sortBy, statusFilter]);
 
   const toggleTrailerSelection = (trailerId: string) => {
     const trailer = filteredTrailers.find((row) => row.id === trailerId);
@@ -791,13 +817,9 @@ export default function DeparturePage() {
               prefixOptions={[{ value: "all", label: "All" }, ...prefixOptions.map((prefix) => ({ value: prefix, label: prefix }))]}
               prefixValue={prefixFilter}
               onPrefixChange={setPrefixFilter}
-              statusOptions={[
-                { value: "all", label: "All" },
-                { value: "empty", label: "Empty" },
-                { value: "loaded", label: "Loaded" },
-              ]}
-              statusValue={loadFilter}
-              onStatusChange={(value) => setLoadFilter(value as DepartureLoadFilter)}
+              statusOptions={statusOptions}
+              statusValue={statusFilter}
+              onStatusChange={(value) => setStatusFilter(isAllFilterValue(value) ? "all" : normalizeOperationalStatus(value))}
               sortOptions={[
                 { value: "trailer_asc", label: "Trailer A-Z" },
                 { value: "trailer_desc", label: "Trailer Z-A" },
@@ -871,6 +893,7 @@ export default function DeparturePage() {
               ) : (
                 filteredTrailers.map((trailer) => {
                   const isEligible = isEligibleForDeparture(trailer);
+                  const statusLabel = formatOperationalStatus(trailer.operational_status);
 
                   return (
                     <article
@@ -898,8 +921,8 @@ export default function DeparturePage() {
                       </div>
                       <div className="mt-2 flex flex-wrap gap-2 text-xs text-slate-400">
                         <span>Container: {trailer.container_number ?? "—"}</span>
-                        <span>Position: {trailer.compound_position ?? "—"}</span>
-                        <span>Status: {trailer.operational_status ?? "Active"}</span>
+                        <span>Position: {trailer.compound_position?.trim() ? trailer.compound_position : "No position assigned"}</span>
+                        <span>Status: {statusLabel}</span>
                       </div>
 
                       <div className="mt-3 flex flex-wrap items-center gap-2">

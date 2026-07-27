@@ -703,7 +703,7 @@ function VesselInspectionPageContent() {
           trailer_id: trailerData.trailer_id ?? null,
           trailer_number: normalizedTrailerNumber,
           vessel_operation_id: operationData.id,
-          category: source === "camera" ? "boat_check_camera" : "boat_check_upload",
+          category: "Boat Check",
           storage_path: storagePath,
           file_name: safeFileName,
           description: inspectionNotes.trim() || null,

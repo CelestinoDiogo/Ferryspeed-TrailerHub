@@ -716,6 +716,12 @@ const queryUnresolvedAlerts = async (context: AssistantContext, gate: Permission
     .limit(limit + 10);
 
   if (error) {
+    console.error("[operational_alerts]", {
+      code: error?.code,
+      message: error?.message,
+      details: error?.details,
+      hint: error?.hint,
+    });
     throw error;
   }
 
