@@ -24,14 +24,6 @@ type TrailerRecord = {
   departure_time?: string | null;
   operational_status?: string | null;
   is_local?: boolean | null;
-  active?: boolean | null;
-  cancelled?: boolean | null;
-  canceled?: boolean | null;
-  is_cancelled?: boolean | null;
-  is_canceled?: boolean | null;
-  cancelled_at?: string | null;
-  canceled_at?: string | null;
-  status?: string | null;
 };
 
 type DepartureTransitionSnapshot = {
@@ -56,22 +48,6 @@ const isMissingDepartureDate = (value?: string | null) => {
   return value.trim().length === 0;
 };
 
-const isCancelledTrailer = (trailer: TrailerRecord) => {
-  if (trailer.cancelled === true || trailer.canceled === true || trailer.is_cancelled === true || trailer.is_canceled === true) {
-    return true;
-  }
-
-  if (Boolean(trailer.cancelled_at?.trim()) || Boolean(trailer.canceled_at?.trim())) {
-    return true;
-  }
-
-  const statusTokens = [trailer.operational_status, trailer.status]
-    .map((value) => normalizeText(value))
-    .filter(Boolean);
-
-  return statusTokens.some((status) => status === "cancelled" || status === "canceled" || status === "cancelado");
-};
-
 const normalizeTrailerPrefix = (value?: string | null) => {
   const trailer = value?.trim().toUpperCase() ?? "";
   if (!trailer) {
@@ -91,16 +67,16 @@ const isEligibleForDeparture = (trailer: TrailerRecord) => {
     return false;
   }
 
-  if (trailer.active === false) {
-    return false;
-  }
-
-  if (isCancelledTrailer(trailer)) {
+  if (trailer.is_local === true) {
     return false;
   }
 
   const operationalStatus = normalizeText(trailer.operational_status);
   if (operationalStatus === "departed") {
+    return false;
+  }
+
+  if (operationalStatus && operationalStatus !== "in compound" && operationalStatus !== "waiting position") {
     return false;
   }
 
@@ -134,7 +110,10 @@ export default function DeparturePage() {
     try {
       const { data, error: supabaseError } = await supabase
         .from("trailers")
-        .select("*")
+        .select("id, trailer_number, trailer_type, load_status, load_description, customer, consignee, container_number, compound_position, arrival_date, departure_date, departure_time, operational_status, is_local")
+        .is("departure_date", null)
+        .neq("is_local", true)
+        .in("operational_status", ["In Compound", "Waiting Position"])
         .order("arrival_date", { ascending: false });
 
       if (supabaseError) {
