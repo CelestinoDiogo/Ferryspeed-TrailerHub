@@ -63,6 +63,9 @@ const DAMAGE_SEVERITIES = ["Minor", "Moderate", "Severe"];
 
 const MAX_PHOTO_SIZE = 10 * 1024 * 1024;
 const PHOTO_SIGNED_URL_TTL_SECONDS = 60 * 60;
+const INSPECTION_PHOTO_BUCKET = "vessel-inspection-photos";
+const ACCEPTED_PHOTO_INPUT_ACCEPT = "image/jpeg,image/png,image/webp";
+const ACCEPTED_PHOTO_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 
 const normalizeReadingPoint = (value?: string | null) => (value ?? "").trim().toLowerCase();
 
@@ -110,6 +113,32 @@ const isOutOfConfiguredRange = (value: number | null, configuredRange?: string |
 const sanitizeFileName = (name: string) => name.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
 const buildSelectedPhotoId = (file: File) => `${file.name}:${file.size}:${file.lastModified}`;
 
+const normalizePhotoMimeType = (value?: string | null) => {
+  const normalized = (value ?? "").trim().toLowerCase();
+  if (normalized === "image/jpg") {
+    return "image/jpeg";
+  }
+  return normalized;
+};
+
+const isAcceptedPhotoMimeType = (file: File) => ACCEPTED_PHOTO_MIME_TYPES.has(normalizePhotoMimeType(file.type));
+
+const buildUniquePhotoStoragePath = (operationId: string, trailerId: string, fileName: string) => {
+  const safeFileName = sanitizeFileName(fileName || "photo") || "photo";
+  const uniqueToken = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return `vessel-operations/${operationId}/${trailerId}/${Date.now()}-${uniqueToken}-${safeFileName}`;
+};
+
+const hasPhotoTrailerColumnCompatibilityError = (errorMessage: string) => {
+  const lower = errorMessage.toLowerCase();
+  return (
+    (lower.includes("vessel_trailer_id") && (lower.includes("column") || lower.includes("schema cache"))) ||
+    (lower.includes("vessel_operation_trailer_id") && lower.includes("null value"))
+  );
+};
+
 const isStorageConfigurationError = (errorMessage: string) => {
   const lower = errorMessage.toLowerCase();
   return lower.includes("bucket") || lower.includes("storage") || lower.includes("not found") || lower.includes("no such");
@@ -119,14 +148,40 @@ const asSupabaseErrorLike = (error: unknown) => error as SupabaseErrorLike;
 
 const resolveInspectionPhotoPreviewUrl = async (storagePath: string) => {
   const signedResult = await supabase.storage
-    .from("vessel-inspection-photos")
+    .from(INSPECTION_PHOTO_BUCKET)
     .createSignedUrl(storagePath, PHOTO_SIGNED_URL_TTL_SECONDS);
 
   return (
     signedResult.data?.signedUrl ??
-    supabase.storage.from("vessel-inspection-photos").getPublicUrl(storagePath).data.publicUrl ??
+    supabase.storage.from(INSPECTION_PHOTO_BUCKET).getPublicUrl(storagePath).data.publicUrl ??
     null
   );
+};
+
+const loadInspectionPhotoRows = async (targetVesselTrailerId: string) => {
+  const baseSelect = "id, trailer_id, trailer_number, vessel_operation_id, category, storage_path, file_name, description, uploaded_at, uploaded_by";
+  const runQuery = (columnName: "vessel_trailer_id" | "vessel_operation_trailer_id") => {
+    const baseQuery = supabase
+      .from("vessel_inspection_photos")
+      .select(baseSelect)
+      .order("uploaded_at", { ascending: false });
+
+    return (baseQuery as unknown as { eq: (column: string, value: string) => typeof baseQuery }).eq(
+      columnName,
+      targetVesselTrailerId,
+    );
+  };
+
+  const primaryResult = await runQuery("vessel_trailer_id");
+  if (!primaryResult.error) {
+    return primaryResult;
+  }
+
+  if (!hasPhotoTrailerColumnCompatibilityError(primaryResult.error.message || "")) {
+    return primaryResult;
+  }
+
+  return runQuery("vessel_operation_trailer_id");
 };
 
 function VesselInspectionPageContent() {
@@ -249,8 +304,8 @@ function VesselInspectionPageContent() {
       const additions: SelectedInspectionPhoto[] = [];
 
       for (const file of nextFiles) {
-        if (!file.type.toLowerCase().startsWith("image/")) {
-          rejectionMessages.push(`Only image files can be uploaded. Rejected ${file.name}.`);
+        if (!isAcceptedPhotoMimeType(file)) {
+          rejectionMessages.push(`Only JPEG, PNG, or WebP files can be uploaded. Rejected ${file.name}.`);
           continue;
         }
 
@@ -314,11 +369,7 @@ function VesselInspectionPageContent() {
           .order("recorded_at", { ascending: false })
           .limit(1)
           .maybeSingle(),
-        supabase
-          .from("vessel_inspection_photos")
-          .select("id, vessel_trailer_id, category, storage_path, file_name, description, uploaded_at, uploaded_by")
-          .eq("vessel_trailer_id", vesselTrailerId)
-          .order("uploaded_at", { ascending: false }),
+        loadInspectionPhotoRows(vesselTrailerId),
         supabase
           .from("vessel_operation_trailers")
           .select("id, trailer_number, created_at")
@@ -595,8 +646,8 @@ function VesselInspectionPageContent() {
       for (const selectedPhoto of selectedPhotos) {
         const { file, source } = selectedPhoto;
 
-        if (!file.type.toLowerCase().startsWith("image/")) {
-          failedFiles.push(`${file.name} (Only image files can be uploaded.)`);
+        if (!isAcceptedPhotoMimeType(file)) {
+          failedFiles.push(`${file.name} (Only JPEG, PNG, or WebP files can be uploaded.)`);
           continue;
         }
 
@@ -605,8 +656,8 @@ function VesselInspectionPageContent() {
           continue;
         }
 
-        const safeFileName = sanitizeFileName(file.name || "photo");
-        const storagePath = `vessel-operations/${operationData.id}/${trailerData.id}/${Date.now()}-${safeFileName}`;
+        const safeFileName = sanitizeFileName(file.name || "photo") || "photo";
+        const storagePath = buildUniquePhotoStoragePath(operationData.id, trailerData.id, safeFileName);
 
         console.log("Before Supabase upload:", {
           fileName: file.name,
@@ -617,11 +668,11 @@ function VesselInspectionPageContent() {
         });
 
         const { error: uploadError } = await supabase.storage
-          .from("vessel-inspection-photos")
+          .from(INSPECTION_PHOTO_BUCKET)
           .upload(storagePath, file, {
             cacheControl: "3600",
             upsert: false,
-            contentType: file.type,
+            contentType: normalizePhotoMimeType(file.type),
           });
 
         console.log("After Supabase upload:", {
@@ -648,22 +699,36 @@ function VesselInspectionPageContent() {
           vesselOperationId: operationData.id,
         });
 
-        const { data: photoData, error: photoInsertError } = await supabase
-          .from("vessel_inspection_photos")
-          .insert({
-            vessel_trailer_id: trailerData.id,
-            trailer_id: trailerData.trailer_id ?? null,
-            trailer_number: normalizedTrailerNumber,
-            vessel_operation_id: operationData.id,
-            category: source === "camera" ? "boat_check_camera" : "boat_check_upload",
-            storage_path: storagePath,
-            file_name: safeFileName,
-            description: inspectionNotes.trim() || null,
-            uploaded_at: nowIso,
-            uploaded_by: uploadedBy ?? "TrailerHub User",
-          })
-          .select("id, vessel_trailer_id, trailer_id, trailer_number, vessel_operation_id, category, storage_path, file_name, description, uploaded_at, uploaded_by")
-          .single();
+        const basePhotoPayload = {
+          trailer_id: trailerData.trailer_id ?? null,
+          trailer_number: normalizedTrailerNumber,
+          vessel_operation_id: operationData.id,
+          category: source === "camera" ? "boat_check_camera" : "boat_check_upload",
+          storage_path: storagePath,
+          file_name: safeFileName,
+          description: inspectionNotes.trim() || null,
+          uploaded_at: nowIso,
+          uploaded_by: uploadedBy ?? "TrailerHub User",
+        };
+
+        const insertWithColumn = async (columnName: "vessel_trailer_id" | "vessel_operation_trailer_id") => {
+          return supabase
+            .from("vessel_inspection_photos")
+            .insert({
+              ...basePhotoPayload,
+              [columnName]: trailerData.id,
+            })
+            .select("id, trailer_id, trailer_number, vessel_operation_id, category, storage_path, file_name, description, uploaded_at, uploaded_by")
+            .single();
+        };
+
+        let { data: photoData, error: photoInsertError } = await insertWithColumn("vessel_trailer_id");
+
+        if (photoInsertError && hasPhotoTrailerColumnCompatibilityError(photoInsertError.message || "")) {
+          const retryResult = await insertWithColumn("vessel_operation_trailer_id");
+          photoData = retryResult.data;
+          photoInsertError = retryResult.error;
+        }
 
         console.log("After database insert:", {
           fileName: file.name,
@@ -673,7 +738,7 @@ function VesselInspectionPageContent() {
         });
 
         if (photoInsertError || !photoData) {
-          const { error: cleanupError } = await supabase.storage.from("vessel-inspection-photos").remove([storagePath]);
+          const { error: cleanupError } = await supabase.storage.from(INSPECTION_PHOTO_BUCKET).remove([storagePath]);
           if (cleanupError) {
             console.error("Unable to clean up orphaned inspection photo:", cleanupError);
           }
@@ -739,8 +804,6 @@ function VesselInspectionPageContent() {
       const {
         data: { session },
       } = await supabase.auth.getSession();
-
-      console.log("Photo upload session:", session);
 
       if (!session) {
         const message = "No authenticated Supabase session. Upload policy requires authenticated access.";
@@ -1174,7 +1237,7 @@ function VesselInspectionPageContent() {
               Take Photo
               <input
                 type="file"
-                accept="image/*"
+                accept={ACCEPTED_PHOTO_INPUT_ACCEPT}
                 capture="environment"
                 disabled={isUploadingPhotos || isReadOnly}
                 className="hidden"
@@ -1190,7 +1253,7 @@ function VesselInspectionPageContent() {
               Upload Photo
               <input
                 type="file"
-                accept="image/*"
+                accept={ACCEPTED_PHOTO_INPUT_ACCEPT}
                 multiple
                 disabled={isUploadingPhotos || isReadOnly}
                 className="hidden"

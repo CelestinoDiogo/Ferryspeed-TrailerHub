@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { OperationalActionBar } from "@/components/operations/operational-action-bar";
 import { TrailerOperationsPanel } from "@/components/operations/trailer-operations-panel";
 import { SuccessToast } from "@/components/common/success-toast";
@@ -24,6 +24,14 @@ type TrailerRecord = {
   departure_time?: string | null;
   operational_status?: string | null;
   is_local?: boolean | null;
+  active?: boolean | null;
+  cancelled?: boolean | null;
+  canceled?: boolean | null;
+  is_cancelled?: boolean | null;
+  is_canceled?: boolean | null;
+  cancelled_at?: string | null;
+  canceled_at?: string | null;
+  status?: string | null;
 };
 
 type DepartureTransitionSnapshot = {
@@ -40,6 +48,30 @@ type DepartureSort = "trailer_asc" | "trailer_desc" | "arrival_desc";
 
 const normalizeText = (value?: string | null) => value?.trim().toLowerCase() ?? "";
 
+const isMissingDepartureDate = (value?: string | null) => {
+  if (value === null || value === undefined) {
+    return true;
+  }
+
+  return value.trim().length === 0;
+};
+
+const isCancelledTrailer = (trailer: TrailerRecord) => {
+  if (trailer.cancelled === true || trailer.canceled === true || trailer.is_cancelled === true || trailer.is_canceled === true) {
+    return true;
+  }
+
+  if (Boolean(trailer.cancelled_at?.trim()) || Boolean(trailer.canceled_at?.trim())) {
+    return true;
+  }
+
+  const statusTokens = [trailer.operational_status, trailer.status]
+    .map((value) => normalizeText(value))
+    .filter(Boolean);
+
+  return statusTokens.some((status) => status === "cancelled" || status === "canceled" || status === "cancelado");
+};
+
 const normalizeTrailerPrefix = (value?: string | null) => {
   const trailer = value?.trim().toUpperCase() ?? "";
   if (!trailer) {
@@ -51,7 +83,19 @@ const normalizeTrailerPrefix = (value?: string | null) => {
 };
 
 const isEligibleForDeparture = (trailer: TrailerRecord) => {
-  if (trailer.departure_date) {
+  if (!trailer.trailer_number?.trim()) {
+    return false;
+  }
+
+  if (!isMissingDepartureDate(trailer.departure_date)) {
+    return false;
+  }
+
+  if (trailer.active === false) {
+    return false;
+  }
+
+  if (isCancelledTrailer(trailer)) {
     return false;
   }
 
@@ -82,6 +126,82 @@ export default function DeparturePage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+
+  const loadDepartureTrailers = useCallback(async () => {
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      const { data, error: supabaseError } = await supabase
+        .from("trailers")
+        .select("*")
+        .order("arrival_date", { ascending: false });
+
+      if (supabaseError) {
+        throw supabaseError;
+      }
+
+      const loadedRaw = (data ?? []) as TrailerRecord[];
+      const deduped = new Map<string, TrailerRecord>();
+      for (const trailer of loadedRaw) {
+        if (!trailer.id) {
+          continue;
+        }
+
+        if (!isEligibleForDeparture(trailer)) {
+          continue;
+        }
+
+        if (!deduped.has(trailer.id)) {
+          deduped.set(trailer.id, trailer);
+        }
+      }
+
+      const loaded = Array.from(deduped.values());
+      setTrailers(loaded);
+
+      if (process.env.NODE_ENV !== "production") {
+        console.debug("[departure] trailers loaded", {
+          totalRows: loadedRaw.length,
+          eligibleRows: loaded.length,
+        });
+      }
+
+      setSelectedTrailerId((currentSelection) => {
+        if (currentSelection && loaded.some((row) => row.id === currentSelection)) {
+          return currentSelection;
+        }
+
+        const targetById = requestedTrailerId ? loaded.find((row) => row.id === requestedTrailerId) : null;
+        const targetByNumber = requestedTrailerNumber
+          ? loaded.find(
+              (row) => row.trailer_number?.trim().toUpperCase() === requestedTrailerNumber.trim().toUpperCase(),
+            )
+          : null;
+        const target = targetById ?? targetByNumber;
+        return target?.id ?? currentSelection ?? null;
+      });
+
+      const targetById = requestedTrailerId ? loaded.find((row) => row.id === requestedTrailerId) : null;
+      const targetByNumber = requestedTrailerNumber
+        ? loaded.find(
+            (row) => row.trailer_number?.trim().toUpperCase() === requestedTrailerNumber.trim().toUpperCase(),
+          )
+        : null;
+      const target = targetById ?? targetByNumber;
+      if (target) {
+        setSearch(target.trailer_number ?? "");
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unable to load departure candidates.";
+      if (process.env.NODE_ENV !== "production") {
+        console.error("[departure] load failed", { message });
+      }
+      setError(message);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [requestedTrailerId, requestedTrailerNumber]);
 
   useEffect(() => {
     if (!success) {
@@ -116,47 +236,8 @@ export default function DeparturePage() {
   }, []);
 
   useEffect(() => {
-    const loadActiveTrailers = async () => {
-      setIsLoading(true);
-      setError(null);
-
-      try {
-        const { data, error: supabaseError } = await supabase
-          .from("trailers")
-          .select("id, trailer_number, trailer_type, load_status, load_description, customer, consignee, container_number, compound_position, arrival_date")
-          .is("departure_date", null)
-          .order("arrival_date", { ascending: false });
-
-        if (supabaseError) {
-          throw supabaseError;
-        }
-
-        const loaded = (data ?? []) as TrailerRecord[];
-        setTrailers(loaded);
-
-        if (!selectedTrailerId && loaded.length > 0) {
-          const targetById = requestedTrailerId ? loaded.find((row) => row.id === requestedTrailerId) : null;
-          const targetByNumber = requestedTrailerNumber
-            ? loaded.find(
-                (row) => row.trailer_number?.trim().toUpperCase() === requestedTrailerNumber.trim().toUpperCase(),
-              )
-            : null;
-          const target = targetById ?? targetByNumber;
-          if (target) {
-            setSelectedTrailerId(target.id);
-            setSearch(target.trailer_number ?? "");
-          }
-        }
-      } catch (err) {
-        const message = err instanceof Error ? err.message : "Unable to load active trailers.";
-        setError(message);
-      } finally {
-        setIsLoading(false);
-      }
-    };
-
-    void loadActiveTrailers();
-  }, [requestedTrailerId, requestedTrailerNumber, selectedTrailerId]);
+    void loadDepartureTrailers();
+  }, [loadDepartureTrailers]);
 
   const customerOptions = useMemo(() => {
     const seen = new Map<string, string>();
@@ -577,6 +658,7 @@ export default function DeparturePage() {
     try {
       const result = await performDeparture(targetTrailerId);
       removeTrailersFromList([targetTrailerId]);
+      await loadDepartureTrailers();
       setLastDepartureSnapshot(result.snapshot);
       setSuccess(`${result.trailerNumber ?? "Trailer"} departed.`);
     } catch (err) {
@@ -624,6 +706,7 @@ export default function DeparturePage() {
 
     if (succeeded.length > 0) {
       removeTrailersFromList(succeeded.map((item) => item.id));
+      await loadDepartureTrailers();
       setLastDepartureSnapshot(succeeded[succeeded.length - 1]?.snapshot ?? null);
       setSuccess(`${succeeded.length} trailer${succeeded.length === 1 ? "" : "s"} departed.`);
     }
@@ -685,6 +768,7 @@ export default function DeparturePage() {
       });
 
       setTrailers((current) => [restoredTrailer as TrailerRecord, ...current]);
+      await loadDepartureTrailers();
       setLastDepartureSnapshot(null);
       setSuccess(`Undo applied for ${restoredTrailer.trailer_number ?? "trailer"}.`);
     } catch (undoErr) {
@@ -706,8 +790,15 @@ export default function DeparturePage() {
         </header>
 
         {error ? (
-          <div className="rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
-            {error}
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+            <span>{error}</span>
+            <button
+              type="button"
+              onClick={() => void loadDepartureTrailers()}
+              className="rounded-xl border border-rose-300/40 bg-rose-500/20 px-3 py-1.5 text-xs font-semibold text-rose-100 hover:bg-rose-500/30"
+            >
+              Retry
+            </button>
           </div>
         ) : null}
 
@@ -785,11 +876,18 @@ export default function DeparturePage() {
             <div className="mt-4 space-y-3">
               {isLoading ? (
                 <div className="rounded-2xl border border-white/10 bg-slate-950/80 p-4 text-sm text-slate-400">
-                  Loading active trailers...
+                  Loading departure candidates...
                 </div>
               ) : filteredTrailers.length === 0 ? (
                 <div className="rounded-2xl border border-white/10 bg-slate-950/80 p-4 text-sm text-slate-400">
-                  No active trailers match your search.
+                  <p>No eligible trailers found for departure with the current filters.</p>
+                  <button
+                    type="button"
+                    onClick={() => void loadDepartureTrailers()}
+                    className="mt-3 rounded-xl border border-white/10 bg-slate-800 px-3 py-2 text-xs font-semibold text-slate-200 hover:bg-slate-700"
+                  >
+                    Retry
+                  </button>
                 </div>
               ) : (
                 filteredTrailers.map((trailer) => {

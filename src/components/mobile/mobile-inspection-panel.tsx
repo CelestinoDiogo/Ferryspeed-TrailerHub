@@ -6,6 +6,18 @@ import { Camera, Upload } from "lucide-react";
 import type { TrailerActivityRow } from "@/lib/trailer-activity";
 
 const MAX_PHOTO_SIZE = 10 * 1024 * 1024;
+const ACCEPTED_PHOTO_INPUT_ACCEPT = "image/jpeg,image/png,image/webp";
+const ACCEPTED_PHOTO_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
+
+const normalizePhotoMimeType = (value?: string | null) => {
+  const normalized = (value ?? "").trim().toLowerCase();
+  if (normalized === "image/jpg") {
+    return "image/jpeg";
+  }
+  return normalized;
+};
+
+const isAcceptedPhotoMimeType = (file: File) => ACCEPTED_PHOTO_MIME_TYPES.has(normalizePhotoMimeType(file.type));
 
 export type MobileInspectionTrailer = {
   vesselTrailerId: string;
@@ -127,8 +139,8 @@ export function MobileInspectionPanel({
       return;
     }
 
-    if (!file.type.toLowerCase().startsWith("image/")) {
-      setUploadError(`Only image files can be uploaded. Rejected ${file.name}.`);
+    if (!isAcceptedPhotoMimeType(file)) {
+      setUploadError(`Only JPEG, PNG, or WebP files can be uploaded. Rejected ${file.name}.`);
       setUploadMessage(null);
       return;
     }
@@ -284,7 +296,7 @@ export function MobileInspectionPanel({
               Camera
               <input
                 type="file"
-                accept="image/*"
+                accept={ACCEPTED_PHOTO_INPUT_ACCEPT}
                 capture="environment"
                 className="hidden"
                 disabled={isUploading}
@@ -300,7 +312,7 @@ export function MobileInspectionPanel({
               Gallery
               <input
                 type="file"
-                accept="image/*"
+                accept={ACCEPTED_PHOTO_INPUT_ACCEPT}
                 className="hidden"
                 disabled={isUploading}
                 onChange={(event) => {
