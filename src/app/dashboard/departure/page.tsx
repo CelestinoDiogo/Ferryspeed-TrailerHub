@@ -67,7 +67,8 @@ const isEligibleForDeparture = (trailer: TrailerRecord) => {
     return false;
   }
 
-  if (trailer.is_local === true) {
+  const isLocal = trailer.is_local === true;
+  if (isLocal) {
     return false;
   }
 
@@ -112,7 +113,6 @@ export default function DeparturePage() {
         .from("trailers")
         .select("id, trailer_number, trailer_type, load_status, load_description, customer, consignee, container_number, compound_position, arrival_date, departure_date, departure_time, operational_status, is_local")
         .is("departure_date", null)
-        .neq("is_local", true)
         .in("operational_status", ["In Compound", "Waiting Position"])
         .order("arrival_date", { ascending: false });
 
@@ -136,24 +136,22 @@ export default function DeparturePage() {
         }
       }
 
-      const loaded = Array.from(deduped.values());
-      setTrailers(loaded);
+      const eligibleRows = Array.from(deduped.values());
+      setTrailers(eligibleRows);
 
       if (process.env.NODE_ENV !== "production") {
-        console.debug("[departure] trailers loaded", {
-          totalRows: loadedRaw.length,
-          eligibleRows: loaded.length,
-        });
+        console.debug("[Departures] Supabase rows:", data?.length ?? 0);
+        console.debug("[Departures] Eligible rows:", eligibleRows.length);
       }
 
       setSelectedTrailerId((currentSelection) => {
-        if (currentSelection && loaded.some((row) => row.id === currentSelection)) {
+        if (currentSelection && eligibleRows.some((row) => row.id === currentSelection)) {
           return currentSelection;
         }
 
-        const targetById = requestedTrailerId ? loaded.find((row) => row.id === requestedTrailerId) : null;
+        const targetById = requestedTrailerId ? eligibleRows.find((row) => row.id === requestedTrailerId) : null;
         const targetByNumber = requestedTrailerNumber
-          ? loaded.find(
+          ? eligibleRows.find(
               (row) => row.trailer_number?.trim().toUpperCase() === requestedTrailerNumber.trim().toUpperCase(),
             )
           : null;
@@ -161,9 +159,9 @@ export default function DeparturePage() {
         return target?.id ?? currentSelection ?? null;
       });
 
-      const targetById = requestedTrailerId ? loaded.find((row) => row.id === requestedTrailerId) : null;
+      const targetById = requestedTrailerId ? eligibleRows.find((row) => row.id === requestedTrailerId) : null;
       const targetByNumber = requestedTrailerNumber
-        ? loaded.find(
+        ? eligibleRows.find(
             (row) => row.trailer_number?.trim().toUpperCase() === requestedTrailerNumber.trim().toUpperCase(),
           )
         : null;
