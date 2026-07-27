@@ -39,6 +39,8 @@ type DepartureLoadFilter = "all" | "empty" | "loaded";
 type DepartureSort = "trailer_asc" | "trailer_desc" | "arrival_desc";
 
 const normalizeText = (value?: string | null) => value?.trim().toLowerCase() ?? "";
+const normalizeFilterValue = (value?: string | null) => value?.trim() ?? "";
+const isAllFilterValue = (value?: string | null) => normalizeText(value) === "all";
 
 const isMissingDepartureDate = (value?: string | null) => {
   if (value === null || value === undefined) {
@@ -139,11 +141,6 @@ export default function DeparturePage() {
       const eligibleRows = Array.from(deduped.values());
       setTrailers(eligibleRows);
 
-      if (process.env.NODE_ENV !== "production") {
-        console.debug("[Departures] Supabase rows:", data?.length ?? 0);
-        console.debug("[Departures] Eligible rows:", eligibleRows.length);
-      }
-
       setSelectedTrailerId((currentSelection) => {
         if (currentSelection && eligibleRows.some((row) => row.id === currentSelection)) {
           return currentSelection;
@@ -208,8 +205,11 @@ export default function DeparturePage() {
       setSortBy(nextSort);
     }
 
-    setCustomerFilter((params.get("customer") ?? "all").trim() || "all");
-    setPrefixFilter((params.get("prefix") ?? "all").trim().toUpperCase() || "all");
+    const nextCustomer = normalizeFilterValue(params.get("customer"));
+    setCustomerFilter(!nextCustomer || isAllFilterValue(nextCustomer) ? "all" : nextCustomer);
+
+    const nextPrefix = normalizeFilterValue(params.get("prefix"));
+    setPrefixFilter(!nextPrefix || isAllFilterValue(nextPrefix) ? "all" : nextPrefix.toUpperCase());
   }, []);
 
   useEffect(() => {
@@ -261,8 +261,10 @@ export default function DeparturePage() {
         .toLowerCase();
 
       const normalizedLoad = normalizeText(trailer.load_status);
-      const normalizedCustomer = trailer.customer?.trim() ?? "";
+      const normalizedCustomer = normalizeText(trailer.customer);
+      const normalizedCustomerFilter = normalizeText(customerFilter);
       const trailerPrefix = normalizeTrailerPrefix(trailer.trailer_number);
+      const normalizedPrefixFilter = isAllFilterValue(prefixFilter) ? "all" : normalizeFilterValue(prefixFilter).toUpperCase();
 
       if (term && !haystack.includes(term)) {
         return false;
@@ -276,11 +278,11 @@ export default function DeparturePage() {
         return false;
       }
 
-      if (customerFilter !== "all" && normalizedCustomer !== customerFilter) {
+      if (!isAllFilterValue(customerFilter) && normalizedCustomer !== normalizedCustomerFilter) {
         return false;
       }
 
-      if (prefixFilter !== "all" && trailerPrefix !== prefixFilter) {
+      if (normalizedPrefixFilter !== "all" && trailerPrefix !== normalizedPrefixFilter) {
         return false;
       }
 
@@ -346,16 +348,16 @@ export default function DeparturePage() {
       params.set("load", loadFilter);
     }
 
-    if (customerFilter === "all") {
+    if (isAllFilterValue(customerFilter)) {
       params.delete("customer");
     } else {
-      params.set("customer", customerFilter);
+      params.set("customer", normalizeFilterValue(customerFilter));
     }
 
-    if (prefixFilter === "all") {
+    if (isAllFilterValue(prefixFilter)) {
       params.delete("prefix");
     } else {
-      params.set("prefix", prefixFilter);
+      params.set("prefix", normalizeFilterValue(prefixFilter).toUpperCase());
     }
 
     if (sortBy === "trailer_asc") {
