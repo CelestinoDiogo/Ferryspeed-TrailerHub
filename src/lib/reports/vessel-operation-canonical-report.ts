@@ -60,6 +60,37 @@ const canonicalReportSchema = z.object({
     temperatureAlerts: z.number().int().min(0),
     damageReports: z.number().int().min(0),
   }).strict(),
+  performance: z.object({
+    averageInspectionTimeMinutes: z.number().nullable(),
+    arrivalCompletionPercent: z.number(),
+    priorityCompletionPercent: z.number(),
+    temperatureCompliancePercent: z.number().nullable(),
+    photosCapturedPercent: z.number(),
+    damageIncidencePercent: z.number(),
+    compoundOccupancyImpactPercent: z.number().nullable(),
+    exportTurnaroundHours: z.number().nullable(),
+  }).strict(),
+  operationalAlerts: z.object({
+    total: z.number().int().min(0),
+    bySeverity: z.record(z.string(), z.number().int().min(0)),
+  }).strict(),
+  exportActivity: z.object({
+    allocationsAffected: z.number().int().min(0),
+    waitingLoading: z.number().int().min(0),
+    waitingCollection: z.number().int().min(0),
+    overdue: z.number().int().min(0),
+    completed: z.number().int().min(0),
+    averageTurnaroundHours: z.number().nullable(),
+  }).strict(),
+  timelineSummary: z.object({
+    totalEvents: z.number().int().min(0),
+    firstEventAt: z.string().nullable(),
+    lastEventAt: z.string().nullable(),
+    topEventTypes: z.array(z.object({
+      event: z.string(),
+      count: z.number().int().min(0),
+    }).strict()),
+  }).strict(),
   trailers: z.array(trailerSchema),
 }).strict();
 
@@ -131,6 +162,38 @@ export function buildVesselOperationCanonicalReport(data: VesselOperationalRepor
       inspectionCompleted: data.statistics.inspectedTrailers,
       temperatureAlerts: data.statistics.temperatureAlertTrailers,
       damageReports: data.statistics.damagedTrailers,
+    },
+    performance: {
+      averageInspectionTimeMinutes: data.performance.averageInspectionTimeMinutes,
+      arrivalCompletionPercent: data.performance.arrivalCompletionPercent,
+      priorityCompletionPercent: data.performance.priorityCompletionPercent,
+      temperatureCompliancePercent: data.performance.temperatureCompliancePercent,
+      photosCapturedPercent: data.performance.photosCapturedPercent,
+      damageIncidencePercent: data.performance.damageIncidencePercent,
+      compoundOccupancyImpactPercent: data.performance.compoundOccupancyImpactPercent,
+      exportTurnaroundHours: data.performance.exportTurnaroundHours,
+    },
+    operationalAlerts: {
+      total: data.operationalAlerts.length,
+      bySeverity: data.operationalAlerts.reduce<Record<string, number>>((acc, alert) => {
+        const key = (alert.severity ?? "unknown").toLowerCase();
+        acc[key] = (acc[key] ?? 0) + 1;
+        return acc;
+      }, {}),
+    },
+    exportActivity: {
+      allocationsAffected: data.exportActivity.allocationsAffected,
+      waitingLoading: data.exportActivity.waitingLoading,
+      waitingCollection: data.exportActivity.waitingCollection,
+      overdue: data.exportActivity.overdue,
+      completed: data.exportActivity.completed,
+      averageTurnaroundHours: data.exportActivity.averageTurnaroundHours,
+    },
+    timelineSummary: {
+      totalEvents: data.timelineSummary.totalEvents,
+      firstEventAt: data.timelineSummary.firstEventAt,
+      lastEventAt: data.timelineSummary.lastEventAt,
+      topEventTypes: data.timelineSummary.topEventTypes,
     },
     trailers,
   } satisfies VesselOperationCanonicalReport;

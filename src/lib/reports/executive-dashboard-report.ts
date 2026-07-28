@@ -84,8 +84,38 @@ type ActivityRow = {
   event_type: string;
 };
 
+type DatabaseErrorShape = {
+  message: string;
+  code?: string;
+  details?: string | null;
+  hint?: string | null;
+};
+
+export class ExecutiveDashboardSchemaError extends Error {
+  databaseError: DatabaseErrorShape;
+
+  constructor(message: string, databaseError: DatabaseErrorShape) {
+    super(message);
+    this.name = "ExecutiveDashboardSchemaError";
+    this.databaseError = databaseError;
+  }
+}
+
 const COMPOUND_CAPACITY = 50;
 const MS_PER_HOUR = 3_600_000;
+
+const isMissingOperationalAlertSettingsColumnError = (error: { message?: string; code?: string } | null) => {
+  if (!error?.message) {
+    return false;
+  }
+
+  const message = error.message.toLowerCase();
+  const codeMatches = error.code === "42703";
+  const mentionsTable = message.includes("operational_alert_settings");
+  const mentionsMissingColumn = message.includes("does not exist") || message.includes("column");
+
+  return mentionsTable && mentionsMissingColumn && codeMatches;
+};
 
 const normalizeText = (value?: string | null) => (value ?? "").trim().toLowerCase();
 
@@ -197,7 +227,21 @@ export async function loadExecutiveDashboardReportData(
   if (deliveryBookingsError) throw new Error(deliveryBookingsError.message || "Unable to load delivery bookings.");
   if (stockCheckError) throw new Error(stockCheckError.message || "Unable to load stock checks.");
   if (activityError) throw new Error(activityError.message || "Unable to load operational activity.");
-  if (settingsError) throw new Error(settingsError.message || "Unable to load operational alert settings.");
+  if (settingsError) {
+    if (isMissingOperationalAlertSettingsColumnError(settingsError)) {
+      throw new ExecutiveDashboardSchemaError(
+        "Database schema mismatch: operational_alert_settings is missing required dashboard columns (priority_inspection_pending_minutes and/or export_waiting_collection_hours).",
+        {
+          message: settingsError.message || "Unknown database error.",
+          code: settingsError.code,
+          details: settingsError.details,
+          hint: settingsError.hint,
+        },
+      );
+    }
+
+    throw new Error(settingsError.message || "Unable to load operational alert settings.");
+  }
 
   const operationalAlerts = operationalAlertsResult.ok ? operationalAlertsResult.data : [];
   if (!operationalAlertsResult.ok) {

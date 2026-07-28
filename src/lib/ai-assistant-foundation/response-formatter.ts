@@ -4,6 +4,7 @@ import type { AssistantQueryResult } from "@/lib/ai-assistant-foundation/types";
 export const formatAssistantResponse = (result: AssistantQueryResult): AiAssistantResponse => {
   const items = result.items ?? [];
   const actions = result.actions ?? [];
+  const hasStructuredSummary = Boolean(result.primaryMetrics?.length || result.sections?.length || result.alerts?.length);
 
   return {
     intent: result.intent,
@@ -16,8 +17,12 @@ export const formatAssistantResponse = (result: AssistantQueryResult): AiAssista
     queriedAt: new Date().toISOString(),
     // Legacy fields for existing consumers.
     answer: result.summary,
-    resultType: items.length <= 1 ? "trailer" : "trailer_list",
+    resultType: hasStructuredSummary ? "summary" : items.length <= 1 ? "trailer" : "trailer_list",
     data: items as Array<Record<string, unknown>>,
     links: actions.map((action) => ({ label: action.label, href: action.route })),
+    primaryMetrics: result.primaryMetrics,
+    sections: result.sections,
+    alerts: result.alerts,
+    preparedActions: result.preparedActions,
   };
 };

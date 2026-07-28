@@ -10,16 +10,46 @@ import { loadVesselOperationSummaryAndPrintReportData } from "@/lib/reports/repo
 import { formatVesselDateTime } from "@/lib/vessel-operations";
 import type {
   VesselOperationalReportData,
+  VesselOperationComparisonItem,
   VesselOperationAiReportDraft,
   VesselOperationAiReportHistoryItem,
+  VesselOperationReportLibraryItem,
   VesselOperationAiReportResponse,
 } from "@/lib/reports/types";
 import { VesselOperationAiReportPreviewModal } from "@/components/reports/vessel-operation-ai-report-preview-modal";
 
 type SummaryFilter = "all" | "arrived" | "inspected" | "damage" | "temperature_alert" | "not_discharged";
+type ReportLibraryStatusFilter = "all" | "draft" | "final" | "sent";
 type ReportLoadErrorKind = "auth" | "not_found" | "data" | "unknown";
 type AiReportErrorKind = "signed_out" | "not_found" | "invalid_request" | "configuration" | "database" | "provider" | "unknown";
 const AI_SESSION_RETRY_DELAY_MS = 250;
+
+type ReportComparisonDelta = {
+  baseline: {
+    expectedTrailers: number;
+    arrivedTrailers: number;
+    inspectedTrailers: number;
+    pendingInspections: number;
+    damagedTrailers: number;
+    temperatureAlertTrailers: number;
+  };
+  current: {
+    expectedTrailers: number;
+    arrivedTrailers: number;
+    inspectedTrailers: number;
+    pendingInspections: number;
+    damagedTrailers: number;
+    temperatureAlertTrailers: number;
+  };
+  delta: {
+    expectedTrailers: number;
+    arrivedTrailers: number;
+    inspectedTrailers: number;
+    pendingInspections: number;
+    damagedTrailers: number;
+    temperatureAlertTrailers: number;
+  };
+};
 
 class AiReportRequestError extends Error {
   status: number;
@@ -175,6 +205,14 @@ export default function VesselSummaryPage() {
   const [reportNotice, setReportNotice] = useState<string | null>(null);
   const [emailProviderConfigured, setEmailProviderConfigured] = useState(false);
   const [lastSavedDraftSignature, setLastSavedDraftSignature] = useState<string | null>(null);
+  const [reportLibrary, setReportLibrary] = useState<VesselOperationReportLibraryItem[]>([]);
+  const [comparisonLibrary, setComparisonLibrary] = useState<VesselOperationComparisonItem[]>([]);
+  const [comparisonDelta, setComparisonDelta] = useState<ReportComparisonDelta | null>(null);
+  const [selectedHistoricalReportId, setSelectedHistoricalReportId] = useState<string | null>(null);
+  const [reportLibrarySearch, setReportLibrarySearch] = useState("");
+  const [reportLibraryStatus, setReportLibraryStatus] = useState<ReportLibraryStatusFilter>("all");
+  const [isReportLibraryLoading, setIsReportLibraryLoading] = useState(false);
+  const [isComparisonLoading, setIsComparisonLoading] = useState(false);
 
   const getDraftSignature = useCallback((draft: VesselOperationAiReportDraft | null) => {
     if (!draft) {
@@ -284,6 +322,108 @@ export default function VesselSummaryPage() {
     return payload;
   }, [operationId]);
 
+  const getAccessTokenForReports = useCallback(async () => {
+    const { data, error: sessionError } = await supabase.auth.getSession();
+    if (sessionError) {
+      throw new Error(sessionError.message);
+    }
+
+    if (data.session?.access_token) {
+      return data.session.access_token;
+    }
+
+    await new Promise((resolve) => window.setTimeout(resolve, AI_SESSION_RETRY_DELAY_MS));
+    const retry = await supabase.auth.getSession();
+    if (retry.error) {
+      throw new Error(retry.error.message);
+    }
+
+    if (!retry.data.session?.access_token) {
+      throw new Error("Authentication is required to load historical reports.");
+    }
+
+    return retry.data.session.access_token;
+  }, []);
+
+  const loadReportLibrary = useCallback(async () => {
+    if (!operationId || !reportData || reportData.operation.status !== "completed") {
+      setReportLibrary([]);
+      setComparisonLibrary([]);
+      setSelectedHistoricalReportId(null);
+      setComparisonDelta(null);
+      return;
+    }
+
+    setIsReportLibraryLoading(true);
+    try {
+      const accessToken = await getAccessTokenForReports();
+      const query = new URLSearchParams();
+      query.set("status", reportLibraryStatus);
+      if (reportLibrarySearch.trim()) {
+        query.set("search", reportLibrarySearch.trim());
+      }
+      query.set("comparisonLimit", "8");
+
+      const response = await fetch(`/api/vessel-operations/${operationId}/reports?${query.toString()}`, {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+      });
+
+      const payload = (await response.json()) as {
+        reportLibrary?: VesselOperationReportLibraryItem[];
+        comparisonLibrary?: VesselOperationComparisonItem[];
+        error?: string;
+      };
+
+      if (!response.ok) {
+        throw new Error(payload.error ?? "Unable to load historical report library.");
+      }
+
+      setReportLibrary(payload.reportLibrary ?? []);
+      setComparisonLibrary(payload.comparisonLibrary ?? []);
+    } catch (libraryError) {
+      console.error("Unable to load report library:", libraryError);
+      setReportLibrary([]);
+      setComparisonLibrary([]);
+    } finally {
+      setIsReportLibraryLoading(false);
+    }
+  }, [getAccessTokenForReports, operationId, reportData, reportLibrarySearch, reportLibraryStatus]);
+
+  const loadHistoricalComparison = useCallback(async (reportId: string) => {
+    if (!operationId) {
+      return;
+    }
+
+    setIsComparisonLoading(true);
+    try {
+      const accessToken = await getAccessTokenForReports();
+      const response = await fetch(`/api/vessel-operations/${operationId}/reports/${reportId}`, {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+      });
+
+      const payload = (await response.json()) as {
+        comparison?: ReportComparisonDelta;
+        error?: string;
+      };
+
+      if (!response.ok || !payload.comparison) {
+        throw new Error(payload.error ?? "Unable to compare historical report.");
+      }
+
+      setSelectedHistoricalReportId(reportId);
+      setComparisonDelta(payload.comparison);
+    } catch (comparisonError) {
+      console.error("Unable to load historical comparison:", comparisonError);
+      setComparisonDelta(null);
+    } finally {
+      setIsComparisonLoading(false);
+    }
+  }, [getAccessTokenForReports, operationId]);
+
   const handleAiReportError = useCallback((error: unknown, fallbackMessage: string) => {
     const classified = classifyAiReportError(error);
 
@@ -326,6 +466,25 @@ export default function VesselSummaryPage() {
   useEffect(() => {
     void loadAiReportDraft();
   }, [loadAiReportDraft]);
+
+  useEffect(() => {
+    void loadReportLibrary();
+  }, [loadReportLibrary]);
+
+  useEffect(() => {
+    if (selectedHistoricalReportId) {
+      const stillExists = reportLibrary.some((item) => item.reportId === selectedHistoricalReportId);
+      if (!stillExists) {
+        setSelectedHistoricalReportId(null);
+        setComparisonDelta(null);
+      }
+      return;
+    }
+
+    if (reportLibrary.length > 0) {
+      void loadHistoricalComparison(reportLibrary[0].reportId);
+    }
+  }, [loadHistoricalComparison, reportLibrary, selectedHistoricalReportId]);
 
   const generateAiReport = useCallback(async () => {
     if (!operationId || !reportData || reportData.operation.status !== "completed") {
@@ -747,6 +906,111 @@ export default function VesselSummaryPage() {
                 </table>
               </div>
             )}
+          </section>
+        ) : null}
+
+        {completed ? (
+          <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+              <div>
+                <p className="text-sm font-semibold uppercase tracking-[0.25em] text-cyan-700">Historical Report Intelligence</p>
+                <p className="mt-2 text-sm text-slate-600">Search saved reports and compare historical baselines with current live operation figures.</p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <input
+                  value={reportLibrarySearch}
+                  onChange={(event) => setReportLibrarySearch(event.target.value)}
+                  placeholder="Search by subject, vessel, user"
+                  className="rounded-2xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900"
+                />
+                {(["all", "draft", "final", "sent"] as const).map((status) => (
+                  <button
+                    key={status}
+                    type="button"
+                    onClick={() => setReportLibraryStatus(status)}
+                    className={`rounded-full px-3 py-2 text-xs font-semibold uppercase tracking-[0.15em] ${reportLibraryStatus === status ? "bg-slate-900 text-white" : "border border-slate-300 bg-white text-slate-700"}`}
+                  >
+                    {status}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {isReportLibraryLoading ? <p className="mt-3 text-sm text-slate-600">Loading historical report library...</p> : null}
+
+            <div className="mt-4 grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
+              <div className="overflow-x-auto rounded-2xl border border-slate-200">
+                <table className="min-w-full text-left text-sm text-slate-700">
+                  <thead className="bg-slate-50 text-xs uppercase tracking-[0.15em] text-slate-500">
+                    <tr>
+                      <th className="px-3 py-2">Generated</th>
+                      <th className="px-3 py-2">Status</th>
+                      <th className="px-3 py-2">Mode</th>
+                      <th className="px-3 py-2">Subject</th>
+                      <th className="px-3 py-2">Compare</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {reportLibrary.length === 0 ? (
+                      <tr>
+                        <td colSpan={5} className="px-3 py-4 text-sm text-slate-500">No historical reports match the current filter.</td>
+                      </tr>
+                    ) : (
+                      reportLibrary.map((item) => (
+                        <tr key={item.reportId} className="border-t border-slate-200">
+                          <td className="px-3 py-2">{new Date(item.generatedAt).toLocaleString()}</td>
+                          <td className="px-3 py-2">{item.reportStatus}</td>
+                          <td className="px-3 py-2">{item.generationMode === "ai" ? "AI" : "Template"}</td>
+                          <td className="px-3 py-2">{item.subject}</td>
+                          <td className="px-3 py-2">
+                            <button
+                              type="button"
+                              onClick={() => void loadHistoricalComparison(item.reportId)}
+                              disabled={isComparisonLoading}
+                              className={`rounded-xl px-3 py-1 text-xs font-semibold ${selectedHistoricalReportId === item.reportId ? "bg-cyan-700 text-white" : "border border-cyan-300 bg-cyan-50 text-cyan-900"}`}
+                            >
+                              {selectedHistoricalReportId === item.reportId ? "Selected" : "Compare"}
+                            </button>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <p className="text-sm font-semibold text-slate-900">Historical Delta vs Live Data</p>
+                {isComparisonLoading ? <p className="mt-3 text-sm text-slate-600">Loading comparison...</p> : null}
+                {!isComparisonLoading && !comparisonDelta ? <p className="mt-3 text-sm text-slate-600">Select a saved report to calculate metric deltas.</p> : null}
+                {comparisonDelta ? (
+                  <div className="mt-3 grid gap-2 text-sm text-slate-700">
+                    <p>Arrived trailers delta: <span className="font-semibold text-slate-950">{comparisonDelta.delta.arrivedTrailers >= 0 ? `+${comparisonDelta.delta.arrivedTrailers}` : comparisonDelta.delta.arrivedTrailers}</span></p>
+                    <p>Inspected trailers delta: <span className="font-semibold text-slate-950">{comparisonDelta.delta.inspectedTrailers >= 0 ? `+${comparisonDelta.delta.inspectedTrailers}` : comparisonDelta.delta.inspectedTrailers}</span></p>
+                    <p>Pending inspections delta: <span className="font-semibold text-slate-950">{comparisonDelta.delta.pendingInspections >= 0 ? `+${comparisonDelta.delta.pendingInspections}` : comparisonDelta.delta.pendingInspections}</span></p>
+                    <p>Damaged trailers delta: <span className="font-semibold text-slate-950">{comparisonDelta.delta.damagedTrailers >= 0 ? `+${comparisonDelta.delta.damagedTrailers}` : comparisonDelta.delta.damagedTrailers}</span></p>
+                    <p>Temperature alerts delta: <span className="font-semibold text-slate-950">{comparisonDelta.delta.temperatureAlertTrailers >= 0 ? `+${comparisonDelta.delta.temperatureAlertTrailers}` : comparisonDelta.delta.temperatureAlertTrailers}</span></p>
+                  </div>
+                ) : null}
+
+                <div className="mt-5 border-t border-slate-200 pt-3">
+                  <p className="text-xs font-semibold uppercase tracking-[0.15em] text-slate-500">Related Operations Benchmarks</p>
+                  <div className="mt-2 space-y-2">
+                    {comparisonLibrary.length === 0 ? (
+                      <p className="text-sm text-slate-600">No historical comparison operations available.</p>
+                    ) : (
+                      comparisonLibrary.map((item) => (
+                        <div key={item.vesselOperationId} className="rounded-xl border border-slate-200 bg-white px-3 py-2">
+                          <p className="text-sm font-semibold text-slate-900">{item.vesselName ?? "Unnamed vessel"}</p>
+                          <p className="text-xs text-slate-600">{item.voyageReference ?? "No voyage ref"}</p>
+                          <p className="mt-1 text-xs text-slate-700">Completion {item.completionPercentage.toFixed(1)}% | Damages {item.damagedTrailers} | Temp alerts {item.temperatureAlertTrailers}</p>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
           </section>
         ) : null}
 

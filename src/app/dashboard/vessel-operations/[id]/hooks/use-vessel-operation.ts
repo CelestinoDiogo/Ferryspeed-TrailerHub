@@ -25,6 +25,7 @@ import {
   getTemperatureToleranceSettingsFromStorage,
   isTemperatureOutOfRange,
 } from "@/lib/temperature-tolerance";
+import { saveVesselInspectionPhoto } from "@/lib/vessel-inspection-photos";
 
 export type TrailerFormState = {
   trailerNumber: string;
@@ -164,8 +165,6 @@ const normalizeTrailerStatus = (status?: string | null, arrivalStatus?: string |
   if (arrivalStatus === "not_arrived" || arrivalStatus === "cancelled" || arrivalStatus === "not_discharged") return "not_arrived";
   return "expected";
 };
-
-const sanitizeFileName = (name: string) => name.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
 
 const parseNumeric = (value: string) => {
   const parsed = Number(value);
@@ -1017,38 +1016,16 @@ export function useVesselOperation(operationId: string): UseVesselOperationResul
           const uploadedBy = session?.user?.email?.trim() || session?.user?.id || null;
 
           for (const photo of inspection.photos) {
-            const storagePath = `vessel-operations/${operation.id}/${trailer.id}/${Date.now()}-${sanitizeFileName(photo.name || "photo")}`;
-            const { error: uploadError } = await supabase.storage.from("vessel-inspection-photos").upload(storagePath, photo, {
-              cacheControl: "3600",
-              upsert: false,
-              contentType: photo.type,
-            });
-
-            if (uploadError) {
-              throw uploadError;
-            }
-
-            const photoPayload = {
-              vessel_trailer_id: trailer.id,
-              trailer_id: trailer.trailer_id ?? null,
-              trailer_number: normalizedTrailerNumber,
-              vessel_operation_id: operation.id,
+            await saveVesselInspectionPhoto({
+              vesselTrailerId: trailer.id,
+              vesselOperationId: operation.id,
+              trailerId: trailer.trailer_id ?? null,
+              trailerNumber: normalizedTrailerNumber,
+              file: photo,
               category: "Boat Check",
-              storage_path: storagePath,
-              file_name: photo.name,
               description: inspection.notes.trim() || null,
-              uploaded_at: nowIso,
-              uploaded_by: uploadedBy ?? "TrailerHub User",
-            };
-
-            const { error: photoError } = await supabase.from("vessel_inspection_photos").insert(photoPayload as never);
-            if (photoError) {
-              const { error: cleanupError } = await supabase.storage.from("vessel-inspection-photos").remove([storagePath]);
-              if (cleanupError) {
-                console.error("Unable to clean up orphaned inspection photo:", cleanupError);
-              }
-              throw photoError;
-            }
+              uploadedBy: uploadedBy ?? "TrailerHub User",
+            });
           }
         }
 

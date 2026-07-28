@@ -8,11 +8,11 @@ import { TrailerOperationsPanel } from "@/components/operations/trailer-operatio
 import { TrailerHistoryDrawer } from "@/components/trailers/trailer-history-drawer";
 import {
   getAdvanceStatusActionLabel,
-  getNextExportAllocationStatus,
   isTrailerPresentInCompoundInventory,
   normalizeExportAllocationRecord,
   type ExportAllocationRecord,
 } from "@/lib/export-allocation";
+import { advanceExportAllocationStatus } from "@/lib/operations/export-lifecycle";
 import { runOperationalAlertDetection, type OperationalAlertRow } from "@/lib/operational-alerts";
 import {
   buildTrailerOperationalPositionFromContext,
@@ -28,7 +28,6 @@ import {
 } from "@/lib/reports/report-data";
 import { supabase } from "@/lib/supabase";
 import { createTrailerActivity } from "@/lib/trailer-activity";
-import { resolveAuditOperatorName } from "@/lib/trailer-audit-log";
 import {
   getVesselInspectionProgressLabel,
   getVesselInspectionProgressState,
@@ -859,8 +858,7 @@ export default function OperationsCommandCentrePage() {
       return;
     }
 
-    const next = getNextExportAllocationStatus(allocation.status);
-    if (next !== "delivered_empty") {
+    if (allocation.status !== "allocated") {
       openPanelForCard(card);
       return;
     }
@@ -869,17 +867,13 @@ export default function OperationsCommandCentrePage() {
     setError(null);
 
     try {
-      const nowIso = new Date().toISOString();
-      const operator = await resolveAuditOperatorName();
-
-      const { error: rpcError } = await (supabase as typeof supabase & { rpc: (...args: unknown[]) => Promise<{ error: { message?: string } | null }> }).rpc("set_export_allocation_delivered_empty", {
-        p_export_allocation_id: allocation.id,
-        p_delivered_empty_at: nowIso,
-        p_performed_by: operator,
+      const result = await advanceExportAllocationStatus(supabase, {
+        allocation,
+        sourceModule: "operations",
       });
 
-      if (rpcError) {
-        throw new Error(rpcError.message || "Unable to set allocation to delivered empty.");
+      if (result.nextStatus !== "delivered_empty") {
+        throw new Error("Unable to set allocation to delivered empty.");
       }
 
       setExportAllocations((rows) =>
@@ -888,25 +882,12 @@ export default function OperationsCommandCentrePage() {
             ? {
                 ...row,
                 status: "delivered_empty",
-                delivered_empty_at: nowIso,
-                updated_at: nowIso,
+                delivered_empty_at: result.occurredAt,
+                updated_at: result.occurredAt,
               }
             : row,
         ),
       );
-
-      await createTrailerActivity({
-        trailerId: card.trailerId,
-        trailerNumber: card.trailerNumber,
-        eventType: "export_status_changed",
-        eventTitle: "Delivered Empty",
-        eventDescription: "Export allocation updated to delivered empty from Operations Command Centre.",
-        sourceModule: "operations",
-        sourceRecordId: allocation.id,
-        previousStatus: allocation.status,
-        newStatus: "delivered_empty",
-        createdAt: nowIso,
-      });
 
       setSuccess(`${card.trailerNumber} marked as Delivered Empty.`);
     } catch (advanceError) {

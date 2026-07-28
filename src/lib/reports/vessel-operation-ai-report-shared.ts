@@ -169,7 +169,15 @@ const buildOperationOverview = (data: VesselOperationalReportData) => {
   return `${buildExecutiveSummary(data)}\n\nOperation Details\n${details}`;
 };
 
-const buildTrailerDischargeSummary = (data: VesselOperationalReportData) => {
+const formatPercent = (value: number | null) => {
+  if (value === null || Number.isNaN(value)) {
+    return "Not available";
+  }
+
+  return `${value.toFixed(1)}%`;
+};
+
+const buildKeyStatistics = (data: VesselOperationalReportData) => {
   const notDischargedTrailers = data.trailers.filter((trailer) => trailer.arrivalStatusRaw === "not_discharged").map((trailer) => trailer.trailerNumber);
   const expected = data.statistics.expectedTrailers;
   const arrived = data.statistics.arrivedTrailers;
@@ -181,11 +189,36 @@ const buildTrailerDischargeSummary = (data: VesselOperationalReportData) => {
       ? `Of the ${expected} expected trailers, ${arrived} arrived and ${outstanding} remain outstanding.`
       : `${pluralize(arrived, "trailer")} arrived.`;
 
-  if (notDischargedTrailers.length === 0) {
-    return `${summary} No trailers remain in a not-discharged state.`;
+  const extra = notDischargedTrailers.length === 0
+    ? "No trailers remain in a not-discharged state."
+    : `Not discharged trailers: ${summarizeTrailerList(notDischargedTrailers)}.`;
+
+  const statsTable = [
+    "| Metric | Value |",
+    "| --- | --- |",
+    `| Expected trailers | ${data.statistics.expectedTrailers} |`,
+    `| Arrived trailers | ${data.statistics.arrivedTrailers} |`,
+    `| Pending arrivals | ${data.statistics.pendingTrailers} |`,
+    `| Inspected trailers | ${data.statistics.inspectedTrailers} |`,
+    `| Pending inspections | ${data.statistics.pendingInspections} |`,
+    `| Completion percentage | ${formatPercent(data.statistics.completionPercentage)} |`,
+  ].join("\n");
+
+  return `${summary} ${extra}\n\nKey Statistics\n${statsTable}`;
+};
+
+const buildPriorityHandling = (data: VesselOperationalReportData) => {
+  const priorityTrailers = data.trailers.filter((trailer) => trailer.priority === "priority");
+  const pendingPriority = priorityTrailers
+    .filter((trailer) => trailer.inspectionStatus !== "inspected" && trailer.inspectionStatus !== "positioned")
+    .map((trailer) => trailer.trailerNumber);
+
+  const summary = `${pluralize(priorityTrailers.length, "priority trailer")} identified. Priority completion is ${formatPercent(data.performance.priorityCompletionPercent)}.`;
+  if (pendingPriority.length === 0) {
+    return `${summary} No priority trailers are pending inspection.`;
   }
 
-  return `${summary} Not discharged trailers: ${summarizeTrailerList(notDischargedTrailers)}.`;
+  return `${summary} Pending priority trailers: ${summarizeTrailerList(pendingPriority)}.`;
 };
 
 const buildInspectionSummary = (data: VesselOperationalReportData) => {
@@ -193,7 +226,7 @@ const buildInspectionSummary = (data: VesselOperationalReportData) => {
   return `${summary}\n\nTrailer Status Table\n${buildCompactTrailerTable(data)}`;
 };
 
-const buildDamageFindings = (data: VesselOperationalReportData) => {
+const buildDamageSummary = (data: VesselOperationalReportData) => {
   const damagedTrailers = data.trailers.filter((trailer) => trailer.hasDamage);
 
   if (damagedTrailers.length === 0) {
@@ -217,7 +250,7 @@ const buildDamageFindings = (data: VesselOperationalReportData) => {
   ].join("\n");
 };
 
-const buildTemperatureFindings = (data: VesselOperationalReportData) => {
+const buildTemperatureCompliance = (data: VesselOperationalReportData) => {
   const temperatureRows = buildTemperatureRows(data);
   const evaluatedRows = temperatureRows.filter((row) => row.hasExpected);
   const alertRows = temperatureRows.filter((row) => row.hasExpected && row.outOfRange);
@@ -231,8 +264,8 @@ const buildTemperatureFindings = (data: VesselOperationalReportData) => {
   });
 
   const summary = alertRows.length > 0
-    ? `${pluralize(alertRows.length, "temperature alert")} recorded where expected temperatures were defined.`
-    : "No temperature exceptions were recorded where expected temperatures were defined.";
+    ? `${pluralize(alertRows.length, "temperature alert")} recorded where expected temperatures were defined. Compliance was ${formatPercent(data.performance.temperatureCompliancePercent)}.`
+    : `No temperature exceptions were recorded where expected temperatures were defined. Compliance was ${formatPercent(data.performance.temperatureCompliancePercent)}.`;
 
   return [
     summary,
@@ -244,7 +277,7 @@ const buildTemperatureFindings = (data: VesselOperationalReportData) => {
   ].join("\n");
 };
 
-const buildOutstandingItems = (data: VesselOperationalReportData) => {
+const buildOperationalIssues = (data: VesselOperationalReportData) => {
   const items: string[] = [];
   const notDischargedTrailers = data.trailers.filter((trailer) => trailer.arrivalStatusRaw === "not_discharged").map((trailer) => trailer.trailerNumber);
   const pendingInspections = data.trailers.filter((trailer) => trailer.arrivalStatusRaw === "arrived" && trailer.inspectionStatus !== "inspected").map((trailer) => trailer.trailerNumber);
@@ -269,6 +302,98 @@ const buildOutstandingItems = (data: VesselOperationalReportData) => {
   return items.join(" ");
 };
 
+const buildAlertsGenerated = (data: VesselOperationalReportData) => {
+  if (data.operationalAlerts.length === 0) {
+    return "No operational alerts were linked to these trailers at the time this report was generated.";
+  }
+
+  const severityCounts = data.operationalAlerts.reduce<Record<string, number>>((acc, alert) => {
+    const key = (alert.severity ?? "unknown").toLowerCase();
+    acc[key] = (acc[key] ?? 0) + 1;
+    return acc;
+  }, {});
+
+  const severityText = Object.entries(severityCounts)
+    .sort((a, b) => b[1] - a[1])
+    .map(([severity, count]) => `${count} ${severity}`)
+    .join(", ");
+
+  const sample = data.operationalAlerts
+    .slice(0, 10)
+    .map((alert) => `${alert.trailerNumber ?? "UNKNOWN"} (${alert.title})`);
+
+  return `${pluralize(data.operationalAlerts.length, "operational alert")} were linked to this operation (${severityText}). Example alerts: ${sample.join(", ")}.`;
+};
+
+const buildExportActivity = (data: VesselOperationalReportData) => {
+  const exportData = data.exportActivity;
+  if (exportData.allocationsAffected === 0) {
+    return "No export allocation activity was linked to this vessel operation's trailers.";
+  }
+
+  const rows = [
+    "| Export Metric | Value |",
+    "| --- | --- |",
+    `| Allocations linked | ${exportData.allocationsAffected} |`,
+    `| Waiting loading | ${exportData.waitingLoading} |`,
+    `| Waiting collection | ${exportData.waitingCollection} |`,
+    `| Overdue | ${exportData.overdue} |`,
+    `| Completed | ${exportData.completed} |`,
+    `| Avg turnaround | ${exportData.averageTurnaroundHours === null ? "Not available" : `${exportData.averageTurnaroundHours.toFixed(1)} hours`} |`,
+  ].join("\n");
+
+  return `Export movement activity was detected for linked trailers.\n\n${rows}`;
+};
+
+const buildOverallPerformance = (data: VesselOperationalReportData) => {
+  const performanceRows = [
+    `- Average inspection time: ${data.performance.averageInspectionTimeMinutes === null ? "Not available" : `${data.performance.averageInspectionTimeMinutes.toFixed(1)} minutes`}`,
+    `- Arrival completion: ${formatPercent(data.performance.arrivalCompletionPercent)}`,
+    `- Priority completion: ${formatPercent(data.performance.priorityCompletionPercent)}`,
+    `- Temperature compliance: ${formatPercent(data.performance.temperatureCompliancePercent)}`,
+    `- Photos captured across expected trailers: ${formatPercent(data.performance.photosCapturedPercent)}`,
+    `- Damage incidence: ${formatPercent(data.performance.damageIncidencePercent)}`,
+    `- Compound occupancy impact: ${formatPercent(data.performance.compoundOccupancyImpactPercent)}`,
+    `- Export turnaround: ${data.performance.exportTurnaroundHours === null ? "Not available" : `${data.performance.exportTurnaroundHours.toFixed(1)} hours`}`,
+  ];
+
+  const timelineLine = data.timelineSummary.totalEvents > 0
+    ? `Timeline captured ${data.timelineSummary.totalEvents} operational events from ${formatDateTime(data.timelineSummary.firstEventAt)} to ${formatDateTime(data.timelineSummary.lastEventAt)}.`
+    : "No timeline events were captured for this report.";
+
+  return `${timelineLine}\n\n${performanceRows.join("\n")}`;
+};
+
+const buildRecommendations = (data: VesselOperationalReportData) => {
+  const items: string[] = [];
+
+  if (data.statistics.pendingInspections > 0) {
+    items.push(`Complete the ${data.statistics.pendingInspections} pending inspections before final handover.`);
+  }
+
+  if (data.statistics.pendingTrailers > 0 || data.statistics.notDischargedTrailers > 0) {
+    items.push("Prioritise discharge and arrival confirmation for outstanding trailers to reduce berth-side delays.");
+  }
+
+  if ((data.performance.temperatureCompliancePercent ?? 100) < 100) {
+    items.push("Review temperature exception trailers and capture corrective actions in the inspection notes.");
+  }
+
+  if (data.exportActivity.overdue > 0) {
+    items.push("Escalate overdue export allocations and confirm return commitments with hauliers.");
+  }
+
+  if (data.operationalAlerts.some((alert) => (alert.severity ?? "").toLowerCase() === "critical")) {
+    items.push("Address critical operational alerts before closing operational readiness checks.");
+  }
+
+  if (items.length === 0) {
+    return "No immediate corrective recommendations are required. Continue routine monitoring and closeout checks.";
+  }
+
+  return items.map((item) => `- ${item}`).join("\n");
+};
+
 const buildFinalOperationalStatus = (data: VesselOperationalReportData) => {
   if (data.operation.status === "completed") {
     return "The vessel operation is recorded as completed and the report reflects the current live operational data.";
@@ -280,12 +405,16 @@ const buildFinalOperationalStatus = (data: VesselOperationalReportData) => {
 export function buildDeterministicVesselOperationAiReportSections(data: VesselOperationalReportData): VesselOperationAiReportSections {
   return {
     operationOverview: buildOperationOverview(data),
-    trailerDischargeSummary: buildTrailerDischargeSummary(data),
+    keyStatistics: buildKeyStatistics(data),
+    priorityHandling: buildPriorityHandling(data),
     inspectionSummary: buildInspectionSummary(data),
-    damageFindings: buildDamageFindings(data),
-    temperatureFindings: buildTemperatureFindings(data),
-    outstandingItems: buildOutstandingItems(data),
-    finalOperationalStatus: buildFinalOperationalStatus(data),
+    temperatureCompliance: buildTemperatureCompliance(data),
+    damageSummary: buildDamageSummary(data),
+    operationalIssues: buildOperationalIssues(data),
+    alertsGenerated: buildAlertsGenerated(data),
+    exportActivity: buildExportActivity(data),
+    overallPerformance: buildOverallPerformance(data),
+    recommendations: `${buildRecommendations(data)}\n\n${buildFinalOperationalStatus(data)}`,
   };
 }
 
@@ -298,23 +427,35 @@ export function buildVesselOperationAiReportBody(sections: VesselOperationAiRepo
     "Operation Overview",
     sections.operationOverview,
     "",
-    "Trailer Discharge Summary",
-    sections.trailerDischargeSummary,
+    "Key Statistics",
+    sections.keyStatistics,
+    "",
+    "Priority Handling",
+    sections.priorityHandling,
     "",
     "Inspection Summary",
     sections.inspectionSummary,
     "",
-    "Damage Findings",
-    sections.damageFindings,
+    "Temperature Compliance",
+    sections.temperatureCompliance,
     "",
-    "Temperature Findings",
-    sections.temperatureFindings,
+    "Damage Summary",
+    sections.damageSummary,
     "",
-    "Outstanding Items",
-    sections.outstandingItems,
+    "Operational Issues",
+    sections.operationalIssues,
     "",
-    "Final Operational Status",
-    sections.finalOperationalStatus,
+    "Alerts Generated",
+    sections.alertsGenerated,
+    "",
+    "Export Activity",
+    sections.exportActivity,
+    "",
+    "Overall Performance",
+    sections.overallPerformance,
+    "",
+    "Recommendations",
+    sections.recommendations,
   ].join("\n");
 }
 

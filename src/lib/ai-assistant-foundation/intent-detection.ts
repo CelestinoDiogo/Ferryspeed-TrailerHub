@@ -116,6 +116,63 @@ export const detectIntent = (question: string, context?: AiAssistantContext): Ai
     });
   }
 
+  if (trailerNumber && /\bopen\b.*\btrailer\b|\bshow\b.*\btrailer\b/.test(normalized)) {
+    return aiAssistantIntentSchema.parse({
+      intent: "find_trailer",
+      trailerNumber,
+      limit: 1,
+      scope,
+    });
+  }
+
+  if (/\bshow\b.*\bwaiting trailers?\b|\bwaiting position\b|\btrailers? waiting\b/.test(normalized)) {
+    return aiAssistantIntentSchema.parse({ intent: "list_waiting_compound", scope, limit: DEFAULT_LIMIT });
+  }
+
+  if (/\bshow\b.*\bpriority\b|\bpriority trailers?\b/.test(normalized)) {
+    return aiAssistantIntentSchema.parse({ intent: "list_priority_trailers", scope, limit: DEFAULT_LIMIT });
+  }
+
+  if (/\bshow\b.*\bdepartures\b|\bdepartures\b.*\btoday\b/.test(normalized)) {
+    return aiAssistantIntentSchema.parse({ intent: "departures_today", scope: "today", limit: DEFAULT_LIMIT });
+  }
+
+  if (/\bshow\b.*\barrivals\b|\barrivals\b.*\btoday\b/.test(normalized)) {
+    return aiAssistantIntentSchema.parse({ intent: "arrivals_today", scope: "today", limit: DEFAULT_LIMIT });
+  }
+
+  if (/\bshow\b.*\binspections\b|\binspection queue\b/.test(normalized)) {
+    return aiAssistantIntentSchema.parse({ intent: "list_pending_inspections", scope, limit: DEFAULT_LIMIT });
+  }
+
+  if (/\bshow\b.*\bexport allocations\b|\bexport operations\b/.test(normalized)) {
+    return aiAssistantIntentSchema.parse({ intent: "export_allocated", scope, limit: DEFAULT_LIMIT });
+  }
+
+  if (/\bshow\b.*\bdamaged trailers?\b|\bdamage alerts?\b/.test(normalized)) {
+    return aiAssistantIntentSchema.parse({ intent: "trailers_with_damage", scope, limit: DEFAULT_LIMIT });
+  }
+
+  if (/\bshow\b.*\btemperature alerts?\b|\btemperature alerts?\b/.test(normalized)) {
+    return aiAssistantIntentSchema.parse({ intent: "trailers_with_temperature_alert", scope, limit: DEFAULT_LIMIT });
+  }
+
+  if (/\bshow\b.*\bcompound occupancy\b|\bcompound occupancy\b/.test(normalized)) {
+    return aiAssistantIntentSchema.parse({ intent: "compound_summary", scope, limit: DEFAULT_LIMIT });
+  }
+
+  if (/\bsummarise\b.*\btoday\b|\bsummarize\b.*\btoday\b|\bdaily operations summary\b|\bexplain today'?s delays\b/.test(normalized)) {
+    return aiAssistantIntentSchema.parse({ intent: "operations_summary_today", scope: "today", limit: 1 });
+  }
+
+  if (trailerNumber && /\bwhy\b.*\bstill waiting\b/.test(normalized)) {
+    return aiAssistantIntentSchema.parse({ intent: "trailer_current_status", trailerNumber, limit: 1, scope });
+  }
+
+  if (trailerNumber && /\bwhy\b.*\bnot\b.*\bcompound\b/.test(normalized)) {
+    return aiAssistantIntentSchema.parse({ intent: "trailer_location", trailerNumber, limit: 1, scope });
+  }
+
   if (trailerNumber) {
     return aiAssistantIntentSchema.parse({
       intent: "find_trailer",

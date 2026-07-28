@@ -227,6 +227,16 @@ export type AiAssistantAction = {
   filter?: Record<string, string | number | boolean>;
 };
 
+export type AiAssistantPreparedAction = {
+  id: string;
+  label: string;
+  requiresConfirmation: boolean;
+  confirmationPrompt: string;
+  moduleLabel: string;
+  moduleHref: string;
+  safetyLevel: "high" | "medium";
+};
+
 export type AiAssistantResponse = {
   intent: AiAssistantIntentName;
   title: string;
@@ -244,5 +254,6 @@ export type AiAssistantResponse = {
   primaryMetrics?: AiAssistantSummaryItem[];
   sections?: AiAssistantSection[];
   alerts?: AiAssistantAlert[];
+  preparedActions?: AiAssistantPreparedAction[];
   truncated?: boolean;
 };

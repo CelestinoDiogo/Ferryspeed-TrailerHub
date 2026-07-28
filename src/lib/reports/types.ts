@@ -37,6 +37,16 @@ export type VesselOperationalReportData = {
     temperatureExceptions: number;
     completionPercentage: number;
   };
+  performance: {
+    averageInspectionTimeMinutes: number | null;
+    arrivalCompletionPercent: number;
+    priorityCompletionPercent: number;
+    temperatureCompliancePercent: number | null;
+    photosCapturedPercent: number;
+    damageIncidencePercent: number;
+    compoundOccupancyImpactPercent: number | null;
+    exportTurnaroundHours: number | null;
+  };
   trailers: Array<{
     id: string;
     trailerNumber: string;
@@ -133,6 +143,40 @@ export type VesselOperationalReportData = {
     trailerNumber: string | null;
     description: string;
   }>;
+  operationalAlerts: Array<{
+    id: string;
+    trailerId: string | null;
+    trailerNumber: string | null;
+    severity: string | null;
+    status: string | null;
+    title: string;
+    sourceModule: string | null;
+    createdAt: string | null;
+  }>;
+  exportActivity: {
+    allocationsAffected: number;
+    waitingLoading: number;
+    waitingCollection: number;
+    overdue: number;
+    completed: number;
+    averageTurnaroundHours: number | null;
+    sampleAllocations: Array<{
+      id: string;
+      trailerNumber: string | null;
+      customer: string | null;
+      status: string;
+      updatedAt: string | null;
+    }>;
+  };
+  timelineSummary: {
+    totalEvents: number;
+    firstEventAt: string | null;
+    lastEventAt: string | null;
+    topEventTypes: Array<{
+      event: string;
+      count: number;
+    }>;
+  };
   timeline: Array<{
     timestamp: string;
     event: string;
@@ -149,12 +193,16 @@ export type AIReportNarrative = {
 
 export type VesselOperationAiReportSections = {
   operationOverview: string;
-  trailerDischargeSummary: string;
+  keyStatistics: string;
+  priorityHandling: string;
   inspectionSummary: string;
-  damageFindings: string;
-  temperatureFindings: string;
-  outstandingItems: string;
-  finalOperationalStatus: string;
+  temperatureCompliance: string;
+  damageSummary: string;
+  operationalIssues: string;
+  alertsGenerated: string;
+  exportActivity: string;
+  overallPerformance: string;
+  recommendations: string;
 };
 
 export type VesselOperationAiReportDraft = {
@@ -197,6 +245,33 @@ export type VesselOperationAiReportResponse = {
   emailProviderConfigured?: boolean;
   usedFallback: boolean;
   message: string | null;
+};
+
+export type VesselOperationReportLibraryItem = {
+  reportId: string;
+  vesselOperationId: string;
+  vesselName: string | null;
+  voyageReference: string | null;
+  operationStatus: string | null;
+  reportStatus: "draft" | "final" | "sent";
+  generatedAt: string;
+  generatedBy: string | null;
+  subject: string;
+  generationMode: "ai" | "template";
+};
+
+export type VesselOperationComparisonItem = {
+  vesselOperationId: string;
+  vesselName: string | null;
+  voyageReference: string | null;
+  operationCompletedAt: string | null;
+  expectedTrailers: number;
+  arrivedTrailers: number;
+  inspectedTrailers: number;
+  pendingInspections: number;
+  damagedTrailers: number;
+  temperatureAlertTrailers: number;
+  completionPercentage: number;
 };
 
 export type ExecutiveDashboardTrendPoint = {

@@ -18,6 +18,21 @@ Set these server-side variables for the AI Assistant and dashboard runtime:
 
 On Cloudflare, define the OpenAI variables in the Worker environment or secrets for the deployed app. Keep `OPENAI_API_KEY` private and do not expose it to the browser.
 
+## Deployment
+
+Use one deployment command for local and CI:
+
+- `npm run deploy`
+
+This command runs:
+
+1. `npm run clean` (removes `.next` and `.open-next`)
+2. `npm run cloudflare:build` (OpenNext Cloudflare build)
+3. `wrangler deploy`
+4. `npm run smoke:postdeploy`
+
+Set `SMOKE_BASE_URL` before running deploy so the post-deployment smoke test can validate `/, /login, /dashboard`.
+
 For AI Vessel Report email delivery, configure Gmail API server-side only:
 
 - `GMAIL_CLIENT_ID`: OAuth client id used to obtain Gmail access tokens.

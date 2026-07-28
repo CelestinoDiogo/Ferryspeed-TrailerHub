@@ -16,7 +16,6 @@ import {
 import { supabase } from "@/lib/supabase";
 import {
   COMPOUND_REFRESH_STORAGE_KEY,
-  assignNextWaitingTrailerAfterDeliveredEmpty,
   EXPORT_ACTIVE_STATUS_QUERY_VALUES,
   getAdvanceStatusActionLabel,
   isExportAllocationOffCompoundStatus,
@@ -34,6 +33,7 @@ import {
   type ExportAllocationRecord,
   type ExportAllocationStatus,
 } from "@/lib/export-allocation";
+import { advanceExportAllocationStatus } from "@/lib/operations/export-lifecycle";
 
 type TrailerOption = {
   id: string;
@@ -428,86 +428,6 @@ function ExportAllocationDetailsContent() {
     return COMPOUND_POSITIONS.find((position) => !occupied.has(position)) ?? null;
   };
 
-  const moveAllocationToDeliveredEmpty = async (row: ExportAllocationRecord) => {
-    if (!row.trailer_id) {
-      return { previousPosition: null as string | null, requiresClientEvent: true };
-    }
-
-    const rpcResult = await (supabase as unknown as {
-      rpc: (fn: string, args: Record<string, unknown>) => Promise<{ data: unknown; error: { code?: string; message?: string } | null }>;
-    }).rpc("set_export_allocation_delivered_empty", {
-      p_allocation_id: row.id,
-      p_expected_current_status: row.status,
-    });
-
-    if (!rpcResult.error) {
-      const rpcRows = Array.isArray(rpcResult.data) ? rpcResult.data : [];
-      const resultRow = (rpcRows[0] as { transitioned?: boolean; previous_compound_position?: string | null } | undefined) ?? null;
-      if (!resultRow?.transitioned) {
-        throw new Error("Allocation status changed by another user. Refresh and try again.");
-      }
-
-      return {
-        previousPosition: normalizeCompoundPosition(resultRow.previous_compound_position),
-        requiresClientEvent: false,
-      };
-    }
-
-    if (rpcResult.error.code !== "42883") {
-      throw new Error(rpcResult.error.message || "Unable to move allocation to Delivered Empty.");
-    }
-
-    const nowIso = new Date().toISOString();
-    const { data: trailerData, error: trailerReadError } = await supabase
-      .from("trailers")
-      .select("id, compound_position")
-      .eq("id", row.trailer_id)
-      .single();
-
-    if (trailerReadError || !trailerData) {
-      throw new Error(trailerReadError?.message || "Unable to load trailer compound position.");
-    }
-
-    const previousPosition = normalizeCompoundPosition((trailerData as { compound_position?: string | null }).compound_position);
-
-    const { error: updateError } = await supabase
-      .from("export_allocations")
-      .update({
-        status: "delivered_empty",
-        delivered_empty_at: nowIso,
-        updated_at: nowIso,
-      })
-      .eq("id", row.id)
-      .eq("status", row.status);
-
-    if (updateError) {
-      throw new Error(updateError.message || "Unable to update status.");
-    }
-
-    const { error: trailerUpdateError } = await supabase
-      .from("trailers")
-      .update({
-        compound_position: null,
-      })
-      .eq("id", row.trailer_id);
-
-    if (trailerUpdateError) {
-      await supabase
-        .from("export_allocations")
-        .update({
-          status: row.status,
-          delivered_empty_at: row.delivered_empty_at ?? null,
-          updated_at: nowIso,
-        })
-        .eq("id", row.id)
-        .eq("status", "delivered_empty");
-
-      throw new Error(trailerUpdateError.message || "Unable to clear trailer compound position.");
-    }
-
-    return { previousPosition, requiresClientEvent: true };
-  };
-
   const restoreTrailerToCompoundAfterUndo = async (
     row: ExportAllocationRecord,
     previousPosition?: string | null,
@@ -578,48 +498,17 @@ function ExportAllocationDetailsContent() {
     setWarning(null);
 
     try {
-      let movementMetadata: Record<string, unknown> | undefined;
+      const advanceResult = await advanceExportAllocationStatus(supabase, {
+        allocation,
+        sourceModule: "export",
+      });
 
-      if (next === "delivered_empty") {
-        const delivered = await moveAllocationToDeliveredEmpty(allocation);
-        movementMetadata = {
-          reason: "export_departure",
-          previous_compound_position: delivered.previousPosition,
-          new_compound_position: null,
-        };
+      if (advanceResult.warning) {
+        setWarning(advanceResult.warning);
+      }
 
-        let automaticAssignmentMessage: string | null = null;
-
-        try {
-          const automaticAssignment = await assignNextWaitingTrailerAfterDeliveredEmpty(
-            supabase as unknown as {
-              rpc: (
-                fn: string,
-                args?: Record<string, unknown>,
-              ) => Promise<{
-                data: unknown;
-                error: { code?: string; message?: string } | null;
-              }>;
-            },
-          );
-
-          if (automaticAssignment.assigned) {
-            const trailerNumber = automaticAssignment.trailerNumber ?? "the waiting trailer";
-            const assignedPosition = automaticAssignment.assignedPosition ?? "the first available position";
-            automaticAssignmentMessage = `Trailer delivered empty. Waiting trailer ${trailerNumber} was automatically assigned to ${assignedPosition}.`;
-          }
-        } catch {
-          setWarning("Trailer delivered empty, but automatic waiting assignment could not be completed.");
-        }
-
-        if (delivered.requiresClientEvent) {
-          await createStatusEvent(allocation, allocation.status, next, movementMetadata);
-        }
-        setSuccess(
-          automaticAssignmentMessage
-            ? `Status updated to Delivered Empty. Trailer removed from compound inventory. ${automaticAssignmentMessage}`
-            : "Status updated to Delivered Empty. Trailer removed from compound inventory.",
-        );
+      if (advanceResult.nextStatus === "delivered_empty") {
+        setSuccess("Status updated to Delivered Empty. Trailer removed from compound inventory.");
         await loadAllocation();
         if (typeof window !== "undefined") {
           window.localStorage.setItem(COMPOUND_REFRESH_STORAGE_KEY, Date.now().toString());
@@ -627,33 +516,11 @@ function ExportAllocationDetailsContent() {
         return;
       }
 
-      if (next === "collected_loaded") {
+      if (advanceResult.nextStatus === "collected_loaded") {
         await updateTrailerWhenLoaded(allocation);
       }
 
-      const nowIso = new Date().toISOString();
-      const timestampField = getExportAllocationTimestampField(next);
-      const updatePayload: Database["public"]["Tables"]["export_allocations"]["Update"] = {
-        status: next,
-        updated_at: nowIso,
-      };
-
-      if (timestampField) {
-        updatePayload[timestampField] = nowIso;
-      }
-
-      const { error: updateError } = await supabase
-        .from("export_allocations")
-        .update(updatePayload)
-        .eq("id", allocation.id)
-        .eq("status", allocation.status);
-
-      if (updateError) {
-        throw new Error(updateError.message || "Unable to update status.");
-      }
-
-      await createStatusEvent(allocation, allocation.status, next);
-      setSuccess(`Status updated to ${getExportAllocationStatusLabel(next)}.`);
+      setSuccess(`Status updated to ${getExportAllocationStatusLabel(advanceResult.nextStatus)}.`);
       await loadAllocation();
     } catch (advanceErr) {
       setError(advanceErr instanceof Error ? advanceErr.message : "Unable to advance status.");
@@ -794,23 +661,12 @@ function ExportAllocationDetailsContent() {
     setSuccess(null);
 
     try {
-      const nowIso = new Date().toISOString();
       const cancelledAfterDeparture = isExportAllocationOffCompoundStatus(allocation.status);
-      const { error: cancelError } = await supabase
-        .from("export_allocations")
-        .update({
-          status: "cancelled",
-          cancelled_at: nowIso,
-          updated_at: nowIso,
-        })
-        .eq("id", allocation.id);
-
-      if (cancelError) {
-        throw new Error(cancelError.message || "Unable to cancel allocation.");
-      }
-
-      await createStatusEvent(allocation, allocation.status, "cancelled", {
-        requires_manual_compound_return: cancelledAfterDeparture,
+      await advanceExportAllocationStatus(supabase, {
+        allocation,
+        sourceModule: "export",
+        targetStatus: "cancelled",
+        skipWaitingAutoAssign: true,
       });
       setSuccess(
         cancelledAfterDeparture

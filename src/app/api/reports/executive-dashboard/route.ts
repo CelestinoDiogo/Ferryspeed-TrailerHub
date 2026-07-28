@@ -2,7 +2,7 @@ import { z } from "zod";
 import { bootstrapCurrentUserRole, requireRbacPermission, RbacPermissionError } from "@/lib/rbac/route";
 import { createAuthenticatedRouteSupabaseClient, getRouteBearerToken, requireAuthenticatedRouteUser, SupabaseRouteAuthError } from "@/lib/supabase-route-client";
 import { createHistoryDateRange, normalizeHistoryPreset, type HistoryDateRangeValue } from "@/lib/history-date-range";
-import { loadExecutiveDashboardReportData } from "@/lib/reports/executive-dashboard-report";
+import { ExecutiveDashboardSchemaError, loadExecutiveDashboardReportData } from "@/lib/reports/executive-dashboard-report";
 
 const rangeSchema = z.object({
   range: z.string().optional(),
@@ -58,6 +58,17 @@ export async function GET(request: Request) {
 
     if (error instanceof RbacPermissionError) {
       return Response.json({ error: error.message }, { status: error.status });
+    }
+
+    if (error instanceof ExecutiveDashboardSchemaError) {
+      console.error("Executive dashboard schema mismatch details:", error.databaseError);
+      return Response.json(
+        {
+          error:
+            "Executive dashboard failed due to a database schema mismatch in operational_alert_settings. Apply migration 035_fix_operational_alert_settings_dashboard_columns.sql and retry.",
+        },
+        { status: 500 },
+      );
     }
 
     return Response.json({ error: error instanceof Error ? error.message : "Unable to load executive dashboard." }, { status: 500 });

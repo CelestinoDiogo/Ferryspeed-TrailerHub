@@ -1,6 +1,7 @@
 import "server-only";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/lib/database.types";
+import { SupabaseConfigError } from "@/lib/supabase";
 
 export class SupabaseRouteAuthError extends Error {
   status: number;
@@ -44,11 +45,11 @@ export function createAuthenticatedRouteSupabaseClient(request: Request): Supaba
   const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
   if (!supabaseUrl) {
-    throw new Error("Missing NEXT_PUBLIC_SUPABASE_URL.");
+    throw new SupabaseConfigError();
   }
 
   if (!supabaseAnonKey) {
-    throw new Error("Missing NEXT_PUBLIC_SUPABASE_ANON_KEY.");
+    throw new SupabaseConfigError();
   }
 
   const accessToken = getRouteBearerToken(request);

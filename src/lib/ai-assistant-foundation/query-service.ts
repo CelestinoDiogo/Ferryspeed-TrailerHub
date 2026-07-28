@@ -2,7 +2,7 @@ import "server-only";
 
 import { calculateCollectionAging } from "@/lib/collection-aging";
 import type { Database } from "@/lib/database.types";
-import { normalizeExportAllocationRecord, type ExportAllocationRecord } from "@/lib/export-allocation";
+import { isExportAllocationOverdue, normalizeExportAllocationRecord, type ExportAllocationRecord } from "@/lib/export-allocation";
 import { moduleKeys, type PermissionModuleKey } from "@/lib/auth/permissions";
 import { requirePermission } from "@/lib/rbac/service";
 import type { AssistantContext, AssistantIntent, AssistantQueryResult } from "@/lib/ai-assistant-foundation/types";
@@ -185,6 +185,66 @@ const buildTrailerItem = (trailer: TrailerRow) => ({
   route: `/dashboard/trailers/${trailer.id}`,
 });
 
+const queryTrailerWaitingReasons = async (context: AssistantContext, trailer: TrailerRow) => {
+  const reasons: string[] = [];
+
+  const [deliveryResult, exportResult, vesselResult] = await Promise.all([
+    context.supabase
+      .from("delivery_bookings")
+      .select("id, status, waiting_collection_since, collection_due_date")
+      .eq("trailer_id", trailer.id)
+      .eq("status", "waiting_collection")
+      .order("waiting_collection_since", { ascending: true })
+      .limit(1)
+      .maybeSingle(),
+    context.supabase
+      .from("export_allocations")
+      .select("status, expected_return_at, collection_date")
+      .eq("trailer_id", trailer.id)
+      .order("updated_at", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+    context.supabase
+      .from("vessel_operation_trailers")
+      .select("arrival_status, status, inspection_started_at, inspection_completed_at")
+      .eq("trailer_id", trailer.id)
+      .order("updated_at", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+  ]);
+
+  if (!deliveryResult.error && deliveryResult.data) {
+    const waiting = deliveryResult.data as DeliveryBookingRow;
+    const aging = calculateCollectionAging(waiting);
+    reasons.push(`Waiting collection (${aging.overdueDays} day(s) overdue).`);
+  }
+
+  if (!exportResult.error && exportResult.data) {
+    const exportRow = normalizeExportAllocationRecord(exportResult.data as unknown as ExportAllocationRecord);
+    reasons.push(`Export status is ${titleCase(exportRow.status)}.`);
+    if (isExportAllocationOverdue(exportRow)) {
+      reasons.push("Export return window is overdue.");
+    }
+  }
+
+  if (!vesselResult.error && vesselResult.data) {
+    const vesselRow = vesselResult.data as VesselTrailerRow;
+    if (normalizeText(vesselRow.arrival_status) === "arrived" && !vesselRow.inspection_completed_at) {
+      reasons.push("Inspection is still pending after arrival.");
+    }
+  }
+
+  if (!trailer.compound_position && !trailer.departure_date) {
+    reasons.push("Compound position is not assigned.");
+  }
+
+  if (reasons.length === 0) {
+    reasons.push("No blocking operational condition was detected from current records.");
+  }
+
+  return reasons;
+};
+
 const queryFindTrailer = async (context: AssistantContext, gate: PermissionGate, intent: Extract<AssistantIntent, { intent: "find_trailer" | "trailer_current_status" | "trailer_location" }>) => {
   const denied = await gate.firstDenied("arrivals");
   if (denied) {
@@ -217,6 +277,8 @@ const queryFindTrailer = async (context: AssistantContext, gate: PermissionGate,
   }
 
   const trailer = matches[0];
+  const wantsExplanation = /\bwhy\b|\bexplain\b/.test(normalizeText(context.question));
+  const waitingReasons = wantsExplanation ? await queryTrailerWaitingReasons(context, trailer) : [];
 
   if (intent.intent === "trailer_location") {
     const location = trailer.departure_date
@@ -233,7 +295,7 @@ const queryFindTrailer = async (context: AssistantContext, gate: PermissionGate,
       items: [
         {
           ...buildTrailerItem(trailer),
-          detail: location,
+          detail: [location, ...waitingReasons].join(" "),
         },
       ],
       actions: [
@@ -249,7 +311,7 @@ const queryFindTrailer = async (context: AssistantContext, gate: PermissionGate,
     title: `Trailer ${trailer.trailer_number ?? intent.trailerNumber}`,
     summary: `${trailer.trailer_number ?? intent.trailerNumber} is ${titleCase(trailer.operational_status ?? trailer.load_status)}${
       trailer.compound_position ? ` at ${trailer.compound_position}` : ""
-    }.`,
+    }${waitingReasons.length > 0 ? ` ${waitingReasons.join(" ")}` : "."}`,
     count: 1,
     items: [buildTrailerItem(trailer)],
     actions: [
@@ -258,6 +320,241 @@ const queryFindTrailer = async (context: AssistantContext, gate: PermissionGate,
     ],
     sourceModules: ["trailers"],
   });
+};
+
+const queryWaitingCompound = async (context: AssistantContext, gate: PermissionGate, limit: number) => {
+  const denied = await gate.firstDenied("compound");
+  if (denied) {
+    return permissionDeniedResult("list_waiting_compound", denied);
+  }
+
+  const { data, error } = await context.supabase
+    .from("trailers")
+    .select("id, trailer_number, customer, load_status, operational_status, compound_position, arrival_date, departure_date, is_local")
+    .is("departure_date", null)
+    .order("arrival_date", { ascending: true })
+    .limit(700);
+
+  if (error) {
+    throw error;
+  }
+
+  const rows = ((data ?? []) as TrailerRow[]).filter((row) => {
+    if (row.is_local === true) {
+      return false;
+    }
+
+    const operational = normalizeText(row.operational_status);
+    return !row.compound_position || operational.includes("waiting") || operational.includes("hold");
+  });
+
+  const items = rows.slice(0, limit).map((row) => ({
+    trailerId: row.id,
+    trailerNumber: row.trailer_number ?? "Unknown",
+    status: titleCase(row.operational_status ?? row.load_status),
+    customer: row.customer ?? undefined,
+    compoundPosition: row.compound_position ?? undefined,
+    detail: row.compound_position ? "Waiting operational progression." : "Waiting for compound position.",
+    route: `/dashboard/trailers/${row.id}`,
+  }));
+
+  if (items.length === 0) {
+    return noResults(
+      "list_waiting_compound",
+      "Waiting trailers",
+      "No trailers are currently waiting for compound position or progression.",
+      ["trailers"],
+      [{ label: "Open Compound", route: "/dashboard/compound" }],
+    );
+  }
+
+  return asResult({
+    intent: "list_waiting_compound",
+    title: "Waiting trailers",
+    summary: `${rows.length} trailer${rows.length === 1 ? "" : "s"} currently waiting in the operational flow.`,
+    count: rows.length,
+    items,
+    actions: [{ label: "Open Compound", route: "/dashboard/compound" }],
+    sourceModules: ["trailers"],
+  });
+};
+
+const queryArrivalsToday = async (context: AssistantContext, gate: PermissionGate, limit: number) => {
+  const denied = await gate.firstDenied("arrivals");
+  if (denied) {
+    return permissionDeniedResult("arrivals_today", denied);
+  }
+
+  const today = currentDateKey(context.pageContext);
+  const { data, error } = await context.supabase
+    .from("trailers")
+    .select("id, trailer_number, customer, operational_status, load_status, compound_position, arrival_date, departure_date")
+    .is("departure_date", null)
+    .order("arrival_date", { ascending: false })
+    .limit(800);
+
+  if (error) {
+    throw error;
+  }
+
+  const rows = ((data ?? []) as TrailerRow[]).filter((row) => toDateKey(row.arrival_date) === today);
+  const items = rows.slice(0, limit).map((row) => ({
+    trailerId: row.id,
+    trailerNumber: row.trailer_number ?? "Unknown",
+    status: titleCase(row.operational_status ?? "arrived"),
+    customer: row.customer ?? undefined,
+    compoundPosition: row.compound_position ?? undefined,
+    detail: row.arrival_date ? `Arrived ${new Date(row.arrival_date).toLocaleString("en-GB")}` : "Arrived today",
+    route: `/dashboard/trailers/${row.id}`,
+  }));
+
+  if (items.length === 0) {
+    return noResults("arrivals_today", "Arrivals today", "No arrivals were recorded today.", ["trailers"], [{ label: "Open Arrivals", route: "/dashboard/new-arrival" }]);
+  }
+
+  return asResult({
+    intent: "arrivals_today",
+    title: "Arrivals today",
+    summary: `${rows.length} trailer${rows.length === 1 ? "" : "s"} arrived today.`,
+    count: rows.length,
+    items,
+    actions: [{ label: "Open Arrivals", route: "/dashboard/new-arrival" }],
+    sourceModules: ["trailers"],
+  });
+};
+
+const queryTrailersByCustomer = async (context: AssistantContext, gate: PermissionGate, customer: string, limit: number) => {
+  const denied = await gate.firstDenied("arrivals");
+  if (denied) {
+    return permissionDeniedResult("trailers_by_customer", denied);
+  }
+
+  const { data, error } = await context.supabase
+    .from("trailers")
+    .select("id, trailer_number, customer, load_status, operational_status, compound_position, arrival_date, departure_date")
+    .ilike("customer", `%${customer}%`)
+    .order("arrival_date", { ascending: false })
+    .limit(limit + 10);
+
+  if (error) {
+    throw error;
+  }
+
+  const rows = (data ?? []) as TrailerRow[];
+  const items = rows.slice(0, limit).map(buildTrailerItem);
+
+  if (items.length === 0) {
+    return noResults("trailers_by_customer", `Customer: ${customer}`, `No trailers were found for customer ${customer}.`, ["trailers"], [{ label: "Open Trailer Search", route: "/dashboard/search" }]);
+  }
+
+  return asResult({
+    intent: "trailers_by_customer",
+    title: `Customer: ${customer}`,
+    summary: `${rows.length} trailer${rows.length === 1 ? "" : "s"} found for customer ${customer}.`,
+    count: rows.length,
+    items,
+    actions: [{ label: "Open Trailer Search", route: "/dashboard/search" }],
+    sourceModules: ["trailers"],
+  });
+};
+
+const queryDamageAlerts = async (context: AssistantContext, gate: PermissionGate, limit: number) => {
+  const denied = await gate.firstDenied("vessel_operations");
+  if (denied) {
+    return permissionDeniedResult("trailers_with_damage", denied);
+  }
+
+  const { data, error } = await context.supabase
+    .from("vessel_operation_trailers")
+    .select("id, vessel_operation_id, trailer_id, trailer_number, customer, status, arrival_status, has_damage, inspection_started_at, inspection_completed_at")
+    .eq("has_damage", true)
+    .order("updated_at", { ascending: false })
+    .limit(500);
+
+  if (error) {
+    throw error;
+  }
+
+  const rows = (data ?? []) as VesselTrailerRow[];
+  const items = rows.slice(0, limit).map((row) => ({
+    trailerId: row.trailer_id ?? undefined,
+    trailerNumber: row.trailer_number ?? "Unknown",
+    status: "Damage alert",
+    customer: row.customer ?? undefined,
+    detail: [titleCase(row.arrival_status), row.inspection_completed_at ? "Inspection complete" : "Inspection pending"].filter(Boolean).join(" · "),
+    route: `/dashboard/vessel-operations/${row.vessel_operation_id}`,
+  }));
+
+  if (items.length === 0) {
+    return noResults("trailers_with_damage", "Damaged trailers", "No damaged trailers were found.", ["vessel_operation_trailers"], [{ label: "Open Vessel Operations", route: "/dashboard/vessel-operations" }]);
+  }
+
+  return asResult({
+    intent: "trailers_with_damage",
+    title: "Damaged trailers",
+    summary: `${rows.length} trailer${rows.length === 1 ? "" : "s"} currently flagged with damage.`,
+    count: rows.length,
+    items,
+    actions: [{ label: "Open Vessel Operations", route: "/dashboard/vessel-operations" }],
+    sourceModules: ["vessel_operation_trailers"],
+  });
+};
+
+const queryVesselOperationsToday = async (context: AssistantContext, gate: PermissionGate, limit: number) => {
+  const denied = await gate.firstDenied("vessel_operations");
+  if (denied) {
+    return permissionDeniedResult("vessel_operations_today", denied);
+  }
+
+  const today = currentDateKey(context.pageContext);
+  const { data, error } = await context.supabase
+    .from("vessel_operations")
+    .select("id, vessel_name, sailing_reference, status, expected_arrival_at, actual_arrival_at")
+    .order("expected_arrival_at", { ascending: true, nullsFirst: false })
+    .limit(200);
+
+  if (error) {
+    throw error;
+  }
+
+  const rows = ((data ?? []) as VesselOperationRow[]).filter((row) => {
+    return toDateKey(row.expected_arrival_at) === today || toDateKey(row.actual_arrival_at) === today;
+  });
+
+  const items = rows.slice(0, limit).map((row) => ({
+    trailerNumber: row.vessel_name ?? "Vessel",
+    status: titleCase(row.status),
+    detail: row.sailing_reference ? `Sailing ${row.sailing_reference}` : "No sailing reference",
+    route: `/dashboard/vessel-operations/${row.id}`,
+  }));
+
+  if (items.length === 0) {
+    return noResults("vessel_operations_today", "Vessel operations today", "No vessel operations were scheduled for today.", ["vessel_operations"], [{ label: "Open Vessel Operations", route: "/dashboard/vessel-operations" }]);
+  }
+
+  return asResult({
+    intent: "vessel_operations_today",
+    title: "Vessel operations today",
+    summary: `${rows.length} vessel operation${rows.length === 1 ? "" : "s"} scheduled today.`,
+    count: rows.length,
+    items,
+    actions: [{ label: "Open Vessel Operations", route: "/dashboard/vessel-operations" }],
+    sourceModules: ["vessel_operations"],
+  });
+};
+
+const queryActivityTimelineSnapshot = async (context: AssistantContext, limit: number) => {
+  const { data, error } = await context.supabase
+    .from("trailer_activity_log")
+    .select("id, trailer_id, trailer_number, event_type, event_title, created_at")
+    .order("created_at", { ascending: false })
+    .limit(limit);
+
+  if (error) {
+    return { count: 0, items: [] as ActivityRow[] };
+  }
+
+  return { count: (data ?? []).length, items: (data ?? []) as ActivityRow[] };
 };
 
 const queryVesselTrailerList = async (
@@ -838,12 +1135,16 @@ const queryCurrentOperationalSummary = async (context: AssistantContext, gate: P
 
   const summaryItems: AssistantQueryResult["items"] = [];
   const actions: AssistantQueryResult["actions"] = [];
+  const primaryMetrics: NonNullable<AssistantQueryResult["primaryMetrics"]> = [];
+  const sections: NonNullable<AssistantQueryResult["sections"]> = [];
+  const alerts: NonNullable<AssistantQueryResult["alerts"]> = [];
 
   if (allowedModules.has("compound")) {
     const compound = await queryCompoundList(context, gate, "compound_summary", { limit: 1 });
     if (compound.items?.[0]) {
       summaryItems?.push({ trailerNumber: "Compound", status: compound.items[0].status, detail: compound.summary });
       actions.push({ label: "Open Compound", route: "/dashboard/compound" });
+      primaryMetrics.push({ label: "Compound", value: compound.items[0].status ?? "-" });
     }
   }
 
@@ -851,24 +1152,84 @@ const queryCurrentOperationalSummary = async (context: AssistantContext, gate: P
     const departures = await queryDeparturesToday(context, gate, 1);
     summaryItems?.push({ trailerNumber: "Departures", status: String(departures.count ?? 0), detail: "Today" });
     actions.push({ label: "Open Departures", route: "/dashboard/departure" });
+    primaryMetrics.push({ label: "Departures Today", value: departures.count ?? 0 });
   }
 
   if (allowedModules.has("export_operations")) {
     const exportsWaiting = await queryExportList(context, gate, "export_waiting_collection", { limit: 1 });
     summaryItems?.push({ trailerNumber: "Exports waiting collection", status: String(exportsWaiting.count ?? 0) });
     actions.push({ label: "Open Export Operations", route: "/dashboard/export-operations" });
+    primaryMetrics.push({ label: "Waiting Collection", value: exportsWaiting.count ?? 0 });
   }
 
   if (allowedModules.has("vessel_operations")) {
     const pendingInspection = await queryVesselTrailerList(context, gate, "list_pending_inspections", { limit: 1 });
     summaryItems?.push({ trailerNumber: "Pending inspections", status: String(pendingInspection.count ?? 0) });
     actions.push({ label: "Open Vessel Operations", route: "/dashboard/vessel-operations" });
+    primaryMetrics.push({ label: "Inspection Queue", value: pendingInspection.count ?? 0 });
+
+    const temperatureAlerts = await queryVesselTrailerList(context, gate, "list_temperature_alerts", { limit: 1 });
+    primaryMetrics.push({ label: "Temperature Alerts", value: temperatureAlerts.count ?? 0 });
+
+    const damageAlerts = await queryDamageAlerts(context, gate, 1);
+    primaryMetrics.push({ label: "Damage Alerts", value: damageAlerts.count ?? 0 });
+
+    sections.push({
+      key: "vessel",
+      title: "Current Vessel Operations",
+      items: [
+        { label: "Pending Inspection", value: pendingInspection.count ?? 0 },
+        { label: "Temperature Alerts", value: temperatureAlerts.count ?? 0 },
+        { label: "Damage Alerts", value: damageAlerts.count ?? 0 },
+      ],
+    });
   }
 
   if (allowedModules.has("dashboard")) {
     const unresolved = await queryUnresolvedAlerts(context, gate, 1);
     summaryItems?.push({ trailerNumber: "Unresolved alerts", status: String(unresolved.count ?? 0) });
     actions.push({ label: "Open Exceptions", route: "/dashboard/operations-command-centre" });
+    primaryMetrics.push({ label: "Operational Alerts", value: unresolved.count ?? 0 });
+    if ((unresolved.count ?? 0) > 0) {
+      alerts.push({ severity: "warning", message: `${unresolved.count} unresolved operational alert(s) need attention.` });
+    }
+  }
+
+  const waitingTrailers = allowedModules.has("compound")
+    ? await queryWaitingCompound(context, gate, 1)
+    : null;
+  if (waitingTrailers) {
+    primaryMetrics.push({ label: "Waiting Position", value: waitingTrailers.count ?? 0 });
+    sections.push({
+      key: "yard",
+      title: "Compound",
+      items: [
+        { label: "Waiting Position", value: waitingTrailers.count ?? 0 },
+      ],
+    });
+  }
+
+  const timeline = await queryActivityTimelineSnapshot(context, 5);
+  primaryMetrics.push({ label: "Timeline Events", value: timeline.count });
+  sections.push({
+    key: "timeline",
+    title: "Timeline",
+    items: timeline.items.slice(0, 5).map((row) => ({
+      label: row.trailer_number ?? row.event_title ?? "Activity",
+      value: row.event_type ?? "event",
+    })),
+  });
+
+  sections.push({
+    key: "user",
+    title: "Current User",
+    items: [{ label: "Operator", value: context.userId }],
+  });
+
+  const queueRisk = Number(primaryMetrics.find((metric) => metric.label === "Waiting Collection")?.value ?? 0)
+    + Number(primaryMetrics.find((metric) => metric.label === "Inspection Queue")?.value ?? 0);
+  if (queueRisk > 0) {
+    alerts.push({ severity: "critical", message: `${queueRisk} trailer(s) are waiting across collection and inspection queues.` });
   }
 
   if (summaryItems.length === 0) {
@@ -886,10 +1247,13 @@ const queryCurrentOperationalSummary = async (context: AssistantContext, gate: P
   return asResult({
     intent: "current_operational_summary",
     title: "Current operational summary",
-    summary: "Snapshot generated from current read-only operational data.",
+    summary: "Live operational snapshot generated from dashboard, vessel, compound, export, alerts and timeline data.",
     count: summaryItems.length,
     items: summaryItems,
     actions,
+    primaryMetrics,
+    sections,
+    alerts,
     sourceModules: ["trailers", "vessel_operation_trailers", "export_allocations", "operational_alerts", "trailer_activity_log"],
   });
 };
@@ -1016,10 +1380,36 @@ export const runIntentQuery = async (context: AssistantContext, intent: Assistan
     }
     case "export_overdue":
       return queryExportList(context, gate, "export_overdue", { limit: intent.limit });
+    case "list_waiting_compound":
+      return queryWaitingCompound(context, gate, sanitizeLimit(intent.limit));
+    case "arrivals_today":
+      return queryArrivalsToday(context, gate, sanitizeLimit(intent.limit));
     case "departures_today":
       return queryDeparturesToday(context, gate, sanitizeLimit(intent.limit));
     case "departures_by_customer":
       return queryDeparturesByCustomer(context, gate, intent.customer, sanitizeLimit(intent.limit));
+    case "vessel_operations_today":
+      return queryVesselOperationsToday(context, gate, sanitizeLimit(intent.limit));
+    case "operations_summary_today":
+      return queryCurrentOperationalSummary(context, gate);
+    case "export_by_status": {
+      if (intent.status === "allocated") {
+        return queryExportList(context, gate, "export_allocated", { limit: intent.limit });
+      }
+      if (intent.status === "waiting_loading") {
+        return queryExportList(context, gate, "export_waiting_loading", { limit: intent.limit });
+      }
+      if (intent.status === "delivered_empty") {
+        return queryExportList(context, gate, "export_waiting_collection", { limit: intent.limit });
+      }
+      return queryExportList(context, gate, "export_overdue", { limit: intent.limit });
+    }
+    case "trailers_by_customer":
+      return queryTrailersByCustomer(context, gate, intent.customer, sanitizeLimit(intent.limit));
+    case "trailers_with_damage":
+      return queryDamageAlerts(context, gate, sanitizeLimit(intent.limit));
+    case "trailers_with_temperature_alert":
+      return queryVesselTrailerList(context, gate, "list_temperature_alerts", { limit: intent.limit });
     case "unresolved_operational_alerts":
       return queryUnresolvedAlerts(context, gate, sanitizeLimit(intent.limit));
     case "stock_check_discrepancies":
@@ -1032,10 +1422,13 @@ export const runIntentQuery = async (context: AssistantContext, intent: Assistan
         intent: "unknown",
         title: "Unsupported question",
         summary:
-          "I can answer operational read-only questions about trailers, vessel progress, inspections, compound, exports, departures, alerts, and stock-check discrepancies.",
+          "I can answer operational read-only questions about waiting trailers, trailer search/location, arrivals, departures, inspections, compound occupancy, exports, alerts, timeline and daily summaries.",
         count: 0,
         items: [],
-        actions: [{ label: "Open Operations Command Centre", route: "/dashboard/operations-command-centre" }],
+        actions: [
+          { label: "Open Operations Command Centre", route: "/dashboard/operations-command-centre" },
+          { label: "Open Trailer Search", route: "/dashboard/search" },
+        ],
         sourceModules: [],
       });
   }

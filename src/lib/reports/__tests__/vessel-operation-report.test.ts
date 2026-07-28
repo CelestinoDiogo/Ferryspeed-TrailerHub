@@ -38,6 +38,16 @@ const makeReportData = (): VesselOperationalReportData => ({
     temperatureExceptions: 1,
     completionPercentage: 33,
   },
+  performance: {
+    averageInspectionTimeMinutes: 42,
+    arrivalCompletionPercent: 66.7,
+    priorityCompletionPercent: 100,
+    temperatureCompliancePercent: 50,
+    photosCapturedPercent: 33.3,
+    damageIncidencePercent: 33.3,
+    compoundOccupancyImpactPercent: 50,
+    exportTurnaroundHours: 12,
+  },
   trailers: [
     {
       id: "22222222-2222-4222-8222-222222222222",
@@ -216,6 +226,46 @@ const makeReportData = (): VesselOperationalReportData => ({
       description: "Damage recorded at Left Side.",
     },
   ],
+  operationalAlerts: [
+    {
+      id: "alert-1",
+      trailerId: "33333333-3333-4333-8333-333333333333",
+      trailerNumber: "PRO811",
+      severity: "warning",
+      status: "active",
+      title: "Temperature variance",
+      sourceModule: "vessel_operations",
+      createdAt: "2026-07-25T08:55:00.000Z",
+    },
+  ],
+  exportActivity: {
+    allocationsAffected: 1,
+    waitingLoading: 0,
+    waitingCollection: 1,
+    overdue: 0,
+    completed: 0,
+    averageTurnaroundHours: 12,
+    sampleAllocations: [
+      {
+        id: "alloc-1",
+        trailerNumber: "PRO811",
+        customer: "Acme Foods",
+        status: "delivered_empty",
+        updatedAt: "2026-07-25T09:10:00.000Z",
+      },
+    ],
+  },
+  timelineSummary: {
+    totalEvents: 1,
+    firstEventAt: "2026-07-25T08:10:00.000Z",
+    lastEventAt: "2026-07-25T08:10:00.000Z",
+    topEventTypes: [
+      {
+        event: "Trailer arrival confirmed.",
+        count: 1,
+      },
+    ],
+  },
   timeline: [
     {
       timestamp: "2026-07-25T08:10:00.000Z",
@@ -249,6 +299,6 @@ describe("vessel operation report model", () => {
     expect(draft.usedFallback).toBe(true);
     expect(draft.bcc).toEqual([]);
     expect(draft.body).toContain("Operation Overview");
-    expect(draft.body).toContain("Final Operational Status");
+    expect(draft.body).toContain("Recommendations");
   });
 });

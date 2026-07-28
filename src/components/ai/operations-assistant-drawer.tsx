@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useMemo, useRef, useState } from "react";
-import { Bot, Loader2, Mic, MicOff, Send, Trash2, X } from "lucide-react";
+import { AlertTriangle, Bot, CheckCircle2, Loader2, Mic, MicOff, Send, Trash2, X } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import type { AiAssistantContext, AiAssistantResponse } from "@/lib/ai-assistant-types";
 
@@ -35,16 +35,14 @@ type SpeechRecognitionCtor = new () => {
 };
 
 const SUGGESTED_QUESTIONS = [
+  "Show waiting trailers",
   "Where is PRO810?",
-  "Which priority trailers are waiting for inspection?",
-  "Show temperature alerts.",
-  "Which trailers have been in the Compound for more than 48 hours?",
-  "What needs attention now?",
-  "Which exports are waiting for collection?",
-  "What departed today?",
+  "Show priority trailers",
+  "Show compound occupancy",
+  "Show damaged trailers",
+  "Show temperature alerts",
+  "Summarise today's operation",
 ];
-
-const WRITE_REQUEST_PATTERN = /\b(mark|move|complete|create|update|change|resolve|set|assign|cancel)\b/i;
 
 const normalizeText = (value: string) => value.trim().toLowerCase();
 
@@ -131,6 +129,7 @@ export function OperationsAssistantDrawer({
   const [error, setError] = useState<string | null>(null);
   const [isListening, setIsListening] = useState(false);
   const [speechError, setSpeechError] = useState<string | null>(null);
+  const [confirmedPreparedActions, setConfirmedPreparedActions] = useState<Record<string, boolean>>({});
   const recognitionRef = useRef<InstanceType<SpeechRecognitionCtor> | null>(null);
 
   const speechCtor = useMemo(() => getSpeechRecognitionCtor(), []);
@@ -170,17 +169,6 @@ export function OperationsAssistantDrawer({
       text: trimmed,
       createdAt: nowIso,
     });
-
-    if (WRITE_REQUEST_PATTERN.test(trimmed)) {
-      appendMessage({
-        id: `${nowIso}-blocked`,
-        role: "assistant",
-        text: "Operational changes must still be confirmed through the normal application action. The assistant is read-only.",
-        createdAt: new Date().toISOString(),
-      });
-      setQuestion("");
-      return;
-    }
 
     setIsLoading(true);
     setQuestion("");
@@ -277,6 +265,7 @@ export function OperationsAssistantDrawer({
     setMessages([]);
     setError(null);
     setSpeechError(null);
+    setConfirmedPreparedActions({});
   };
 
   if (!open) {
@@ -383,6 +372,17 @@ export function OperationsAssistantDrawer({
 
                     {message.response ? (
                       <div className="mt-3 space-y-2">
+                        {message.response.primaryMetrics && message.response.primaryMetrics.length > 0 ? (
+                          <div className="grid grid-cols-2 gap-2">
+                            {message.response.primaryMetrics.map((metric, index) => (
+                              <div key={`${message.id}-metric-${index}`} className="rounded-lg border border-slate-200 bg-white px-2.5 py-2">
+                                <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500">{metric.label}</p>
+                                <p className="mt-1 text-sm font-semibold text-slate-900">{metric.value}</p>
+                              </div>
+                            ))}
+                          </div>
+                        ) : null}
+
                         {typeof message.response.count === "number" ? (
                           <p className="text-xs text-slate-600">Count: {message.response.count}</p>
                         ) : null}
@@ -419,6 +419,81 @@ export function OperationsAssistantDrawer({
                                 {action.label}
                               </Link>
                             ))}
+                          </div>
+                        ) : null}
+
+                        {message.response.sections && message.response.sections.length > 0 ? (
+                          <div className="space-y-2 pt-1">
+                            {message.response.sections.map((section) => (
+                              <div key={`${message.id}-${section.key}`} className="rounded-lg border border-slate-200 bg-white p-2.5">
+                                <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">{section.title}</p>
+                                <div className="mt-1 space-y-1">
+                                  {section.items.map((item, index) => (
+                                    <p key={`${message.id}-${section.key}-${index}`} className="text-xs text-slate-700">
+                                      <span className="font-semibold text-slate-900">{item.label}:</span> {item.value}
+                                    </p>
+                                  ))}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        ) : null}
+
+                        {message.response.alerts && message.response.alerts.length > 0 ? (
+                          <div className="space-y-2 pt-1">
+                            {message.response.alerts.map((alert, index) => (
+                              <div
+                                key={`${message.id}-alert-${index}`}
+                                className={`rounded-lg border px-2.5 py-2 text-xs ${alert.severity === "critical" ? "border-rose-200 bg-rose-50 text-rose-900" : alert.severity === "warning" ? "border-amber-200 bg-amber-50 text-amber-900" : "border-slate-200 bg-slate-50 text-slate-700"}`}
+                              >
+                                <p className="inline-flex items-center gap-1 font-semibold">
+                                  <AlertTriangle className="h-3.5 w-3.5" />
+                                  {alert.severity.toUpperCase()}
+                                </p>
+                                <p className="mt-1">{alert.message}</p>
+                              </div>
+                            ))}
+                          </div>
+                        ) : null}
+
+                        {message.response.preparedActions && message.response.preparedActions.length > 0 ? (
+                          <div className="space-y-2 pt-1">
+                            {message.response.preparedActions.map((preparedAction) => {
+                              const confirmationKey = `${message.id}:${preparedAction.id}`;
+                              const isConfirmed = confirmedPreparedActions[confirmationKey] === true;
+
+                              return (
+                                <div key={confirmationKey} className="rounded-lg border border-cyan-200 bg-cyan-50 p-2.5">
+                                  <p className="text-xs font-semibold uppercase tracking-[0.14em] text-cyan-700">Safe Action</p>
+                                  <p className="mt-1 text-sm font-semibold text-slate-900">{preparedAction.label}</p>
+                                  <p className="mt-1 text-xs text-slate-700">{preparedAction.confirmationPrompt}</p>
+                                  <p className="mt-1 text-[11px] text-slate-600">Safety: {preparedAction.safetyLevel} · Read-only AI</p>
+
+                                  {!isConfirmed ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setConfirmedPreparedActions((current) => ({
+                                          ...current,
+                                          [confirmationKey]: true,
+                                        }));
+                                      }}
+                                      className="mt-2 inline-flex items-center gap-1 rounded-lg bg-slate-900 px-2.5 py-1.5 text-xs font-semibold text-white"
+                                    >
+                                      <CheckCircle2 className="h-3.5 w-3.5" />
+                                      Confirm action plan
+                                    </button>
+                                  ) : (
+                                    <Link
+                                      href={preparedAction.moduleHref}
+                                      className="mt-2 inline-flex items-center gap-1 rounded-lg bg-cyan-600 px-2.5 py-1.5 text-xs font-semibold text-white"
+                                    >
+                                      Open {preparedAction.moduleLabel}
+                                    </Link>
+                                  )}
+                                </div>
+                              );
+                            })}
                           </div>
                         ) : null}
                       </div>

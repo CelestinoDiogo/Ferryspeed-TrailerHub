@@ -4,6 +4,7 @@ import Image from "next/image";
 import { useEffect, useMemo, useState } from "react";
 import { Camera, Upload } from "lucide-react";
 import type { TrailerActivityRow } from "@/lib/trailer-activity";
+import { VESSEL_INSPECTION_PHOTO_UI_CATEGORIES } from "@/lib/vessel-inspection-photos";
 
 const MAX_PHOTO_SIZE = 10 * 1024 * 1024;
 const ACCEPTED_PHOTO_INPUT_ACCEPT = "image/jpeg,image/png,image/webp";
@@ -67,7 +68,7 @@ type MobileInspectionPanelProps = {
   onUploadPhoto: (input: UploadPhotoInput) => Promise<void>;
 };
 
-const photoCategories = ["Boat Check", "Damage", "Temperature", "Seal", "Other"];
+const photoCategories = [...VESSEL_INSPECTION_PHOTO_UI_CATEGORIES];
 
 export function MobileInspectionPanel({
   open,
@@ -84,7 +85,7 @@ export function MobileInspectionPanel({
   onCompleteInspection,
   onUploadPhoto,
 }: MobileInspectionPanelProps) {
-  const [uploadCategory, setUploadCategory] = useState("Boat Check");
+  const [uploadCategory, setUploadCategory] = useState("General");
   const [uploadDescription, setUploadDescription] = useState("");
   const [selectedPhoto, setSelectedPhoto] = useState<File | null>(null);
   const [selectedPreviewUrl, setSelectedPreviewUrl] = useState<string | null>(null);

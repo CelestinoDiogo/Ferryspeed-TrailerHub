@@ -62,6 +62,7 @@ type CreateTrailerActivityInput = {
   metadata?: unknown;
   performedBy?: string | null;
   createdAt?: string | null;
+  idempotencyKey?: string | null;
 };
 
 type GetTrailerActivityInput = {
@@ -131,6 +132,77 @@ const sanitizeMetadata = (metadata: unknown): TrailerActivityMetadata => {
   return sanitized as TrailerActivityMetadata;
 };
 
+const extractMetadataIdempotencyKey = (metadata: unknown) => {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
+    return null;
+  }
+
+  const value = (metadata as Record<string, unknown>).idempotency_key;
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+};
+
+const buildActivityIdempotencyKey = (input: {
+  trailerId?: string | null;
+  trailerNumber: string;
+  eventType: string;
+  sourceModule: string;
+  sourceRecordId?: string | null;
+  createdAt?: string | null;
+}) => {
+  const createdAtKey = input.createdAt?.trim() || new Date().toISOString().slice(0, 16);
+  return [
+    input.trailerId?.trim() || normalizeTrailerActivityNumber(input.trailerNumber) || "UNKNOWN",
+    input.eventType.trim().toLowerCase(),
+    input.sourceModule.trim().toLowerCase(),
+    input.sourceRecordId?.trim() || "none",
+    createdAtKey,
+  ].join(":");
+};
+
+const findExistingActivityByIdempotencyKey = async (input: {
+  supabaseClient: TrailerActivitySupabaseClient;
+  trailerId?: string | null;
+  trailerNumber: string;
+  eventType: string;
+  sourceModule: string;
+  sourceRecordId?: string | null;
+  idempotencyKey: string;
+}) => {
+  const normalizedTrailerNumber = normalizeTrailerActivityNumber(input.trailerNumber) ?? "UNKNOWN";
+  const baseQuery = input.supabaseClient
+    .from("trailer_activity_log")
+    .select(getRowSelect())
+    .eq("event_type", input.eventType)
+    .eq("source_module", input.sourceModule)
+    .order("created_at", { ascending: false })
+    .limit(40);
+
+  const keyedQuery = input.trailerId
+    ? baseQuery.eq("trailer_id", input.trailerId)
+    : baseQuery.eq("normalized_trailer_number", normalizedTrailerNumber);
+
+  const scopedQuery = input.sourceRecordId
+    ? keyedQuery.eq("source_record_id", input.sourceRecordId)
+    : keyedQuery;
+
+  const { data, error } = await scopedQuery;
+  if (error) {
+    throw new Error(error.message || "Unable to validate trailer activity idempotency.");
+  }
+
+  const existing = ((data ?? []) as unknown as TrailerActivityRow[]).find((row) => {
+    const existingKey = extractMetadataIdempotencyKey(row.metadata);
+    return existingKey === input.idempotencyKey;
+  });
+
+  return existing ?? null;
+};
+
 const resolveActivityOperatorName = async (supabaseClient: TrailerActivitySupabaseClient) => {
   const { data, error } = await supabaseClient.auth.getUser();
   if (error) {
@@ -177,7 +249,31 @@ export async function createTrailerActivity(input: CreateTrailerActivityInput) {
     throw new Error("Trailer activity requires a source module.");
   }
 
+  const idempotencyKey = normalizeText(input.idempotencyKey) ?? buildActivityIdempotencyKey({
+    trailerId: input.trailerId,
+    trailerNumber,
+    eventType,
+    sourceModule,
+    sourceRecordId: input.sourceRecordId,
+    createdAt: input.createdAt,
+  });
+
+  const existing = await findExistingActivityByIdempotencyKey({
+    supabaseClient,
+    trailerId: input.trailerId,
+    trailerNumber,
+    eventType,
+    sourceModule,
+    sourceRecordId: input.sourceRecordId,
+    idempotencyKey,
+  });
+
+  if (existing) {
+    return existing;
+  }
+
   const performedBy = normalizeText(input.performedBy) ?? (await resolveActivityOperatorName(supabaseClient));
+  const metadata = sanitizeMetadata(input.metadata);
   const payload: Database["public"]["Tables"]["trailer_activity_log"]["Insert"] = {
     trailer_id: input.trailerId ?? null,
     trailer_number: trailerNumber,
@@ -190,7 +286,10 @@ export async function createTrailerActivity(input: CreateTrailerActivityInput) {
     new_status: normalizeText(input.newStatus),
     previous_compound_position: normalizeCompoundPosition(input.previousCompoundPosition),
     new_compound_position: normalizeCompoundPosition(input.newCompoundPosition),
-    metadata: sanitizeMetadata(input.metadata),
+    metadata: {
+      ...metadata,
+      idempotency_key: idempotencyKey,
+    },
     performed_by: performedBy,
     created_at: normalizeText(input.createdAt),
   };

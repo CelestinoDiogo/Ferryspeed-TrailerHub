@@ -71,6 +71,7 @@ import {
   resolveExpectedFrontTemperature,
   resolveExpectedRearTemperature,
 } from "@/lib/vessel-operations";
+import { saveVesselInspectionPhoto } from "@/lib/vessel-inspection-photos";
 import { supabase } from "@/lib/supabase";
 import { type VoiceActionIntentName, type VoiceEntities } from "@/lib/voice/types";
 import { getSessionToken } from "@/lib/voice/session";
@@ -248,8 +249,6 @@ const parseTemperatureInput = (value: string) => {
   return Number.isFinite(numeric) ? numeric : null;
 };
 
-const sanitizeFileName = (name: string) => name.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
-const INSPECTION_PHOTO_BUCKET = "vessel-inspection-photos";
 const ACCEPTED_PHOTO_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 
 const normalizePhotoMimeType = (value?: string | null) => {
@@ -261,14 +260,6 @@ const normalizePhotoMimeType = (value?: string | null) => {
 };
 
 const isAcceptedPhotoMimeType = (file: File) => ACCEPTED_PHOTO_MIME_TYPES.has(normalizePhotoMimeType(file.type));
-
-const hasPhotoTrailerColumnCompatibilityError = (errorMessage: string) => {
-  const lower = errorMessage.toLowerCase();
-  return (
-    (lower.includes("vessel_trailer_id") && (lower.includes("column") || lower.includes("schema cache"))) ||
-    (lower.includes("vessel_operation_trailer_id") && lower.includes("null value"))
-  );
-};
 
 const tabConfig: Array<{ key: MobileTabKey; label: string; icon: ReactNode }> = [
   { key: "home", label: "Home", icon: <Home className="h-4 w-4" /> },
@@ -1277,7 +1268,6 @@ export function SupervisorMobileDashboard() {
         throw new Error("Photo upload requires a connection.");
       }
 
-      const nowIso = new Date().toISOString();
       const normalizedTrailerNumber = normalizeTrailerNumber(selectedVesselTrailer.trailerNumber);
       if (!normalizedTrailerNumber) {
         throw new Error("Trailer number is required before uploading photos.");
@@ -1287,58 +1277,22 @@ export function SupervisorMobileDashboard() {
         throw new Error("Only JPEG, PNG, or WebP files are supported.");
       }
 
-      const safeFileName = sanitizeFileName(input.file.name || "photo") || "photo";
-      const uniqueToken = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
-        ? crypto.randomUUID()
-        : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-      const storagePath = `vessel-operations/${selectedVesselTrailer.vesselOperationId}/${selectedVesselTrailer.vesselTrailerId}/${Date.now()}-${uniqueToken}-${safeFileName}`;
-
-      const { error: uploadError } = await supabase.storage.from(INSPECTION_PHOTO_BUCKET).upload(storagePath, input.file, {
-        cacheControl: "3600",
-        upsert: false,
-        contentType: normalizePhotoMimeType(input.file.type),
-      });
-
-      if (uploadError) {
-        throw new Error(uploadError.message || "Unable to upload inspection photo.");
-      }
-
       const {
         data: { session },
       } = await supabase.auth.getSession();
 
       const uploadedBy = session?.user?.email?.trim() || session?.user?.id || null;
 
-      const basePhotoPayload = {
-        trailer_id: selectedVesselTrailer.trailerId,
-        trailer_number: normalizedTrailerNumber,
-        vessel_operation_id: selectedVesselTrailer.vesselOperationId,
+      await saveVesselInspectionPhoto({
+        vesselTrailerId: selectedVesselTrailer.vesselTrailerId,
+        vesselOperationId: selectedVesselTrailer.vesselOperationId,
+        trailerId: selectedVesselTrailer.trailerId,
+        trailerNumber: normalizedTrailerNumber,
+        file: input.file,
         category: input.category,
-        storage_path: storagePath,
-        file_name: safeFileName,
         description: input.description,
-        uploaded_at: nowIso,
-        uploaded_by: uploadedBy ?? "TrailerHub User",
-      };
-
-      const insertWithColumn = async (columnName: "vessel_trailer_id" | "vessel_operation_trailer_id") => {
-        return supabase.from("vessel_inspection_photos").insert({
-          ...basePhotoPayload,
-          [columnName]: selectedVesselTrailer.vesselTrailerId,
-        } as never);
-      };
-
-      let { error: photoInsertError } = await insertWithColumn("vessel_trailer_id");
-
-      if (photoInsertError && hasPhotoTrailerColumnCompatibilityError(photoInsertError.message || "")) {
-        const retryResult = await insertWithColumn("vessel_operation_trailer_id");
-        photoInsertError = retryResult.error;
-      }
-
-      if (photoInsertError) {
-        await supabase.storage.from(INSPECTION_PHOTO_BUCKET).remove([storagePath]);
-        throw new Error(photoInsertError.message || "Unable to register uploaded photo.");
-      }
+        uploadedBy: uploadedBy ?? "TrailerHub User",
+      });
 
       const rows = await getTrailerActivity({
         trailerId: selectedVesselTrailer.trailerId,

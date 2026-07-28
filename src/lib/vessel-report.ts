@@ -20,6 +20,9 @@ type MainTrailerRow = Pick<
 type DamageRow = Database["public"]["Tables"]["vessel_inspection_damages"]["Row"];
 type TemperatureRow = Database["public"]["Tables"]["vessel_inspection_temperatures"]["Row"];
 type PhotoRow = Database["public"]["Tables"]["vessel_inspection_photos"]["Row"];
+type ExportAllocationRow = Database["public"]["Tables"]["export_allocations"]["Row"];
+type OperationalAlertRow = Database["public"]["Tables"]["operational_alerts"]["Row"];
+type TrailerActivityRow = Database["public"]["Tables"]["trailer_activity_log"]["Row"];
 
 type TemperatureLimits = {
   min: number | null;
@@ -250,6 +253,50 @@ export async function getVesselOperationReport(
   const damages = (damagesResult.data ?? []) as DamageRow[];
   const temperatures = (temperaturesResult.data ?? []) as TemperatureRow[];
   const photos = (photosResult.data ?? []) as PhotoRow[];
+
+  const trailerNumbersForOperation = Array.from(
+    new Set(
+      trailers
+        .map((row) => normalizeTrailerNumber(row.trailer_number))
+        .filter((value): value is string => Boolean(value)),
+    ),
+  );
+
+  const [exportAllocationsResult, operationalAlertsResult, trailerActivityResult] = await Promise.all([
+    trailerNumbersForOperation.length
+      ? supabase
+          .from("export_allocations")
+          .select("id, trailer_id, trailer_number, customer, status, delivered_empty_at, waiting_loading_at, collected_loaded_at, completed_at, expected_return_at, updated_at")
+          .in("trailer_number", trailerNumbersForOperation)
+          .order("updated_at", { ascending: false })
+          .limit(1000)
+      : Promise.resolve({ data: [], error: null }),
+    supabase
+      .from("operational_alerts")
+      .select("id, trailer_id, trailer_number, severity, status, title, source_module, created_at")
+      .in("trailer_number", trailerNumbersForOperation.length > 0 ? trailerNumbersForOperation : ["__none__"])
+      .order("created_at", { ascending: false })
+      .limit(1000),
+    supabase
+      .from("trailer_activity_log")
+      .select("id, trailer_id, trailer_number, event_type, event_title, created_at")
+      .in("trailer_number", trailerNumbersForOperation.length > 0 ? trailerNumbersForOperation : ["__none__"])
+      .order("created_at", { ascending: true })
+      .limit(2000),
+  ]);
+
+  if (exportAllocationsResult.error || operationalAlertsResult.error || trailerActivityResult.error) {
+    console.error("Load vessel report intelligence failed:", {
+      exportAllocationsError: exportAllocationsResult.error,
+      operationalAlertsError: operationalAlertsResult.error,
+      trailerActivityError: trailerActivityResult.error,
+    });
+    throw new Error("Unable to load report.");
+  }
+
+  const exportAllocations = (exportAllocationsResult.data ?? []) as ExportAllocationRow[];
+  const operationalAlerts = (operationalAlertsResult.data ?? []) as OperationalAlertRow[];
+  const trailerActivity = (trailerActivityResult.data ?? []) as TrailerActivityRow[];
   const photoUrlByStoragePath = new Map<string, string | null>();
   await Promise.all(
     [...new Set(photos.map((photo) => photo.storage_path).filter((value): value is string => Boolean(value)))].map(async (storagePath) => {
@@ -535,7 +582,114 @@ export async function getVesselOperationReport(
     }
   });
 
+  trailerActivity.forEach((activity) => {
+    if (!activity.created_at) {
+      return;
+    }
+
+    timeline.push({
+      timestamp: new Date(activity.created_at).toISOString(),
+      event: activity.event_title ?? activity.event_type ?? "Operational activity",
+      trailerNumber: normalizeTrailerNumber(activity.trailer_number) || null,
+    });
+  });
+
   timeline.sort((left, right) => left.timestamp.localeCompare(right.timestamp));
+
+  const inspectionDurationsMinutes = trailers
+    .map((row) => {
+      if (!row.inspection_started_at || !row.inspection_completed_at) {
+        return null;
+      }
+
+      const started = new Date(row.inspection_started_at).getTime();
+      const completed = new Date(row.inspection_completed_at).getTime();
+      if (!Number.isFinite(started) || !Number.isFinite(completed) || completed < started) {
+        return null;
+      }
+
+      return (completed - started) / 60000;
+    })
+    .filter((value): value is number => typeof value === "number");
+
+  const averageInspectionTimeMinutes = inspectionDurationsMinutes.length > 0
+    ? Math.round((inspectionDurationsMinutes.reduce((sum, value) => sum + value, 0) / inspectionDurationsMinutes.length) * 10) / 10
+    : null;
+
+  const arrivalCompletionPercent = expectedTrailers > 0
+    ? Math.round((arrivedTrailers / expectedTrailers) * 1000) / 10
+    : 0;
+
+  const priorityRows = activeTrailers.filter((row) => row.priority_level === "priority");
+  const priorityCompleted = priorityRows.filter((row) => row.status === "inspected" || row.status === "positioned").length;
+  const priorityCompletionPercent = priorityRows.length > 0
+    ? Math.round((priorityCompleted / priorityRows.length) * 1000) / 10
+    : 100;
+
+  const temperatureEvaluatedRows = temperatureRows.filter((row) => row.expectedTemperature !== null);
+  const temperaturePassRows = temperatureEvaluatedRows.filter((row) => row.result === "pass");
+  const temperatureCompliancePercent = temperatureEvaluatedRows.length > 0
+    ? Math.round((temperaturePassRows.length / temperatureEvaluatedRows.length) * 1000) / 10
+    : null;
+
+  const photosCapturedPercent = expectedTrailers > 0
+    ? Math.round((manifestRows.filter((row) => row.photos.length > 0).length / expectedTrailers) * 1000) / 10
+    : 0;
+
+  const damageIncidencePercent = expectedTrailers > 0
+    ? Math.round((damageTrailerIds.size / expectedTrailers) * 1000) / 10
+    : 0;
+
+  const arrivedWithCompoundPosition = manifestRows.filter((row) => row.arrivalStatusRaw === "arrived" && Boolean(row.compoundPosition)).length;
+  const compoundOccupancyImpactPercent = arrivedTrailers > 0
+    ? Math.round((arrivedWithCompoundPosition / arrivedTrailers) * 1000) / 10
+    : null;
+
+  const statusCounts = {
+    waitingLoading: exportAllocations.filter((row) => row.status === "waiting_loading").length,
+    waitingCollection: exportAllocations.filter((row) => row.status === "delivered_empty").length,
+    overdue: exportAllocations.filter((row) => {
+      if (!row.expected_return_at) {
+        return false;
+      }
+
+      const due = new Date(row.expected_return_at).getTime();
+      return Number.isFinite(due) && due < Date.now() && row.status !== "completed" && row.status !== "cancelled";
+    }).length,
+    completed: exportAllocations.filter((row) => row.status === "completed").length,
+  };
+
+  const turnaroundHours = exportAllocations
+    .map((row) => {
+      const startRaw = row.delivered_empty_at ?? row.waiting_loading_at;
+      const finishRaw = row.collected_loaded_at ?? row.completed_at;
+      if (!startRaw || !finishRaw) {
+        return null;
+      }
+
+      const start = new Date(startRaw).getTime();
+      const finish = new Date(finishRaw).getTime();
+      if (!Number.isFinite(start) || !Number.isFinite(finish) || finish < start) {
+        return null;
+      }
+
+      return (finish - start) / 3600000;
+    })
+    .filter((value): value is number => typeof value === "number");
+
+  const averageTurnaroundHours = turnaroundHours.length > 0
+    ? Math.round((turnaroundHours.reduce((sum, value) => sum + value, 0) / turnaroundHours.length) * 10) / 10
+    : null;
+
+  const timelineEventCount = new Map<string, number>();
+  timeline.forEach((entry) => {
+    timelineEventCount.set(entry.event, (timelineEventCount.get(entry.event) ?? 0) + 1);
+  });
+
+  const sortedTimelineTypes = [...timelineEventCount.entries()]
+    .sort((left, right) => right[1] - left[1])
+    .slice(0, 6)
+    .map(([event, count]) => ({ event, count }));
 
   const completedTrailers = trailers.filter((row) => row.status === "inspected" || row.status === "positioned").length;
   const completionPercentage = expectedTrailers === 0 ? 0 : Math.round((completedTrailers / expectedTrailers) * 100);
@@ -575,6 +729,16 @@ export async function getVesselOperationReport(
       temperatureExceptions: temperatureRows.filter((row) => row.result === "fail").length,
       completionPercentage,
     },
+    performance: {
+      averageInspectionTimeMinutes,
+      arrivalCompletionPercent,
+      priorityCompletionPercent,
+      temperatureCompliancePercent,
+      photosCapturedPercent,
+      damageIncidencePercent,
+      compoundOccupancyImpactPercent,
+      exportTurnaroundHours: averageTurnaroundHours,
+    },
     trailers: manifestRows,
     damages: damageRows,
     temperatures: temperatureRows,
@@ -596,6 +760,37 @@ export async function getVesselOperationReport(
       };
     }),
     exceptions,
+    operationalAlerts: operationalAlerts.map((alert) => ({
+      id: alert.id,
+      trailerId: alert.trailer_id ?? null,
+      trailerNumber: alert.trailer_number ?? null,
+      severity: alert.severity ?? null,
+      status: alert.status ?? null,
+      title: alert.title ?? "Operational alert",
+      sourceModule: alert.source_module ?? null,
+      createdAt: toIso(alert.created_at),
+    })),
+    exportActivity: {
+      allocationsAffected: exportAllocations.length,
+      waitingLoading: statusCounts.waitingLoading,
+      waitingCollection: statusCounts.waitingCollection,
+      overdue: statusCounts.overdue,
+      completed: statusCounts.completed,
+      averageTurnaroundHours,
+      sampleAllocations: exportAllocations.slice(0, 15).map((row) => ({
+        id: row.id,
+        trailerNumber: row.trailer_number ?? null,
+        customer: row.customer ?? null,
+        status: row.status,
+        updatedAt: toIso(row.updated_at),
+      })),
+    },
+    timelineSummary: {
+      totalEvents: timeline.length,
+      firstEventAt: timeline[0]?.timestamp ?? null,
+      lastEventAt: timeline[timeline.length - 1]?.timestamp ?? null,
+      topEventTypes: sortedTimelineTypes,
+    },
     timeline,
   };
 }

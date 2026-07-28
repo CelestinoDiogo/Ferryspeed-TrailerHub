@@ -205,6 +205,7 @@ export function ExecutiveDashboard() {
   const [reportData, setReportData] = useState<ExecutiveDashboardReportData | null>(defaultReport);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const unresolvedValue = isLoading ? "..." : "--";
 
   const updateRange = useCallback((nextRange: HistoryDateRangeValue) => {
     const params = new URLSearchParams();
@@ -373,10 +374,10 @@ export function ExecutiveDashboard() {
       </PrintReportLayout>
 
       <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <MetricCard icon={<Truck className="h-5 w-5" />} label="Compound Trailers" value={reportData?.summary.compoundTrailers ?? "..."} accent="from-slate-950 to-slate-700" />
-        <MetricCard icon={<BarChart3 className="h-5 w-5" />} label="Occupancy" value={reportData ? formatPercent(reportData.summary.compoundOccupancyPercent) : "..."} accent="from-emerald-600 to-teal-500" />
-        <MetricCard icon={<TrendingUp className="h-5 w-5" />} label="Priority SLA" value={reportData ? formatPercent(reportData.summary.prioritySlaPercent) : "..."} accent="from-amber-500 to-orange-500" />
-        <MetricCard icon={<ShieldAlert className="h-5 w-5" />} label="Stock Accuracy" value={reportData ? formatPercent(reportData.summary.stockCheckAccuracyPercent) : "..."} accent="from-indigo-600 to-cyan-500" />
+        <MetricCard icon={<Truck className="h-5 w-5" />} label="Compound Trailers" value={reportData?.summary.compoundTrailers ?? unresolvedValue} accent="from-slate-950 to-slate-700" />
+        <MetricCard icon={<BarChart3 className="h-5 w-5" />} label="Occupancy" value={reportData ? formatPercent(reportData.summary.compoundOccupancyPercent) : unresolvedValue} accent="from-emerald-600 to-teal-500" />
+        <MetricCard icon={<TrendingUp className="h-5 w-5" />} label="Priority SLA" value={reportData ? formatPercent(reportData.summary.prioritySlaPercent) : unresolvedValue} accent="from-amber-500 to-orange-500" />
+        <MetricCard icon={<ShieldAlert className="h-5 w-5" />} label="Stock Accuracy" value={reportData ? formatPercent(reportData.summary.stockCheckAccuracyPercent) : unresolvedValue} accent="from-indigo-600 to-cyan-500" />
       </section>
 
       <section className="grid gap-4 xl:grid-cols-[1.3fr_1fr]">
@@ -406,7 +407,7 @@ export function ExecutiveDashboard() {
               <MetricLine label="Available empty" value={reportData?.compound.availableEmptyTrailers ?? 0} />
               <MetricLine label="Loaded" value={reportData?.compound.loadedTrailers ?? 0} />
               <MetricLine label="Maintenance" value={reportData?.compound.maintenanceTrailers ?? 0} />
-              <MetricLine label="Position utilisation" value={reportData ? formatPercent(reportData.compound.positionUtilisationPercent) : "..."} />
+              <MetricLine label="Position utilisation" value={reportData ? formatPercent(reportData.compound.positionUtilisationPercent) : unresolvedValue} />
               <MetricLine label="Under 24h" value={reportData?.compound.dwellBands.under24h ?? 0} />
               <MetricLine label="1-3 days" value={reportData?.compound.dwellBands.oneToThreeDays ?? 0} />
               <MetricLine label="4-7 days" value={reportData?.compound.dwellBands.fourToSevenDays ?? 0} />
@@ -427,8 +428,8 @@ export function ExecutiveDashboard() {
         <Panel title="Vessel Performance" subtitle="Operations, inspection completion and risk flags">
           <div className="space-y-4">
             <div className="grid gap-3 sm:grid-cols-2">
-              <MetricCard icon={<Ship className="h-5 w-5" />} label="Operations" value={reportData?.vessel.totalOperations ?? "..."} accent="from-slate-950 to-slate-700" compact />
-              <MetricCard icon={<TrendingUp className="h-5 w-5" />} label="Inspection Pending" value={reportData?.vessel.inspectionPending ?? "..."} accent="from-rose-600 to-orange-500" compact />
+              <MetricCard icon={<Ship className="h-5 w-5" />} label="Operations" value={reportData?.vessel.totalOperations ?? unresolvedValue} accent="from-slate-950 to-slate-700" compact />
+              <MetricCard icon={<TrendingUp className="h-5 w-5" />} label="Inspection Pending" value={reportData?.vessel.inspectionPending ?? unresolvedValue} accent="from-rose-600 to-orange-500" compact />
             </div>
             <PrintTable
               rows={reportData?.vessel.topOperations ?? []}

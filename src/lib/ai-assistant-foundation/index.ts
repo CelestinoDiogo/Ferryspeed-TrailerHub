@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { Database } from "@/lib/database.types";
 import type { AiAssistantContext, AiAssistantResponse } from "@/lib/ai-assistant-types";
 import { detectIntent } from "@/lib/ai-assistant-foundation/intent-detection";
+import { prepareSafeActionFromQuestion } from "@/lib/ai-assistant-foundation/action-preparation";
 import { runIntentQuery } from "@/lib/ai-assistant-foundation/query-service";
 import { formatAssistantResponse } from "@/lib/ai-assistant-foundation/response-formatter";
 
@@ -26,16 +27,31 @@ export async function runAiAssistantFoundationQuery(
   const normalizedQuestion = parsed.question.trim();
 
   if (containsWriteIntent(normalizedQuestion) || looksLikeSql(normalizedQuestion)) {
+    const preparedActions = prepareSafeActionFromQuestion(normalizedQuestion, pageContext);
+
     return {
       intent: "unknown",
-      title: "Read-only assistant",
-      answer: "The AI Assistant is currently read-only. Please use the relevant operational module to make changes.",
-      resultType: "text",
+      title: preparedActions.length > 0 ? "Action prepared (read-only)" : "Read-only assistant",
+      answer:
+        preparedActions.length > 0
+          ? "Action prepared. Confirm first, then open the existing operational workflow to execute it."
+          : "The AI Assistant is currently read-only. Please use the relevant operational module to make changes.",
+      resultType: preparedActions.length > 0 ? "summary" : "text",
       data: [],
-      summary: "Read-only access",
-      links: [],
+      summary:
+        preparedActions.length > 0
+          ? "Prepared action only. No database changes were executed."
+          : "Read-only access",
+      links: preparedActions.map((action) => ({ label: `Open ${action.moduleLabel}`, href: action.moduleHref })),
       queriedAt: new Date().toISOString(),
       sourceModules: [],
+      alerts: [
+        {
+          severity: "warning",
+          message: "AI cannot execute writes. User confirmation is required before opening an operational workflow.",
+        },
+      ],
+      preparedActions,
       truncated: false,
     };
   }

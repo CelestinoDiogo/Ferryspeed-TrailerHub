@@ -1,11 +1,15 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/lib/database.types";
 import type {
+  AiAssistantAlert,
   AiAssistantAction,
   AiAssistantContext,
   AiAssistantIntent,
   AiAssistantIntentName,
   AiAssistantItem,
+  AiAssistantPreparedAction,
+  AiAssistantSection,
+  AiAssistantSummaryItem,
 } from "@/lib/ai-assistant-types";
 
 export type AssistantIntent = AiAssistantIntent;
@@ -18,6 +22,10 @@ export type AssistantQueryResult = {
   count?: number;
   items?: AiAssistantItem[];
   actions?: AiAssistantAction[];
+  primaryMetrics?: AiAssistantSummaryItem[];
+  sections?: AiAssistantSection[];
+  alerts?: AiAssistantAlert[];
+  preparedActions?: AiAssistantPreparedAction[];
   sourceModules: string[];
 };
 
