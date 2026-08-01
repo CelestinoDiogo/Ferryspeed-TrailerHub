@@ -321,7 +321,7 @@ function VesselInspectionPageContent() {
       const [operationResult, trailerResult, temperaturesResult, damagesResult, photosResult, navigationResult] = await Promise.all([
         supabase
           .from("vessel_operations")
-          .select("id, vessel_name, sailing_reference, origin_port, berth, expected_arrival_at, actual_arrival_at, status, notes, created_at, updated_at")
+          .select("id, vessel_name, sailing_reference, origin_port, berth, expected_arrival_at, actual_arrival_at, status, list_status, notes, created_at, updated_at")
           .eq("id", operationId)
           .single(),
         supabase
@@ -380,7 +380,13 @@ function VesselInspectionPageContent() {
 
       const trailerRow = trailerResult.data as VesselOperationTrailerRecord;
 
-      if (!trailerRow.inspection_started_at && trailerRow.status !== "inspected") {
+      const isListConfirmed = (operationResult.data.list_status ?? "draft") === "confirmed";
+      const canStartInspectionNow =
+        isListConfirmed &&
+        trailerRow.arrival_status === "arrived" &&
+        trailerRow.status !== "inspected";
+
+      if (canStartInspectionNow && !trailerRow.inspection_started_at) {
         const nowIso = new Date().toISOString();
         const { data: startRow, error: startError } = await supabase
           .from("vessel_operation_trailers")
@@ -960,6 +966,34 @@ function VesselInspectionPageContent() {
     return (
       <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(34,211,238,0.16),_transparent_32%),linear-gradient(135deg,_#020617_0%,_#0f172a_55%,_#111827_100%)] px-4 py-6 text-slate-100 sm:px-6 lg:px-8">
         <div className="mx-auto max-w-4xl rounded-3xl border border-rose-500/30 bg-rose-500/10 p-6 text-sm text-rose-200">{error ?? "Inspection not found."}</div>
+      </main>
+    );
+  }
+
+  const isListConfirmed = (operation.list_status ?? "draft") === "confirmed";
+  const isTrailerEligibleForInspection =
+    trailer.arrival_status === "arrived" ||
+    trailer.status === "inspected" ||
+    trailer.status === "inspection_pending" ||
+    trailer.status === "inspection_in_progress";
+
+  if (!isListConfirmed || !isTrailerEligibleForInspection) {
+    return (
+      <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(34,211,238,0.16),_transparent_32%),linear-gradient(135deg,_#020617_0%,_#0f172a_55%,_#111827_100%)] px-4 py-6 text-slate-100 sm:px-6 lg:px-8">
+        <div className="mx-auto flex max-w-4xl flex-col gap-4">
+          <div className="rounded-3xl border border-amber-500/30 bg-amber-500/10 p-6 text-amber-100">
+            <p className="text-sm font-semibold uppercase tracking-[0.25em]">Workflow Gate</p>
+            <p className="mt-2 text-sm">
+              {!isListConfirmed
+                ? "Inspection is locked until the vessel list is confirmed and discharge has started."
+                : "This trailer is not eligible for inspection until it is marked Arrived during discharge."}
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Link href={`/dashboard/vessel-operations/${operation.id}/arrivals`} className="rounded-2xl bg-cyan-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-cyan-400">Go to Discharge</Link>
+            <Link href={`/dashboard/vessel-operations/${operation.id}/boat-check`} className="rounded-2xl border border-white/10 bg-slate-800 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700">Back to Boat Check</Link>
+          </div>
+        </div>
       </main>
     );
   }

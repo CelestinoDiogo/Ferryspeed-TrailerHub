@@ -36,6 +36,7 @@ type DeliveryBooking = {
   created_at?: string | null;
   updated_at?: string | null;
   trailer_number?: string | null;
+  trailer_container_number?: string | null;
   // Collection tracking
   delivered_at?: string | null;
   waiting_collection_since?: string | null;
@@ -140,7 +141,7 @@ export default function DeliveryDetailsPage() {
              created_at, updated_at,
              delivered_at, waiting_collection_since, collection_due_date, collected_at,
              demurrage_free_days, demurrage_daily_rate, demurrage_currency, demurrage_notes,
-             trailers(trailer_number, compound_position, departure_date)`
+             trailers(trailer_number, container_number, compound_position, departure_date)`
           )
           .eq("id", bookingId)
           .single();
@@ -165,6 +166,7 @@ export default function DeliveryDetailsPage() {
           created_at: raw["created_at"] as string | null,
           updated_at: raw["updated_at"] as string | null,
           trailer_number: (trailer?.["trailer_number"] as string | null) ?? null,
+          trailer_container_number: (trailer?.["container_number"] as string | null) ?? null,
           delivered_at: raw["delivered_at"] as string | null,
           waiting_collection_since: raw["waiting_collection_since"] as string | null,
           collection_due_date: raw["collection_due_date"] as string | null,
@@ -562,6 +564,7 @@ export default function DeliveryDetailsPage() {
               <div className="grid gap-4 md:grid-cols-2">
                 {([
                   ["Trailer", booking.trailer_number],
+                  ["Container", booking.trailer_container_number],
                   ["Status", statusLabel(booking.status)],
                   ["Delivery Date", formatDate(booking.delivery_date)],
                   ["Delivery Time", booking.delivery_time ?? "\u2014"],

@@ -1,16 +1,18 @@
 "use client";
 
-import Image from "next/image";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { PrintButton } from "@/components/print/print-button";
 import { loadVesselOperationSummaryAndPrintReportData } from "@/lib/reports/report-data";
 import { supabase } from "@/lib/supabase";
 import { getAcceptedTemperatureRange, getDefaultTemperatureToleranceSettings, isTemperatureOutOfRange } from "@/lib/temperature-tolerance";
+import { getTrailerOwnershipBadgeLabel } from "@/lib/trailer-ownership";
 import { formatVesselDateTime } from "@/lib/vessel-operations";
 import type { VesselOperationalReportData } from "@/lib/reports/types";
 import { VesselPrintStyles } from "./print-styles";
+
+const PRINT_IMAGE_READY_TIMEOUT_MS = 6000;
 
 const formatStatusLabel = (value?: string | null) => {
   if (!value) return "Unknown";
@@ -88,6 +90,7 @@ export default function VesselOperationPrintPage() {
   const [reportData, setReportData] = useState<VesselOperationalReportData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [isPhotoGridReady, setIsPhotoGridReady] = useState(false);
 
   useEffect(() => {
     let isMounted = true;
@@ -120,6 +123,80 @@ export default function VesselOperationPrintPage() {
       isMounted = false;
     };
   }, [operationId]);
+
+  const hasPhotosForPrint = useMemo(() => {
+    return Boolean(reportData?.photos.some((photo) => photo.url));
+  }, [reportData]);
+
+  useEffect(() => {
+    if (!reportData) {
+      setIsPhotoGridReady(false);
+      return;
+    }
+
+    if (!hasPhotosForPrint) {
+      setIsPhotoGridReady(true);
+      return;
+    }
+
+    setIsPhotoGridReady(false);
+
+    const images = Array.from(document.querySelectorAll<HTMLImageElement>('img[data-print-photo="true"]'));
+    if (images.length === 0) {
+      setIsPhotoGridReady(true);
+      return;
+    }
+
+    let resolved = false;
+    let remaining = images.length;
+    const detachListeners: Array<() => void> = [];
+
+    const complete = () => {
+      if (!resolved) {
+        resolved = true;
+        setIsPhotoGridReady(true);
+        detachListeners.forEach((detach) => detach());
+      }
+    };
+
+    const timeoutId = window.setTimeout(() => {
+      complete();
+    }, PRINT_IMAGE_READY_TIMEOUT_MS);
+
+    const settleOne = () => {
+      remaining -= 1;
+      if (remaining <= 0) {
+        window.clearTimeout(timeoutId);
+        complete();
+      }
+    };
+
+    for (const image of images) {
+      if (image.complete) {
+        settleOne();
+        continue;
+      }
+
+      const onLoad = () => settleOne();
+      const onError = () => settleOne();
+      image.addEventListener("load", onLoad, { once: true });
+      image.addEventListener("error", onError, { once: true });
+      detachListeners.push(() => {
+        image.removeEventListener("load", onLoad);
+        image.removeEventListener("error", onError);
+      });
+    }
+
+    if (remaining <= 0) {
+      window.clearTimeout(timeoutId);
+      complete();
+    }
+
+    return () => {
+      window.clearTimeout(timeoutId);
+      detachListeners.forEach((detach) => detach());
+    };
+  }, [hasPhotosForPrint, reportData]);
 
   if (isLoading) {
     return (
@@ -174,20 +251,24 @@ export default function VesselOperationPrintPage() {
           <Link href={`/dashboard/vessel-operations/${reportData.operation.id}/summary`} className="rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-900 hover:bg-slate-50">
             Back
           </Link>
-          <PrintButton label="Print Report" className="border-slate-300 bg-slate-900 text-white hover:bg-slate-800" />
+          <PrintButton
+            label={hasPhotosForPrint && !isPhotoGridReady ? "Preparing Photos..." : "Print Report"}
+            disabled={hasPhotosForPrint && !isPhotoGridReady}
+            className="border-slate-300 bg-slate-900 text-white hover:bg-slate-800"
+          />
         </div>
 
         <article id="print-report-root" className="vessel-print-report mx-auto w-full max-w-5xl rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm sm:p-8 print-document print-portrait">
             <header className="avoid-print-break border-b border-slate-200 pb-6">
               <div className="flex flex-col gap-5 sm:flex-row sm:items-start sm:justify-between">
                 <div className="flex items-start gap-4">
-                  <Image
+                  <img
                     src="/branding/ferryspeed logo.png"
                     alt="Ferryspeed"
                     width={168}
                     height={72}
                     className="h-auto w-auto max-w-[168px]"
-                    priority
+                    loading="eager"
                   />
                   <div>
                     <p className="text-xs font-semibold uppercase tracking-[0.3em] text-slate-500">Ferryspeed TrailerHub</p>
@@ -214,10 +295,15 @@ export default function VesselOperationPrintPage() {
               </div>
             </header>
 
-            <section className="avoid-print-break mt-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-7">
+            <section className="avoid-print-break mt-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-10">
               <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Expected</p><p className="mt-2 text-2xl font-bold text-slate-950">{reportData.statistics.expectedTrailers}</p></div>
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Additional</p><p className="mt-2 text-2xl font-bold text-indigo-700">{reportData.statistics.additionalTrailers}</p></div>
               <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Arrived</p><p className="mt-2 text-2xl font-bold text-amber-700">{reportData.statistics.arrivedTrailers}</p></div>
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Final Discharged</p><p className="mt-2 text-2xl font-bold text-emerald-700">{reportData.statistics.finalDischargedTrailers}</p></div>
               <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Pending</p><p className="mt-2 text-2xl font-bold text-fuchsia-700">{reportData.statistics.pendingTrailers}</p></div>
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Cancelled</p><p className="mt-2 text-2xl font-bold text-rose-700">{reportData.statistics.cancelledTrailers}</p></div>
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">No Show</p><p className="mt-2 text-2xl font-bold text-orange-700">{reportData.statistics.noShowTrailers}</p></div>
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Not Discharged</p><p className="mt-2 text-2xl font-bold text-slate-700">{reportData.statistics.notDischargedTrailers}</p></div>
               <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Priority</p><p className="mt-2 text-2xl font-bold text-rose-700">{reportData.statistics.priorityTrailers}</p></div>
               <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Inspected</p><p className="mt-2 text-2xl font-bold text-emerald-700">{reportData.statistics.inspectedTrailers}</p></div>
               <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Inspection Pending</p><p className="mt-2 text-2xl font-bold text-cyan-700">{reportData.statistics.pendingInspections}</p></div>
@@ -250,6 +336,7 @@ export default function VesselOperationPrintPage() {
                       <tr key={trailer.id} className="trailer-print-card align-top">
                         <td className="border border-slate-200 px-3 py-3">
                           <p className="font-semibold text-slate-950">{trailer.trailerNumber}</p>
+                          <p className="text-xs text-slate-600">{getTrailerOwnershipBadgeLabel(trailer.ownershipType)}</p>
                           {trailer.bookingReference ? <p className="text-xs text-slate-600">Booking: {trailer.bookingReference}</p> : null}
                         </td>
                         <td className="border border-slate-200 px-3 py-3">{trailer.arrivalStatus}</td>
@@ -335,15 +422,26 @@ export default function VesselOperationPrintPage() {
                   {reportData.trailers.filter((trailer) => trailer.photos.some((photo) => photo.url)).map((trailer) => (
                     <div key={trailer.id} className="detail-print-card rounded-3xl border border-slate-200 bg-slate-50 p-4">
                       <p className="text-base font-semibold text-slate-950">{trailer.trailerNumber}</p>
-                      <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                      <div className="print-photo-grid mt-3 grid gap-3 sm:grid-cols-2">
                         {trailer.photos.filter((photo) => photo.url).map((photo) => (
-                          <div key={photo.id} className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
-                            <div className="relative aspect-[4/3] w-full bg-slate-100">
-                              {photo.url ? <Image src={photo.url} alt={photo.caption ?? `${trailer.trailerNumber} inspection photo`} fill className="object-cover" /> : null}
+                          <div key={photo.id} className="detail-print-card print-photo-card overflow-hidden rounded-2xl border border-slate-200 bg-white">
+                            <div className="relative print-photo-frame aspect-[4/3] w-full bg-slate-100">
+                              {photo.url ? (
+                                <img
+                                  src={photo.url}
+                                  alt={photo.caption ?? `${trailer.trailerNumber} inspection photo`}
+                                  className="absolute inset-0 h-full w-full object-contain"
+                                  data-print-photo="true"
+                                />
+                              ) : null}
                             </div>
                             <div className="p-3 text-xs text-slate-600">
                               <p className="font-semibold text-slate-900">{photo.caption ?? "Inspection Photo"}</p>
-                              <p>{formatVesselDateTime(photo.recordedAt)}</p>
+                              <p>Trailer: {photo.trailerNumber || trailer.trailerNumber}</p>
+                              <p>Category: {photo.category ?? "General"}</p>
+                              <p>Description: {photo.description?.trim() ? photo.description : "-"}</p>
+                              <p>Uploaded by: {photo.uploadedBy?.trim() ? photo.uploadedBy : "Unknown"}</p>
+                              <p>Uploaded: {formatVesselDateTime(photo.recordedAt)}</p>
                             </div>
                           </div>
                         ))}

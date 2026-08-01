@@ -114,7 +114,7 @@ export default function NewVesselOperationPage() {
         throw insertError ?? new Error("Unable to create vessel operation.");
       }
 
-      router.push(`/dashboard/vessel-operations/${data.id}`);
+      router.push(`/dashboard/vessel-operations/${data.id}/planning`);
     } catch (saveErr) {
       console.error("Unable to save vessel operation:", saveErr);
       setError("Unable to save vessel operation.");

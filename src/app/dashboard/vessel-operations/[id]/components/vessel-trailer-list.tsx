@@ -11,6 +11,7 @@ import {
   resolveExpectedRearTemperature,
   type VesselOperationTrailerRecord,
 } from "@/lib/vessel-operations";
+import { getTrailerOwnershipBadgeLabel as getOwnershipBadgeLabel } from "@/lib/trailer-ownership";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
@@ -18,7 +19,7 @@ import { OperationalActionBar } from "@/components/operations/operational-action
 import { TrailerOperationsPanel } from "@/components/operations/trailer-operations-panel";
 import { TrailerHistoryDrawer } from "@/components/trailers/trailer-history-drawer";
 
-type TrailerFilter = "all" | "expected" | "arrived" | "inspection_pending" | "inspection_in_progress" | "completed" | "priority";
+type TrailerFilter = "all" | "expected" | "arrived" | "inspection_pending" | "inspection_in_progress" | "completed" | "priority" | "cancelled" | "no_show" | "not_discharged";
 type TrailerSort = "trailer_asc" | "trailer_desc";
 
 const extractTrailerPrefix = (value?: string | null) => {
@@ -39,6 +40,10 @@ type VesselTrailerListProps = {
   onTogglePriority: (trailer: VesselOperationTrailerRecord) => Promise<void>;
   onRemoveTrailer: (trailer: VesselOperationTrailerRecord) => Promise<void>;
   onMarkArrived: (trailer: VesselOperationTrailerRecord) => Promise<void>;
+  onMarkCancelled: (trailer: VesselOperationTrailerRecord) => Promise<void>;
+  onMarkNoShow: (trailer: VesselOperationTrailerRecord) => Promise<void>;
+  onUndoCancelled: (trailer: VesselOperationTrailerRecord) => Promise<void>;
+  onUndoNoShow: (trailer: VesselOperationTrailerRecord) => Promise<void>;
 };
 
 export function VesselTrailerList({
@@ -50,6 +55,10 @@ export function VesselTrailerList({
   onTogglePriority,
   onRemoveTrailer,
   onMarkArrived,
+  onMarkCancelled,
+  onMarkNoShow,
+  onUndoCancelled,
+  onUndoNoShow,
 }: VesselTrailerListProps) {
   const router = useRouter();
   const pathname = usePathname();
@@ -75,7 +84,10 @@ export function VesselTrailerList({
       filterValue === "inspection_pending" ||
       filterValue === "inspection_in_progress" ||
       filterValue === "completed" ||
-      filterValue === "priority"
+      filterValue === "priority" ||
+      filterValue === "cancelled" ||
+      filterValue === "no_show" ||
+      filterValue === "not_discharged"
     ) {
       setActiveFilter(filterValue);
     }
@@ -182,6 +194,18 @@ export function VesselTrailerList({
         return inspectionState === "completed" || inspectionState === "issues_found" || trailer.status === "inspected";
       }
 
+      if (activeFilter === "cancelled") {
+        return arrivalStatus === "cancelled";
+      }
+
+      if (activeFilter === "no_show") {
+        return arrivalStatus === "no_show";
+      }
+
+      if (activeFilter === "not_discharged") {
+        return arrivalStatus === "not_discharged";
+      }
+
       return true;
     });
 
@@ -216,6 +240,9 @@ export function VesselTrailerList({
     { key: "inspection_in_progress", label: "Inspection In Progress" },
     { key: "completed", label: "Completed" },
     { key: "priority", label: "Priority" },
+    { key: "cancelled", label: "Cancelled" },
+    { key: "no_show", label: "No Show" },
+    { key: "not_discharged", label: "Not Discharged" },
   ];
 
   const panelTrailer = useMemo(
@@ -335,7 +362,15 @@ export function VesselTrailerList({
           const expectedRear = resolveExpectedRearTemperature(trailer);
           const expectedUnit = normalizeExpectedTemperatureUnit(trailer.expected_temperature_unit);
           const canMarkArrived = operationStatus === "confirmed" && (trailer.status === "expected" || trailer.arrival_status === "available_for_arrival");
-          const canOpenInspection = operationStatus !== "draft" && trailer.arrival_status !== "cancelled" && trailer.arrival_status !== "not_discharged";
+          const canMarkCancelled = operationStatus === "confirmed" && (trailer.arrival_status === "expected" || trailer.arrival_status === "available_for_arrival");
+          const canMarkNoShow = operationStatus === "confirmed" && (trailer.arrival_status === "expected" || trailer.arrival_status === "available_for_arrival");
+          const canUndoCancelled = operationStatus === "confirmed" && trailer.arrival_status === "cancelled";
+          const canUndoNoShow = operationStatus === "confirmed" && trailer.arrival_status === "no_show";
+          const canOpenInspection =
+            operationStatus !== "draft" &&
+            trailer.arrival_status !== "cancelled" &&
+            trailer.arrival_status !== "no_show" &&
+            trailer.arrival_status !== "not_discharged";
           const inspectionState = getVesselInspectionProgressState(trailer);
           const inspectionLabel = getVesselInspectionProgressLabel(inspectionState);
           const isInspectionStarted = Boolean(trailer.inspection_started_at);
@@ -382,15 +417,25 @@ export function VesselTrailerList({
                       <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${getVesselPriorityClass(trailer.priority_level)}`}>
                         {getVesselPriorityLabel(trailer.priority_level)}
                       </span>
+                      <span className="rounded-full border border-white/10 bg-slate-950/60 px-3 py-1 text-xs font-semibold text-slate-200">
+                        {getOwnershipBadgeLabel(trailer.ownership_type ?? "unknown")}
+                      </span>
                       <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${getVesselTrailerStatusClass(trailer.status)}`}>
                         {getVesselTrailerStatusLabel(trailer.status)}
                       </span>
+                      {trailer.added_after_confirmation ? (
+                        <span className="rounded-full border border-amber-400/30 bg-amber-500/15 px-3 py-1 text-xs font-semibold text-amber-100">
+                          Added After Confirmation
+                        </span>
+                      ) : null}
                     </div>
                     <div className="grid gap-2 text-sm text-slate-300 sm:grid-cols-2 xl:grid-cols-4">
                       <p>Customer: {trailer.customer ?? "-"}</p>
+                      <p>External Company: {trailer.external_company ?? "-"}</p>
                       <p>Booking Ref: {trailer.booking_reference ?? "-"}</p>
                       <p>Load Status: {trailer.load_status ?? "-"}</p>
                       <p>Priority: {getVesselPriorityLabel(trailer.priority_level)}</p>
+                      <p>Source: {trailer.trailer_source ?? "-"}</p>
                       <p>Arrival Status: {arrivalLabel}</p>
                       <p>Inspection Status: {inspectionLabel}</p>
                       <p>Compound Position: {compoundPosition}</p>
@@ -399,6 +444,7 @@ export function VesselTrailerList({
                       <p>Arrival: {formatVesselDateTime(trailer.arrival_confirmed_at ?? trailer.arrived_at)}</p>
                       <p>Damage: {trailer.has_damage ? "Yes" : "No"}</p>
                       <p>Temp Alert: {trailer.has_temperature_alert ? "Yes" : "No"}</p>
+                      <p>Added At: {formatVesselDateTime(trailer.added_after_confirmation_at ?? trailer.created_at)}</p>
                       <p>Notes: {trailer.planning_notes?.trim() || "-"}</p>
                     </div>
                   </div>
@@ -459,6 +505,50 @@ export function VesselTrailerList({
                             className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-left text-xs font-semibold text-rose-200 hover:bg-rose-500/20 disabled:opacity-60"
                           >
                             Remove Trailer
+                          </button>
+                        ) : null}
+
+                        {canMarkCancelled ? (
+                          <button
+                            type="button"
+                            onClick={() => void onMarkCancelled(trailer)}
+                            disabled={actioningTrailerId === trailer.id}
+                            className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-left text-xs font-semibold text-rose-200 hover:bg-rose-500/20 disabled:opacity-60"
+                          >
+                            Mark Cancelled
+                          </button>
+                        ) : null}
+
+                        {canMarkNoShow ? (
+                          <button
+                            type="button"
+                            onClick={() => void onMarkNoShow(trailer)}
+                            disabled={actioningTrailerId === trailer.id}
+                            className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-left text-xs font-semibold text-amber-100 hover:bg-amber-500/20 disabled:opacity-60"
+                          >
+                            Mark No Show
+                          </button>
+                        ) : null}
+
+                        {canUndoCancelled ? (
+                          <button
+                            type="button"
+                            onClick={() => void onUndoCancelled(trailer)}
+                            disabled={actioningTrailerId === trailer.id}
+                            className="rounded-xl border border-cyan-500/30 bg-cyan-500/10 px-3 py-2 text-left text-xs font-semibold text-cyan-100 hover:bg-cyan-500/20 disabled:opacity-60"
+                          >
+                            Undo Cancelled
+                          </button>
+                        ) : null}
+
+                        {canUndoNoShow ? (
+                          <button
+                            type="button"
+                            onClick={() => void onUndoNoShow(trailer)}
+                            disabled={actioningTrailerId === trailer.id}
+                            className="rounded-xl border border-cyan-500/30 bg-cyan-500/10 px-3 py-2 text-left text-xs font-semibold text-cyan-100 hover:bg-cyan-500/20 disabled:opacity-60"
+                          >
+                            Undo No Show
                           </button>
                         ) : null}
 

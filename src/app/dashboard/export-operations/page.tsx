@@ -47,6 +47,7 @@ import {
   type ExportAllocationRecord,
   type ExportAllocationStatus,
 } from "@/lib/export-allocation";
+import { getTrailerOwnershipBadgeLabel, getTrailerOwnershipType, type TrailerOwnershipType } from "@/lib/trailer-ownership";
 import { advanceExportAllocationStatus } from "@/lib/operations/export-lifecycle";
 
 type TrailerLoadSnapshot = {
@@ -61,6 +62,15 @@ type TrailerLoadSnapshot = {
 type CompoundRestoreResult = {
   restoredPosition: string | null;
   fallbackUsed: boolean;
+};
+
+type OwnershipFilter = "all" | "company" | "outsourcing";
+
+type ExportAllocationWithOwnership = ExportAllocationRecord & {
+  trailer_source?: string | null;
+  external_company?: string | null;
+  is_local?: boolean | null;
+  ownershipType?: TrailerOwnershipType;
 };
 
 const COMPOUND_POSITIONS = Array.from({ length: 50 }, (_, index) => `P${String(index + 1).padStart(2, "0")}`);
@@ -230,6 +240,15 @@ const getStatusQueryValue = (value: string | null) => {
   return "all";
 };
 
+const getOwnershipQueryValue = (value: string | null): OwnershipFilter => {
+  const normalized = normalizeText(value);
+  if (normalized === "company" || normalized === "outsourcing") {
+    return normalized;
+  }
+
+  return "all";
+};
+
 const getStatusLabel = (value: string) => {
   switch (value) {
     case "all":
@@ -300,13 +319,15 @@ function ExportOperationsPageContent() {
   const statusQuery = searchParams.get("status");
   const legacyFilterQuery = statusQuery ? null : searchParams.get("filter");
   const statusFilter = getStatusQueryValue(statusQuery ?? legacyFilterQuery ?? "all");
+  const ownershipQuery = searchParams.get("ownership");
+  const ownershipFilter = getOwnershipQueryValue(ownershipQuery);
   const historyPresetQuery = searchParams.get("history");
   const historyStartQuery = searchParams.get("start") ?? "";
   const historyEndQuery = searchParams.get("end") ?? "";
 
   const [searchTerm, setSearchTerm] = useState("");
 
-  const [allocations, setAllocations] = useState<ExportAllocationRecord[]>([]);
+  const [allocations, setAllocations] = useState<ExportAllocationWithOwnership[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -337,6 +358,7 @@ function ExportOperationsPageContent() {
   const updateFilters = (updates: {
     customer?: string;
     status?: string;
+    ownership?: OwnershipFilter;
     history?: HistoryDateRangeValue;
   }) => {
     const params = new URLSearchParams(searchParams.toString());
@@ -356,6 +378,14 @@ function ExportOperationsPageContent() {
         params.set("status", value);
       } else {
         params.delete("status");
+      }
+    }
+
+    if (updates.ownership !== undefined) {
+      if (updates.ownership !== "all") {
+        params.set("ownership", updates.ownership);
+      } else {
+        params.delete("ownership");
       }
     }
 
@@ -418,7 +448,50 @@ function ExportOperationsPageContent() {
 
     try {
       const rows = await loadExportAllocationsForReport(supabase);
-      setAllocations(rows.map((row) => normalizeExportAllocationRecord(row)));
+      const normalizedRows = rows.map((row) => normalizeExportAllocationRecord(row));
+      const trailerIds = Array.from(new Set(normalizedRows.map((row) => row.trailer_id).filter((value): value is string => Boolean(value))));
+
+      let trailerOwnershipById = new Map<string, { trailer_source?: string | null; external_company?: string | null; is_local?: boolean | null; trailer_number?: string | null }>();
+      if (trailerIds.length > 0) {
+        const { data: trailerRows, error: trailerLookupError } = await supabase
+          .from("trailers")
+          .select("id, trailer_source, external_company, is_local, trailer_number")
+          .in("id", trailerIds);
+
+        if (trailerLookupError) {
+          throw new Error(trailerLookupError.message || "Unable to load trailer ownership data for export filters.");
+        }
+
+        trailerOwnershipById = new Map((trailerRows ?? []).map((row) => [
+          row.id,
+          {
+            trailer_source: row.trailer_source,
+            external_company: row.external_company,
+            is_local: row.is_local,
+            trailer_number: row.trailer_number,
+          },
+        ]));
+      }
+
+      const withOwnership = normalizedRows.map((row) => {
+        const ownershipSource = row.trailer_id ? trailerOwnershipById.get(row.trailer_id) : undefined;
+        const ownershipType = getTrailerOwnershipType({
+          trailerSource: ownershipSource?.trailer_source,
+          externalCompany: ownershipSource?.external_company,
+          isLocal: ownershipSource?.is_local,
+          trailerNumber: ownershipSource?.trailer_number ?? row.trailer_number,
+        });
+
+        return {
+          ...row,
+          trailer_source: ownershipSource?.trailer_source ?? null,
+          external_company: ownershipSource?.external_company ?? null,
+          is_local: ownershipSource?.is_local ?? null,
+          ownershipType,
+        } satisfies ExportAllocationWithOwnership;
+      });
+
+      setAllocations(withOwnership);
     } catch (loadErr) {
       setError(loadErr instanceof Error ? loadErr.message : "Unable to load export allocations.");
     } finally {
@@ -524,7 +597,11 @@ function ExportOperationsPageContent() {
       ? baseFilteredAllocations
       : baseFilteredAllocations.filter((item) => normalizeText(item.customer) === normalizeText(resolvedCustomerValue));
 
-    const filteredByPrefix = filteredByCustomer.filter((item) => {
+    const filteredByOwnership = ownershipFilter === "all"
+      ? filteredByCustomer
+      : filteredByCustomer.filter((item) => item.ownershipType === ownershipFilter);
+
+    const filteredByPrefix = filteredByOwnership.filter((item) => {
       if (prefixFilter === "all") {
         return true;
       }
@@ -545,7 +622,7 @@ function ExportOperationsPageContent() {
 
       return comparePrintAllocations(left, right);
     });
-  }, [baseFilteredAllocations, prefixFilter, resolvedCustomerValue, sortBy]);
+  }, [baseFilteredAllocations, ownershipFilter, prefixFilter, resolvedCustomerValue, sortBy]);
 
   const prefixOptions = useMemo(() => {
     const prefixes = new Set<string>();
@@ -586,6 +663,7 @@ function ExportOperationsPageContent() {
   const selectedStatusLabel = getStatusLabel(statusFilter);
   const selectedDateLabel = getHistoryDateRangeLabel(historyRange);
   const selectedCustomerLabel = resolvedCustomerValue ? resolvedCustomerValue : "All Customers";
+  const selectedOwnershipLabel = ownershipFilter === "all" ? "All Ownership" : ownershipFilter === "company" ? "Company" : "Outsourcing";
   const printedAt = formatPrintedDateTime();
 
   const updateTrailerWhenLoaded = async (allocation: ExportAllocationRecord) => {
@@ -1220,6 +1298,18 @@ function ExportOperationsPageContent() {
                     ))}
                   </select>
                 </label>
+                <label className="text-xs uppercase tracking-[0.2em] text-slate-500">
+                  Ownership
+                  <select
+                    value={ownershipFilter}
+                    onChange={(event) => updateFilters({ ownership: getOwnershipQueryValue(event.target.value) })}
+                    className="mt-1.5 h-10 rounded-xl border border-white/10 bg-slate-950/85 px-3 text-sm text-slate-100"
+                  >
+                    <option value="all">All Ownership</option>
+                    <option value="company">Company</option>
+                    <option value="outsourcing">Outsourcing</option>
+                  </select>
+                </label>
                 <button
                   type="button"
                   onClick={handleClearFilters}
@@ -1286,6 +1376,9 @@ function ExportOperationsPageContent() {
                       </span>
                       <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${getExportAllocationPriorityClasses(allocation.priority as ExportAllocationPriority)}`}>
                         {getExportAllocationPriorityLabel(allocation.priority as ExportAllocationPriority)}
+                      </span>
+                      <span className="rounded-full border border-white/20 bg-white/5 px-3 py-1 text-xs font-semibold text-slate-200">
+                        {getTrailerOwnershipBadgeLabel(allocation.ownershipType ?? "unknown")}
                       </span>
                       {overdue ? (
                         <span className="rounded-full border border-rose-500/40 bg-rose-500/20 px-3 py-1 text-xs font-semibold text-rose-100">Overdue</span>
@@ -1459,6 +1552,7 @@ function ExportOperationsPageContent() {
               items={[
                 { label: "Collection Date", value: selectedDateLabel },
                 { label: "Customer", value: selectedCustomerLabel },
+                { label: "Ownership", value: selectedOwnershipLabel },
                 { label: "Status", value: selectedStatusLabel },
                 { label: "Search", value: searchTerm.trim() || "All visible records" },
               ]}
@@ -1480,6 +1574,7 @@ function ExportOperationsPageContent() {
             rowClassName={(allocation) => (allocation.priority === "urgent" ? "print-urgent" : undefined)}
             columns={[
               { key: "trailer_number", header: "Trailer", render: (allocation) => allocation.trailer_number ?? "—" },
+              { key: "ownership", header: "Ownership", render: (allocation) => getTrailerOwnershipBadgeLabel(allocation.ownershipType ?? "unknown") },
               { key: "customer", header: "Customer", render: (allocation) => allocation.customer ?? "—" },
               { key: "collection_address", header: "Collection Address", render: (allocation) => allocation.collection_address ?? "—" },
               { key: "haulier", header: "Haulier", render: (allocation) => allocation.haulier ?? "—" },

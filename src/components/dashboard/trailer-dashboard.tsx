@@ -4,7 +4,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import type { ReactNode } from "react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Anchor, BarChart3, ChevronRight, ClipboardList, Package, PlusCircle, ScanSearch, Ship, Truck, Wrench } from "lucide-react";
 import { PrintButton } from "@/components/print/print-button";
 import { PrintFilters } from "@/components/print/print-filters";
@@ -32,6 +32,7 @@ import {
   acknowledgeOperationalAlert,
   dismissOperationalAlert,
   getOperationalAlerts,
+  getOperationalAlertSummary,
   resolveOperationalAlert,
   runOperationalAlertDetection,
   type OperationalAlertRow,
@@ -229,8 +230,9 @@ export function TrailerDashboard() {
   const [resolvedAlertsLoading, setResolvedAlertsLoading] = useState(false);
   const [alertStatusView, setAlertStatusView] = useState<AlertStatusView>("active");
   const [operationalAlertSummary, setOperationalAlertSummary] = useState<OperationalAlertSummary>(defaultOperationalAlertSummary);
-  const [operationalAlertError, setOperationalAlertError] = useState<string | null>(null);
-  const [isAlertsRefreshing, setIsAlertsRefreshing] = useState(false);
+  const [alertsError, setAlertsError] = useState<string | null>(null);
+  const [alertsRefreshing, setAlertsRefreshing] = useState(false);
+  const [alertsInitialLoading, setAlertsInitialLoading] = useState(true);
   const [todayDeliveries, setTodayDeliveries] = useState<DeliveryBooking[]>([]);
   const [waitingCollections, setWaitingCollections] = useState<WaitingCollectionItem[]>([]);
   const [waitingCollectionSummary, setWaitingCollectionSummary] = useState<WaitingCollectionSummary>({ count: 0, attentionRequiredCount: 0, oldestTrailer: null, oldestDays: 0 });
@@ -251,14 +253,159 @@ export function TrailerDashboard() {
   const [damagePendingReviewCount, setDamagePendingReviewCount] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const activeAlertsPromiseRef = useRef<Promise<void> | null>(null);
+  const resolvedAlertsPromiseRef = useRef<Promise<void> | null>(null);
 
   const saved = searchParams.get("saved");
   const notice = saved === "1" ? "Operation saved successfully. Dashboard refreshed." : null;
 
+  const refreshOperationalAlerts = useCallback(async (mode: "initial" | "refresh") => {
+    if (activeAlertsPromiseRef.current) {
+      return activeAlertsPromiseRef.current;
+    }
+
+    const requestPromise = (async () => {
+      if (mode === "initial") {
+        setAlertsInitialLoading(true);
+      } else {
+        setAlertsRefreshing(true);
+      }
+
+      setAlertsError(null);
+
+      try {
+        const alertDetectionResult = await runOperationalAlertDetection(supabase);
+        if (!alertDetectionResult.ok && isDev) {
+          console.warn("[alerts-ui] active alerts detection returned service error", {
+            mode,
+            error: alertDetectionResult.error,
+          });
+        }
+
+        const [activeAlertsResult, summaryResult] = await Promise.all([
+          getOperationalAlerts({ includeResolved: false, limit: 1000 }, supabase),
+          getOperationalAlertSummary(supabase),
+        ]);
+
+        if (!activeAlertsResult.ok) {
+          throw new Error(activeAlertsResult.error);
+        }
+
+        if (isDev) {
+          console.info("[alerts-ui] rows fetched", {
+            mode,
+            rowsFetched: activeAlertsResult.data.length,
+            rows: activeAlertsResult.data.map((alert) => ({
+              id: alert.id,
+              key: alert.alert_key,
+              severity: alert.severity,
+              status: alert.status,
+              title: alert.title,
+            })),
+          });
+          console.info("[alerts-ui] rows after mapping", {
+            mode,
+            rowsAfterMapping: activeAlertsResult.data.length,
+            rows: activeAlertsResult.data.map((alert) => ({
+              id: alert.id,
+              key: alert.alert_key,
+              severity: alert.severity,
+              status: alert.status,
+              title: alert.title,
+            })),
+          });
+        }
+
+        setOperationalAlerts(activeAlertsResult.data);
+        setOperationalAlertSummary(summaryResult.ok ? summaryResult.data : defaultOperationalAlertSummary);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Unable to load operational alerts.";
+        setAlertsError(message);
+        if (isDev) {
+          const errorObject = err as {
+            message?: string;
+            code?: string;
+            details?: string;
+            hint?: string;
+            stack?: string;
+          };
+          console.error("[alerts-ui] active alerts fetch failed", {
+            mode,
+            error: err,
+            message: errorObject?.message ?? message,
+            code: errorObject?.code ?? null,
+            details: errorObject?.details ?? null,
+            hint: errorObject?.hint ?? null,
+            stack: errorObject?.stack ?? null,
+          });
+        }
+      } finally {
+        if (mode === "initial") {
+          setAlertsInitialLoading(false);
+        } else {
+          setAlertsRefreshing(false);
+        }
+      }
+    })().finally(() => {
+      activeAlertsPromiseRef.current = null;
+    });
+
+    activeAlertsPromiseRef.current = requestPromise;
+    return requestPromise;
+  }, []);
+
+  useEffect(() => {
+    if (!isDev) {
+      return;
+    }
+
+    const currentRows = alertStatusView === "resolved" ? resolvedOperationalAlerts : operationalAlerts;
+    console.info("[alerts-ui] rows passed to OperationalAlertsSection", {
+      statusView: alertStatusView,
+      rowsPassed: currentRows.length,
+      rows: currentRows.map((alert) => ({
+        id: alert.id,
+        key: alert.alert_key,
+        severity: alert.severity,
+        status: alert.status,
+        title: alert.title,
+      })),
+    });
+  }, [alertStatusView, operationalAlerts, resolvedOperationalAlerts]);
+
+  const loadResolvedAlerts = useCallback(async () => {
+    if (resolvedAlertsPromiseRef.current) {
+      return resolvedAlertsPromiseRef.current;
+    }
+
+    const loadPromise = (async () => {
+      setResolvedAlertsLoading(true);
+
+      try {
+        const result = await getOperationalAlerts({ includeResolved: true, status: ["resolved"], limit: 250 }, supabase);
+        if (result.ok) {
+          setResolvedOperationalAlerts(result.data);
+          setResolvedAlertsLoaded(true);
+        } else {
+          setAlertsError(result.error);
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Unable to load resolved alerts.";
+        setAlertsError(message);
+      } finally {
+        setResolvedAlertsLoading(false);
+      }
+    })().finally(() => {
+      resolvedAlertsPromiseRef.current = null;
+    });
+
+    resolvedAlertsPromiseRef.current = loadPromise;
+    return loadPromise;
+  }, []);
+
   const loadStats = useCallback(async () => {
       setIsLoading(true);
       setError(null);
-      setOperationalAlertError(null);
 
       try {
         const todayKey = getDateKey(new Date().toISOString());
@@ -492,16 +639,6 @@ export function TrailerDashboard() {
 
         setMissingTrailersCount(latestMissing);
         setUnexpectedTrailersCount(latestUnexpected);
-
-        const alertDetectionResult = await runOperationalAlertDetection(supabase);
-        if (alertDetectionResult.ok) {
-          setOperationalAlerts(alertDetectionResult.data.alerts);
-          setOperationalAlertSummary(alertDetectionResult.data.summary ?? defaultOperationalAlertSummary);
-        } else {
-          setOperationalAlerts([]);
-          setOperationalAlertSummary(defaultOperationalAlertSummary);
-          setOperationalAlertError(alertDetectionResult.error);
-        }
       } catch (err) {
         const message =
           err instanceof Error
@@ -510,9 +647,6 @@ export function TrailerDashboard() {
         setError(message);
         setStats(defaultStats);
         setEvents([]);
-        setOperationalAlerts([]);
-        setOperationalAlertSummary(defaultOperationalAlertSummary);
-        setOperationalAlertError(message);
         setTrailers([]);
         setTodayDeliveries([]);
         setWaitingCollections([]);
@@ -534,46 +668,7 @@ export function TrailerDashboard() {
       } finally {
         setIsLoading(false);
       }
-    }, [saved]);
-
-  const refreshOperationalAlerts = useCallback(async () => {
-    setIsAlertsRefreshing(true);
-    setOperationalAlertError(null);
-
-    try {
-      const alertDetectionResult = await runOperationalAlertDetection(supabase);
-      if (alertDetectionResult.ok) {
-        setOperationalAlerts(alertDetectionResult.data.alerts);
-        setOperationalAlertSummary(alertDetectionResult.data.summary ?? defaultOperationalAlertSummary);
-      } else {
-        setOperationalAlertError(alertDetectionResult.error);
-      }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Unable to refresh operational alerts.";
-      setOperationalAlertError(message);
-    } finally {
-      setIsAlertsRefreshing(false);
-    }
-  }, []);
-
-  const loadResolvedAlerts = useCallback(async () => {
-    setResolvedAlertsLoading(true);
-
-    try {
-      const result = await getOperationalAlerts({ includeResolved: true, status: ["resolved"], limit: 250 }, supabase);
-      if (result.ok) {
-        setResolvedOperationalAlerts(result.data);
-        setResolvedAlertsLoaded(true);
-      } else {
-        setOperationalAlertError(result.error);
-      }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Unable to load resolved alerts.";
-      setOperationalAlertError(message);
-    } finally {
-      setResolvedAlertsLoading(false);
-    }
-  }, []);
+    }, []);
 
   const handleAlertStatusViewChange = useCallback(
     (view: AlertStatusView) => {
@@ -586,11 +681,15 @@ export function TrailerDashboard() {
   );
 
   const handleAlertsRefresh = useCallback(async () => {
-    await refreshOperationalAlerts();
+    await refreshOperationalAlerts("refresh");
     if (resolvedAlertsLoaded) {
       await loadResolvedAlerts();
     }
   }, [loadResolvedAlerts, refreshOperationalAlerts, resolvedAlertsLoaded]);
+
+  useEffect(() => {
+    void refreshOperationalAlerts("initial");
+  }, [refreshOperationalAlerts]);
 
   useEffect(() => {
     void loadStats();
@@ -615,6 +714,7 @@ export function TrailerDashboard() {
 
   useOperationalRealtime(["dashboard"], () => {
     void loadStats();
+    void refreshOperationalAlerts("refresh");
     if (resolvedAlertsLoaded) {
       void loadResolvedAlerts();
     }
@@ -779,9 +879,9 @@ export function TrailerDashboard() {
         </div>
       ) : null}
 
-      {operationalAlertError ? (
+      {alertsError ? (
         <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-          {operationalAlertError}
+          {alertsError}
         </div>
       ) : null}
 
@@ -874,14 +974,15 @@ export function TrailerDashboard() {
             resolvedAlertsLoaded={resolvedAlertsLoaded}
             resolvedAlertsLoading={resolvedAlertsLoading}
             statusView={alertStatusView}
-            isLoading={isLoading}
-            isRefreshing={isAlertsRefreshing}
-            error={operationalAlertError}
+            isLoading={alertsInitialLoading}
+            isRefreshing={alertsRefreshing}
+            error={alertsError}
             onStatusViewChange={handleAlertStatusViewChange}
             onRefresh={() => { void handleAlertsRefresh(); }}
             onAcknowledge={async (alert) => {
               const result = await acknowledgeOperationalAlert({ operationalAlertId: alert.id });
               if (!result.ok) throw new Error(result.error);
+              await handleAlertsRefresh();
             }}
             onResolve={async (alert, resolutionNote) => {
               const result = await resolveOperationalAlert({ operationalAlertId: alert.id, reason: resolutionNote ?? undefined });
@@ -890,6 +991,7 @@ export function TrailerDashboard() {
             onDismiss={async (alert) => {
               const result = await dismissOperationalAlert({ operationalAlertId: alert.id });
               if (!result.ok) throw new Error(result.error);
+              await handleAlertsRefresh();
             }}
           />
 

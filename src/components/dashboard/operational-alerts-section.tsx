@@ -130,8 +130,6 @@ const getSeverityFilterKey = (severity: string): SeverityFilter => {
 
 const getStatusLabel = (status?: string | null) => {
   switch (normalizeText(status)) {
-    case "acknowledged":
-      return "Acknowledged";
     case "resolved":
       return "Resolved";
     case "dismissed":
@@ -320,6 +318,7 @@ export function OperationalAlertsSection({
   onResolve,
   onDismiss,
 }: OperationalAlertsSectionProps) {
+  const isDev = process.env.NODE_ENV !== "production";
   const [severityFilter, setSeverityFilter] = useState<SeverityFilter>("all");
   const [showAll, setShowAll] = useState(false);
   const [resolveTarget, setResolveTarget] = useState<OperationalAlertRow | null>(null);
@@ -328,10 +327,11 @@ export function OperationalAlertsSection({
 
   useEffect(() => {
     setShowAll(false);
+    setSeverityFilter("all");
   }, [statusView]);
 
   const currentAlerts = statusView === "resolved" ? resolvedAlerts : activeAlerts;
-  const loadingCurrentView = statusView === "resolved" ? resolvedAlertsLoading : isLoading;
+  const loadingCurrentView = statusView === "active" && isLoading;
   const filteredBySeverity = useMemo(() => {
     if (severityFilter === "all") {
       return sortAlerts(currentAlerts);
@@ -357,6 +357,26 @@ export function OperationalAlertsSection({
   const latestAlertTime = summary.latestAlertAt ?? filteredBySeverity[0]?.created_at ?? null;
   const healthState = getHealthState(summary);
   const healthTone = getToneClasses(healthState.tone);
+
+  useEffect(() => {
+    if (!isDev) {
+      return;
+    }
+
+    console.info("[alerts-ui] rows after filtering", {
+      statusView,
+      severityFilter,
+      rowsAfterFiltering: filteredBySeverity.length,
+      visibleRows: visibleAlerts.length,
+      rows: visibleAlerts.map((alert) => ({
+        id: alert.id,
+        key: alert.alert_key,
+        severity: alert.severity,
+        status: alert.status,
+        title: alert.title,
+      })),
+    });
+  }, [filteredBySeverity, isDev, severityFilter, statusView, visibleAlerts]);
 
   const handleRefresh = async () => {
     await onRefresh();
@@ -481,7 +501,7 @@ export function OperationalAlertsSection({
           <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-5 text-sm text-slate-500">Loading alerts...</div>
         ) : visibleAlerts.length === 0 ? (
           <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-5 text-sm text-slate-500">
-            {statusView === "resolved" ? "No resolved alerts yet." : "No active alerts right now."}
+            {statusView === "resolved" ? "No resolved operational alerts." : "No active operational alerts."}
           </div>
         ) : (
           visibleAlerts.map((alert) => {

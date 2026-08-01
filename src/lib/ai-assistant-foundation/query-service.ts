@@ -1008,7 +1008,7 @@ const queryUnresolvedAlerts = async (context: AssistantContext, gate: Permission
   const { data, error } = await context.supabase
     .from("operational_alerts")
     .select("id, trailer_id, trailer_number, severity, status, title, source_module")
-    .in("status", ["active", "acknowledged"])
+    .in("status", ["active"])
     .order("created_at", { ascending: false })
     .limit(limit + 10);
 

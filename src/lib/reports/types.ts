@@ -1,4 +1,5 @@
 import type { HistoryDateRangeValue } from "@/lib/history-date-range";
+import type { TrailerOwnershipType } from "@/lib/trailer-ownership";
 
 export type TemperatureResult = "pass" | "fail" | "not_assessed";
 
@@ -25,9 +26,13 @@ export type VesselOperationalReportData = {
   statistics: {
     totalTrailers: number;
     expectedTrailers: number;
+    additionalTrailers: number;
     arrivedTrailers: number;
+    finalDischargedTrailers: number;
     pendingTrailers: number;
     notDischargedTrailers: number;
+    cancelledTrailers: number;
+    noShowTrailers: number;
     priorityTrailers: number;
     inspectedTrailers: number;
     pendingInspections: number;
@@ -54,6 +59,7 @@ export type VesselOperationalReportData = {
     bookingReference: string | null;
     loadStatus: string | null;
     priority: string;
+    ownershipType: TrailerOwnershipType;
     arrivalStatus: string;
     arrivalStatusRaw: string | null;
     arrivedAt: string | null;
@@ -90,6 +96,8 @@ export type VesselOperationalReportData = {
       recordedAt: string | null;
       category?: string | null;
       fileName?: string | null;
+      description?: string | null;
+      uploadedBy?: string | null;
     }>;
   }>;
   damages: Array<{
@@ -111,6 +119,8 @@ export type VesselOperationalReportData = {
       recordedAt: string | null;
       category?: string | null;
       fileName?: string | null;
+      description?: string | null;
+      uploadedBy?: string | null;
     }>;
   }>;
   photos: Array<{
@@ -122,6 +132,8 @@ export type VesselOperationalReportData = {
     recordedAt: string | null;
     category?: string | null;
     fileName?: string | null;
+    description?: string | null;
+    uploadedBy?: string | null;
   }>;
   temperatures: Array<{
     id: string;

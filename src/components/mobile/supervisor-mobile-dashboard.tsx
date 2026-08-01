@@ -31,6 +31,7 @@ import {
   MobileInspectionPanel,
   type MobileInspectionProgress,
 } from "@/components/mobile/mobile-inspection-panel";
+import { GlobalSearch } from "@/components/search/global-search";
 import { VoiceOperationsPanel } from "@/components/mobile/voice-operations-panel";
 import { canAccessModule, canPerformAction } from "@/lib/auth/permissions";
 import { toRoleLabel, type RoleKey } from "@/lib/auth/roles";
@@ -75,10 +76,12 @@ import { saveVesselInspectionPhoto } from "@/lib/vessel-inspection-photos";
 import { supabase } from "@/lib/supabase";
 import { type VoiceActionIntentName, type VoiceEntities } from "@/lib/voice/types";
 import { getSessionToken } from "@/lib/voice/session";
+import type { TrailerOwnershipType } from "@/lib/trailer-ownership";
 
 type TrailerRow = Database["public"]["Tables"]["trailers"]["Row"];
 type DeliveryBookingRow = Database["public"]["Tables"]["delivery_bookings"]["Row"];
 type VesselTrailerRow = Database["public"]["Tables"]["vessel_operation_trailers"]["Row"];
+type VesselOperationRow = Database["public"]["Tables"]["vessel_operations"]["Row"];
 
 type MobileTabKey = "home" | "operations" | "compound" | "search" | "more";
 
@@ -125,6 +128,13 @@ type MobileVesselTrailerCard = {
   trailerNumber: string;
   arrivalStatus: string | null;
   status: string | null;
+  cancelledAt: string | null;
+  cancelledBy: string | null;
+  cancellationReason: string | null;
+  noShowAt: string | null;
+  noShowBy: string | null;
+  noShowReason: string | null;
+  addedAfterConfirmation: boolean;
   inspectionStartedAt: string | null;
   inspectionCompletedAt: string | null;
   expectedFrontTemperature: number | null;
@@ -132,6 +142,33 @@ type MobileVesselTrailerCard = {
   expectedTemperatureUnit: string | null;
   hasDamage: boolean;
   hasTemperatureAlert: boolean;
+};
+
+type MobileVesselOperationCard = {
+  id: string;
+  vesselName: string;
+  sailingReference: string | null;
+  status: string | null;
+  listStatus: string | null;
+  finalLockedAt: string | null;
+};
+
+type MobileAddTrailerFormState = {
+  operationId: string;
+  trailerNumber: string;
+  ownershipType: TrailerOwnershipType;
+  trailerSource: "company" | "outsourced" | "unknown";
+  externalCompany: string;
+  plannedDestination: string;
+  manifestChangeReason: string;
+  customer: string;
+  bookingReference: string;
+  loadStatus: string;
+  expectedFrontTemperature: string;
+  expectedRearTemperature: string;
+  expectedTemperatureUnit: string;
+  priorityLevel: "priority" | "normal";
+  notes: string;
 };
 
 type MobileSyncLog = {
@@ -239,6 +276,24 @@ const initialInspectionProgress: MobileInspectionProgress = {
   notes: "",
 };
 
+const initialMobileAddTrailerForm: MobileAddTrailerFormState = {
+  operationId: "",
+  trailerNumber: "",
+  ownershipType: "unknown",
+  trailerSource: "unknown",
+  externalCompany: "",
+  plannedDestination: "Compound",
+  manifestChangeReason: "",
+  customer: "",
+  bookingReference: "",
+  loadStatus: "",
+  expectedFrontTemperature: "",
+  expectedRearTemperature: "",
+  expectedTemperatureUnit: "C",
+  priorityLevel: "normal",
+  notes: "",
+};
+
 const parseTemperatureInput = (value: string) => {
   const trimmed = value.trim();
   if (!trimmed) {
@@ -282,6 +337,7 @@ export function SupervisorMobileDashboard() {
   const [compoundSort, setCompoundSort] = useState<CompoundSortKey>(initialUiState.compoundSort ?? "position");
   const [kpis, setKpis] = useState<MobileKpis>(emptyKpis);
   const [trailers, setTrailers] = useState<MobileTrailerCard[]>([]);
+  const [vesselOperations, setVesselOperations] = useState<MobileVesselOperationCard[]>([]);
   const [vesselTrailers, setVesselTrailers] = useState<MobileVesselTrailerCard[]>([]);
   const [operations, setOperations] = useState<MobileOperationCard[]>([]);
   const [queueItems, setQueueItems] = useState<MobileActionQueueItem[]>(() => loadMobileActionQueue());
@@ -299,6 +355,8 @@ export function SupervisorMobileDashboard() {
   const [inspectionActivityRows, setInspectionActivityRows] = useState<TrailerActivityRow[]>([]);
   const [inspectionActivityLoading, setInspectionActivityLoading] = useState(false);
   const [isExecutingInspectionAction, setIsExecutingInspectionAction] = useState(false);
+  const [addTrailerSheetOpen, setAddTrailerSheetOpen] = useState(false);
+  const [addTrailerForm, setAddTrailerForm] = useState<MobileAddTrailerFormState>(initialMobileAddTrailerForm);
   const { showInstallAction, showIosInstallGuide, isInstalled, updateAvailable, promptInstall, dismissInstall, applyUpdate, setOperationallyBusy } = usePwa();
   const queueItemsRef = useRef(queueItems);
   const isSyncingQueueRef = useRef(false);
@@ -344,7 +402,7 @@ export function SupervisorMobileDashboard() {
     setError(null);
 
     try {
-      const [trailersResult, exportsResult, deliveryResult, vesselTrailerResult] = await Promise.all([
+      const [trailersResult, exportsResult, deliveryResult, vesselTrailerResult, vesselOperationResult] = await Promise.all([
         supabase
           .from("trailers")
           .select("id, trailer_number, customer, load_status, operational_status, compound_position, is_local, arrival_date, departure_date")
@@ -364,14 +422,20 @@ export function SupervisorMobileDashboard() {
           .limit(260),
         supabase
           .from("vessel_operation_trailers")
-          .select("id, vessel_operation_id, trailer_id, trailer_number, arrival_status, status, inspection_started_at, inspection_completed_at, expected_front_temperature, expected_rear_temperature, expected_temperature_unit, has_temperature_alert, has_damage")
+          .select("id, vessel_operation_id, trailer_id, trailer_number, arrival_status, status, cancelled_at, cancelled_by, cancellation_reason, no_show_at, no_show_by, no_show_reason, added_after_confirmation, inspection_started_at, inspection_completed_at, expected_front_temperature, expected_rear_temperature, expected_temperature_unit, has_temperature_alert, has_damage")
           .limit(420),
+        supabase
+          .from("vessel_operations")
+          .select("id, vessel_name, sailing_reference, status, list_status, final_locked_at, updated_at")
+          .order("updated_at", { ascending: false })
+          .limit(40),
       ]);
 
       if (trailersResult.error) throw trailersResult.error;
       if (exportsResult.error) throw exportsResult.error;
       if (deliveryResult.error) throw deliveryResult.error;
       if (vesselTrailerResult.error) throw vesselTrailerResult.error;
+      if (vesselOperationResult.error) throw vesselOperationResult.error;
 
       const trailerRows = (trailersResult.data ?? []) as TrailerRow[];
       const exportRows = ((exportsResult.data ?? []) as ExportAllocationRecord[]).map((row) => normalizeExportAllocationRecord(row));
@@ -379,6 +443,16 @@ export function SupervisorMobileDashboard() {
       const activeExportByTrailer = buildActiveExportStatusByTrailerId(activeExportAllocations);
       const deliveryRows = (deliveryResult.data ?? []) as unknown as DeliveryBookingRow[];
       const vesselRows = (vesselTrailerResult.data ?? []) as VesselTrailerRow[];
+      const vesselOperationRows = (vesselOperationResult.data ?? []) as VesselOperationRow[];
+
+      const vesselOperationCards: MobileVesselOperationCard[] = vesselOperationRows.map((row) => ({
+        id: row.id,
+        vesselName: row.vessel_name?.trim() || "Unnamed vessel",
+        sailingReference: row.sailing_reference ?? null,
+        status: row.status ?? null,
+        listStatus: row.list_status ?? null,
+        finalLockedAt: row.final_locked_at ?? null,
+      }));
 
       const vesselCards: MobileVesselTrailerCard[] = vesselRows
         .filter((row) => Boolean(row.id) && Boolean(row.vessel_operation_id))
@@ -389,6 +463,13 @@ export function SupervisorMobileDashboard() {
           trailerNumber: row.trailer_number ?? "Unknown",
           arrivalStatus: row.arrival_status ?? null,
           status: row.status ?? null,
+          cancelledAt: row.cancelled_at ?? null,
+          cancelledBy: row.cancelled_by ?? null,
+          cancellationReason: row.cancellation_reason ?? null,
+          noShowAt: row.no_show_at ?? null,
+          noShowBy: row.no_show_by ?? null,
+          noShowReason: row.no_show_reason ?? null,
+          addedAfterConfirmation: row.added_after_confirmation === true,
           inspectionStartedAt: row.inspection_started_at ?? null,
           inspectionCompletedAt: row.inspection_completed_at ?? null,
           expectedFrontTemperature: row.expected_front_temperature ?? null,
@@ -438,6 +519,7 @@ export function SupervisorMobileDashboard() {
       }));
 
       setTrailers(cards);
+  setVesselOperations(vesselOperationCards);
       setVesselTrailers(vesselCards);
       setKpis({
         inCompound: compoundTrailers.length,
@@ -625,11 +707,20 @@ export function SupervisorMobileDashboard() {
     } | null;
     updatedVesselTrailer?: {
       vesselTrailerId: string;
+      vesselOperationId: string;
+      trailerId: string | null;
       trailerNumber: string | null;
       arrivalStatus: string | null;
       status: string | null;
       inspectionStartedAt: string | null;
       inspectionCompletedAt: string | null;
+      cancelledAt: string | null;
+      cancelledBy: string | null;
+      cancellationReason: string | null;
+      noShowAt: string | null;
+      noShowBy: string | null;
+      noShowReason: string | null;
+      addedAfterConfirmation: boolean | null;
       hasDamage: boolean | null;
       hasTemperatureAlert: boolean | null;
     } | null;
@@ -659,21 +750,59 @@ export function SupervisorMobileDashboard() {
     if (payload.updatedVesselTrailer) {
       const updatedVesselTrailer = payload.updatedVesselTrailer;
 
-      setVesselTrailers((current) =>
-        current.map((row) =>
-          row.vesselTrailerId === updatedVesselTrailer.vesselTrailerId
-            ? {
-                ...row,
-                arrivalStatus: updatedVesselTrailer.arrivalStatus,
-                status: updatedVesselTrailer.status,
-                inspectionStartedAt: updatedVesselTrailer.inspectionStartedAt,
-                inspectionCompletedAt: updatedVesselTrailer.inspectionCompletedAt,
-                hasDamage: updatedVesselTrailer.hasDamage === true,
-                hasTemperatureAlert: updatedVesselTrailer.hasTemperatureAlert === true,
-              }
-            : row,
-        ),
-      );
+      setVesselTrailers((current) => {
+        const existingIndex = current.findIndex((row) => row.vesselTrailerId === updatedVesselTrailer.vesselTrailerId);
+
+        if (existingIndex >= 0) {
+          return current.map((row) =>
+            row.vesselTrailerId === updatedVesselTrailer.vesselTrailerId
+              ? {
+                  ...row,
+                  trailerId: updatedVesselTrailer.trailerId,
+                  arrivalStatus: updatedVesselTrailer.arrivalStatus,
+                  status: updatedVesselTrailer.status,
+                  inspectionStartedAt: updatedVesselTrailer.inspectionStartedAt,
+                  inspectionCompletedAt: updatedVesselTrailer.inspectionCompletedAt,
+                  cancelledAt: updatedVesselTrailer.cancelledAt,
+                  cancelledBy: updatedVesselTrailer.cancelledBy,
+                  cancellationReason: updatedVesselTrailer.cancellationReason,
+                  noShowAt: updatedVesselTrailer.noShowAt,
+                  noShowBy: updatedVesselTrailer.noShowBy,
+                  noShowReason: updatedVesselTrailer.noShowReason,
+                  addedAfterConfirmation: updatedVesselTrailer.addedAfterConfirmation === true,
+                  hasDamage: updatedVesselTrailer.hasDamage === true,
+                  hasTemperatureAlert: updatedVesselTrailer.hasTemperatureAlert === true,
+                }
+              : row,
+          );
+        }
+
+        return [
+          {
+            vesselTrailerId: updatedVesselTrailer.vesselTrailerId,
+            vesselOperationId: updatedVesselTrailer.vesselOperationId,
+            trailerId: updatedVesselTrailer.trailerId,
+            trailerNumber: updatedVesselTrailer.trailerNumber ?? "Unknown",
+            arrivalStatus: updatedVesselTrailer.arrivalStatus,
+            status: updatedVesselTrailer.status,
+            cancelledAt: updatedVesselTrailer.cancelledAt,
+            cancelledBy: updatedVesselTrailer.cancelledBy,
+            cancellationReason: updatedVesselTrailer.cancellationReason,
+            noShowAt: updatedVesselTrailer.noShowAt,
+            noShowBy: updatedVesselTrailer.noShowBy,
+            noShowReason: updatedVesselTrailer.noShowReason,
+            addedAfterConfirmation: updatedVesselTrailer.addedAfterConfirmation === true,
+            inspectionStartedAt: updatedVesselTrailer.inspectionStartedAt,
+            inspectionCompletedAt: updatedVesselTrailer.inspectionCompletedAt,
+            expectedFrontTemperature: null,
+            expectedRearTemperature: null,
+            expectedTemperatureUnit: "C",
+            hasDamage: updatedVesselTrailer.hasDamage === true,
+            hasTemperatureAlert: updatedVesselTrailer.hasTemperatureAlert === true,
+          },
+          ...current,
+        ];
+      });
 
       setOperations((current) =>
         current.filter((row) => {
@@ -764,11 +893,20 @@ export function SupervisorMobileDashboard() {
               } | null;
               updatedVesselTrailer?: {
                 vesselTrailerId: string;
+                vesselOperationId: string;
+                trailerId: string | null;
                 trailerNumber: string | null;
                 arrivalStatus: string | null;
                 status: string | null;
                 inspectionStartedAt: string | null;
                 inspectionCompletedAt: string | null;
+                cancelledAt: string | null;
+                cancelledBy: string | null;
+                cancellationReason: string | null;
+                noShowAt: string | null;
+                noShowBy: string | null;
+                noShowReason: string | null;
+                addedAfterConfirmation: boolean | null;
                 hasDamage: boolean | null;
                 hasTemperatureAlert: boolean | null;
               } | null;
@@ -956,6 +1094,52 @@ export function SupervisorMobileDashboard() {
     return sortedRows.slice(0, 24);
   }, [compoundFilter, compoundSort, trailers]);
 
+  const activeVesselOperations = useMemo(
+    () =>
+      vesselOperations.filter(
+        (row) =>
+          row.status !== "completed" &&
+          !row.finalLockedAt &&
+          (row.listStatus ?? "draft") === "confirmed",
+      ),
+    [vesselOperations],
+  );
+
+  const activeVesselOperationIds = useMemo(
+    () => new Set(activeVesselOperations.map((row) => row.id)),
+    [activeVesselOperations],
+  );
+
+  const dischargeTrailers = useMemo(
+    () =>
+      vesselTrailers.filter(
+        (row) =>
+          activeVesselOperationIds.has(row.vesselOperationId) &&
+          (row.arrivalStatus === "expected" ||
+            row.arrivalStatus === "available_for_arrival" ||
+            row.arrivalStatus === "cancelled" ||
+            row.arrivalStatus === "no_show"),
+      ),
+    [activeVesselOperationIds, vesselTrailers],
+  );
+
+  useEffect(() => {
+    if (!activeVesselOperations.length) {
+      return;
+    }
+
+    setAddTrailerForm((current) => {
+      if (current.operationId) {
+        return current;
+      }
+
+      return {
+        ...current,
+        operationId: activeVesselOperations[0]?.id ?? "",
+      };
+    });
+  }, [activeVesselOperations]);
+
   const pendingQueueCount = queueItems.filter((item) => item.state === "pending").length;
   const syncingQueueCount = queueItems.filter((item) => item.state === "syncing").length;
   const failedQueueCount = queueItems.filter((item) => item.state === "failed").length;
@@ -970,6 +1154,7 @@ export function SupervisorMobileDashboard() {
   const canAccessAi = mobileRoleKey ? canAccessModule(mobileRoleKey, "ai_assistant") : false;
   const canArrive = mobileRoleKey ? canPerformAction(mobileRoleKey, "arrivals", "create") : false;
   const canInspect = mobileRoleKey ? canPerformAction(mobileRoleKey, "vessel_operations", "edit") : false;
+  const canEditVesselOperations = mobileRoleKey ? canPerformAction(mobileRoleKey, "vessel_operations", "edit") : false;
   const canChangeLoad = mobileRoleKey ? canPerformAction(mobileRoleKey, "compound", "edit") : false;
   const canTimeline = mobileRoleKey ? canAccessModule(mobileRoleKey, "timeline") : false;
   const activeActionKeys = useMemo(
@@ -1258,6 +1443,140 @@ export function SupervisorMobileDashboard() {
     }
   }, [executeTypedActionNow, selectedVesselTrailer, toInspectionPayload]);
 
+  const handleSubmitAddTrailer = useCallback(async () => {
+    const normalizedTrailerNumber = normalizeTrailerNumber(addTrailerForm.trailerNumber);
+    if (!normalizedTrailerNumber) {
+      setQueueError("Trailer number is required.");
+      return;
+    }
+
+    if (!addTrailerForm.operationId) {
+      setQueueError("Select a vessel operation before adding a trailer.");
+      return;
+    }
+
+    if (!addTrailerForm.plannedDestination.trim()) {
+      setQueueError("Planned destination is required.");
+      return;
+    }
+
+    if (addTrailerForm.ownershipType === "outsourcing" && !addTrailerForm.externalCompany.trim()) {
+      setQueueError("Outsourcing trailers require external company.");
+      return;
+    }
+
+    const front = parseTemperatureInput(addTrailerForm.expectedFrontTemperature);
+    const rear = parseTemperatureInput(addTrailerForm.expectedRearTemperature);
+    if (addTrailerForm.expectedFrontTemperature.trim() && front === null) {
+      setQueueError("Front expected temperature must be numeric.");
+      return;
+    }
+    if (addTrailerForm.expectedRearTemperature.trim() && rear === null) {
+      setQueueError("Rear expected temperature must be numeric.");
+      return;
+    }
+
+    await executeTypedActionNow({
+      actionType: "ADD_VESSEL_TRAILER",
+      payload: {
+        operationId: addTrailerForm.operationId,
+        trailerNumber: normalizedTrailerNumber,
+        ownershipType: addTrailerForm.ownershipType,
+        trailerSource: addTrailerForm.trailerSource,
+        externalCompany: addTrailerForm.externalCompany.trim() || null,
+        plannedDestination: addTrailerForm.plannedDestination.trim(),
+        manifestChangeReason: addTrailerForm.manifestChangeReason.trim() || null,
+        customer: addTrailerForm.customer.trim() || null,
+        bookingReference: addTrailerForm.bookingReference.trim() || null,
+        loadStatus: addTrailerForm.loadStatus.trim() || null,
+        expectedFrontTemperature: front,
+        expectedRearTemperature: rear,
+        expectedTemperatureUnit: addTrailerForm.expectedTemperatureUnit.trim() || "C",
+        priorityLevel: addTrailerForm.priorityLevel,
+        notes: addTrailerForm.notes.trim() || null,
+      },
+      trailerNumber: normalizedTrailerNumber,
+    });
+
+    setAddTrailerSheetOpen(false);
+    setAddTrailerForm((current) => ({
+      ...initialMobileAddTrailerForm,
+      operationId: current.operationId,
+      ownershipType: "unknown",
+      trailerSource: "unknown",
+      plannedDestination: "Compound",
+      expectedTemperatureUnit: "C",
+      priorityLevel: "normal",
+    }));
+  }, [addTrailerForm, executeTypedActionNow]);
+
+  const handleMarkPendingTrailerOutcome = useCallback(
+    async (trailer: MobileVesselTrailerCard, outcome: "arrived" | "cancelled" | "no_show" | "undo_cancelled" | "undo_no_show") => {
+      if (outcome === "arrived") {
+        await executeTypedActionNow({
+          actionType: "MARK_ARRIVED",
+          payload: {
+            vesselTrailerId: trailer.vesselTrailerId,
+            trailerNumber: trailer.trailerNumber,
+            operationId: trailer.vesselOperationId,
+          },
+          trailerNumber: trailer.trailerNumber,
+        });
+        return;
+      }
+
+      if (outcome === "cancelled") {
+        const reason = window.prompt("Cancellation reason", trailer.cancellationReason ?? "") ?? "";
+        await executeTypedActionNow({
+          actionType: "MARK_CANCELLED",
+          payload: {
+            vesselTrailerId: trailer.vesselTrailerId,
+            trailerNumber: trailer.trailerNumber,
+            reason: reason.trim() || null,
+          },
+          trailerNumber: trailer.trailerNumber,
+        });
+        return;
+      }
+
+      if (outcome === "no_show") {
+        const reason = window.prompt("No show reason", trailer.noShowReason ?? "") ?? "";
+        await executeTypedActionNow({
+          actionType: "MARK_NO_SHOW",
+          payload: {
+            vesselTrailerId: trailer.vesselTrailerId,
+            trailerNumber: trailer.trailerNumber,
+            reason: reason.trim() || null,
+          },
+          trailerNumber: trailer.trailerNumber,
+        });
+        return;
+      }
+
+      if (outcome === "undo_cancelled") {
+        await executeTypedActionNow({
+          actionType: "UNDO_CANCELLED",
+          payload: {
+            vesselTrailerId: trailer.vesselTrailerId,
+            trailerNumber: trailer.trailerNumber,
+          },
+          trailerNumber: trailer.trailerNumber,
+        });
+        return;
+      }
+
+      await executeTypedActionNow({
+        actionType: "UNDO_NO_SHOW",
+        payload: {
+          vesselTrailerId: trailer.vesselTrailerId,
+          trailerNumber: trailer.trailerNumber,
+        },
+        trailerNumber: trailer.trailerNumber,
+      });
+    },
+    [executeTypedActionNow],
+  );
+
   const handleUploadInspectionPhoto = useCallback(
     async (input: { file: File; category: string; description: string | null }) => {
       if (!selectedVesselTrailer) {
@@ -1463,12 +1782,15 @@ export function SupervisorMobileDashboard() {
                   <h1 className="mt-2 text-2xl font-semibold tracking-tight">Core Operations</h1>
                   <p className="mt-1 text-sm text-slate-300">{userLabel} · {roleLabel}</p>
                 </div>
-                <div className="rounded-2xl border border-white/10 bg-white/5 px-3 py-2 text-right text-[11px] text-slate-300">
-                  <div className="flex items-center gap-1 font-semibold text-white">
-                    {isOnline ? <Wifi className="h-4 w-4 text-cyan-300" /> : <WifiOff className="h-4 w-4 text-amber-300" />}
-                    {connectionLabel}
+                <div className="flex items-start gap-2">
+                  <GlobalSearch mode="mobile" enableKeyboardShortcut={false} className="border-white/20 bg-white/10 text-white hover:bg-white/15" />
+                  <div className="rounded-2xl border border-white/10 bg-white/5 px-3 py-2 text-right text-[11px] text-slate-300">
+                    <div className="flex items-center gap-1 font-semibold text-white">
+                      {isOnline ? <Wifi className="h-4 w-4 text-cyan-300" /> : <WifiOff className="h-4 w-4 text-amber-300" />}
+                      {connectionLabel}
+                    </div>
+                    <p className="mt-1">Queue: {pendingQueueCount} pending · {syncingQueueCount} syncing</p>
                   </div>
-                  <p className="mt-1">Queue: {pendingQueueCount} pending · {syncingQueueCount} syncing</p>
                 </div>
               </div>
               <div className="mt-4 grid grid-cols-2 gap-2 text-xs text-slate-200">
@@ -1581,14 +1903,27 @@ export function SupervisorMobileDashboard() {
                 loading={isLoading || isDataLoading}
                 operations={operations}
                 trailers={trailers}
+                vesselOperations={activeVesselOperations}
+                vesselTrailers={dischargeTrailers}
+                addTrailerSheetOpen={addTrailerSheetOpen}
+                addTrailerForm={addTrailerForm}
                 onSelectTrailer={setSelectedTrailerId}
                 onAction={resolveTouchOperationAction}
                 isOperationPending={isOperationPending}
+                isActionPending={isActionPending}
                 canArrive={canArrive}
                 canInspect={canInspect}
+                canEditVesselOperations={canEditVesselOperations}
                 canChangeLoad={canChangeLoad}
                 canTimeline={canTimeline}
                 onOpenInspectionPanel={() => void openInspectionPanel()}
+                onOpenAddTrailerSheet={() => setAddTrailerSheetOpen(true)}
+                onCloseAddTrailerSheet={() => setAddTrailerSheetOpen(false)}
+                onAddTrailerFormChange={setAddTrailerForm}
+                onSubmitAddTrailer={() => void handleSubmitAddTrailer()}
+                onTrailerOutcomeAction={(trailer, outcome) => {
+                  void handleMarkPendingTrailerOutcome(trailer, outcome);
+                }}
               />
             ) : null}
 
@@ -1974,17 +2309,51 @@ type OperationsTabProps = {
   loading: boolean;
   operations: MobileOperationCard[];
   trailers: MobileTrailerCard[];
+  vesselOperations: MobileVesselOperationCard[];
+  vesselTrailers: MobileVesselTrailerCard[];
+  addTrailerSheetOpen: boolean;
+  addTrailerForm: MobileAddTrailerFormState;
   onSelectTrailer: (trailerId: string) => void;
   onAction: (operation: MobileOperationCard) => Promise<void>;
   isOperationPending: (operation: MobileOperationCard) => boolean;
+  isActionPending: (input: { actionType: MobileActionType; payload: MobileActionRequest["payload"]; trailerNumber?: string | null }) => boolean;
   canArrive: boolean;
   canInspect: boolean;
+  canEditVesselOperations: boolean;
   canChangeLoad: boolean;
   canTimeline: boolean;
   onOpenInspectionPanel: () => void;
+  onOpenAddTrailerSheet: () => void;
+  onCloseAddTrailerSheet: () => void;
+  onAddTrailerFormChange: (value: MobileAddTrailerFormState | ((current: MobileAddTrailerFormState) => MobileAddTrailerFormState)) => void;
+  onSubmitAddTrailer: () => void;
+  onTrailerOutcomeAction: (trailer: MobileVesselTrailerCard, outcome: "arrived" | "cancelled" | "no_show" | "undo_cancelled" | "undo_no_show") => void;
 };
 
-function OperationsTab({ loading, operations, trailers, onSelectTrailer, onAction, isOperationPending, canArrive, canInspect, canChangeLoad, canTimeline, onOpenInspectionPanel }: OperationsTabProps) {
+function OperationsTab({
+  loading,
+  operations,
+  trailers,
+  vesselOperations,
+  vesselTrailers,
+  addTrailerSheetOpen,
+  addTrailerForm,
+  onSelectTrailer,
+  onAction,
+  isOperationPending,
+  isActionPending,
+  canArrive,
+  canInspect,
+  canEditVesselOperations,
+  canChangeLoad,
+  canTimeline,
+  onOpenInspectionPanel,
+  onOpenAddTrailerSheet,
+  onCloseAddTrailerSheet,
+  onAddTrailerFormChange,
+  onSubmitAddTrailer,
+  onTrailerOutcomeAction,
+}: OperationsTabProps) {
   return (
     <section className="space-y-3 pb-24">
       <CardShell title="Operational queue" subtitle="High-priority work items from the live yard state">
@@ -2026,6 +2395,215 @@ function OperationsTab({ loading, operations, trailers, onSelectTrailer, onActio
           Open Mobile Inspection Panel
         </button>
       </CardShell>
+
+      <CardShell title="Vessel discharge" subtitle="Add trailers and set pending trailer outcomes without leaving mobile.">
+        <button
+          type="button"
+          onClick={onOpenAddTrailerSheet}
+          disabled={!canEditVesselOperations || vesselOperations.length === 0}
+          className="w-full rounded-2xl bg-slate-950 px-3 py-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
+        >
+          Add Trailer (Mobile)
+        </button>
+
+        {vesselTrailers.length === 0 ? (
+          <p className="mt-3 text-sm text-slate-500">No pending/cancelled/no-show trailers in active operations.</p>
+        ) : (
+          <div className="mt-3 space-y-2">
+            {vesselTrailers.slice(0, 10).map((trailer) => {
+              const operation = vesselOperations.find((row) => row.id === trailer.vesselOperationId) ?? null;
+              const markArrivedPending = isActionPending({
+                actionType: "MARK_ARRIVED",
+                payload: {
+                  vesselTrailerId: trailer.vesselTrailerId,
+                  trailerNumber: trailer.trailerNumber,
+                  operationId: trailer.vesselOperationId,
+                },
+                trailerNumber: trailer.trailerNumber,
+              });
+              const markCancelledPending = isActionPending({
+                actionType: "MARK_CANCELLED",
+                payload: {
+                  vesselTrailerId: trailer.vesselTrailerId,
+                  trailerNumber: trailer.trailerNumber,
+                },
+                trailerNumber: trailer.trailerNumber,
+              });
+              const markNoShowPending = isActionPending({
+                actionType: "MARK_NO_SHOW",
+                payload: {
+                  vesselTrailerId: trailer.vesselTrailerId,
+                  trailerNumber: trailer.trailerNumber,
+                },
+                trailerNumber: trailer.trailerNumber,
+              });
+              const undoCancelledPending = isActionPending({
+                actionType: "UNDO_CANCELLED",
+                payload: {
+                  vesselTrailerId: trailer.vesselTrailerId,
+                  trailerNumber: trailer.trailerNumber,
+                },
+                trailerNumber: trailer.trailerNumber,
+              });
+              const undoNoShowPending = isActionPending({
+                actionType: "UNDO_NO_SHOW",
+                payload: {
+                  vesselTrailerId: trailer.vesselTrailerId,
+                  trailerNumber: trailer.trailerNumber,
+                },
+                trailerNumber: trailer.trailerNumber,
+              });
+              const isExpected = trailer.arrivalStatus === "expected" || trailer.arrivalStatus === "available_for_arrival";
+
+              return (
+                <article key={trailer.vesselTrailerId} className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <p className="text-sm font-semibold text-slate-900">{trailer.trailerNumber}</p>
+                      <p className="text-xs text-slate-500">{operation?.vesselName ?? "Vessel"} · {(trailer.arrivalStatus ?? "expected").replace(/_/g, " ")}</p>
+                    </div>
+                    {trailer.addedAfterConfirmation ? <span className="rounded-full bg-amber-100 px-2 py-1 text-[10px] font-semibold text-amber-800">Added late</span> : null}
+                  </div>
+
+                  <div className="mt-2 grid grid-cols-2 gap-2">
+                    {isExpected ? (
+                      <button
+                        type="button"
+                        onClick={() => onTrailerOutcomeAction(trailer, "arrived")}
+                        disabled={markArrivedPending || !canArrive}
+                        className="rounded-xl bg-cyan-600 px-2 py-2 text-xs font-semibold text-white disabled:bg-cyan-300"
+                      >
+                        {markArrivedPending ? "Pending" : "Mark Arrived"}
+                      </button>
+                    ) : null}
+
+                    {isExpected ? (
+                      <button
+                        type="button"
+                        onClick={() => onTrailerOutcomeAction(trailer, "cancelled")}
+                        disabled={markCancelledPending || !canEditVesselOperations}
+                        className="rounded-xl border border-rose-200 bg-rose-50 px-2 py-2 text-xs font-semibold text-rose-700 disabled:opacity-50"
+                      >
+                        {markCancelledPending ? "Pending" : "Cancelled"}
+                      </button>
+                    ) : null}
+
+                    {isExpected ? (
+                      <button
+                        type="button"
+                        onClick={() => onTrailerOutcomeAction(trailer, "no_show")}
+                        disabled={markNoShowPending || !canEditVesselOperations}
+                        className="rounded-xl border border-amber-200 bg-amber-50 px-2 py-2 text-xs font-semibold text-amber-800 disabled:opacity-50"
+                      >
+                        {markNoShowPending ? "Pending" : "No Show"}
+                      </button>
+                    ) : null}
+
+                    {trailer.arrivalStatus === "cancelled" ? (
+                      <button
+                        type="button"
+                        onClick={() => onTrailerOutcomeAction(trailer, "undo_cancelled")}
+                        disabled={undoCancelledPending || !canEditVesselOperations}
+                        className="rounded-xl border border-cyan-200 bg-cyan-50 px-2 py-2 text-xs font-semibold text-cyan-800 disabled:opacity-50"
+                      >
+                        {undoCancelledPending ? "Pending" : "Undo Cancelled"}
+                      </button>
+                    ) : null}
+
+                    {trailer.arrivalStatus === "no_show" ? (
+                      <button
+                        type="button"
+                        onClick={() => onTrailerOutcomeAction(trailer, "undo_no_show")}
+                        disabled={undoNoShowPending || !canEditVesselOperations}
+                        className="rounded-xl border border-cyan-200 bg-cyan-50 px-2 py-2 text-xs font-semibold text-cyan-800 disabled:opacity-50"
+                      >
+                        {undoNoShowPending ? "Pending" : "Undo No Show"}
+                      </button>
+                    ) : null}
+
+                    <Link
+                      href={`/dashboard/vessel-operations/${trailer.vesselOperationId}`}
+                      className="inline-flex items-center justify-center rounded-xl border border-slate-200 bg-white px-2 py-2 text-xs font-semibold text-slate-700"
+                    >
+                      Open Planning
+                    </Link>
+                    <Link
+                      href={`/dashboard/vessel-operations/${trailer.vesselOperationId}/summary`}
+                      className="inline-flex items-center justify-center rounded-xl border border-slate-200 bg-white px-2 py-2 text-xs font-semibold text-slate-700"
+                    >
+                      View Details
+                    </Link>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        )}
+      </CardShell>
+
+      {addTrailerSheetOpen ? (
+        <div className="fixed inset-0 z-40 flex flex-col bg-slate-950/80 backdrop-blur-sm">
+          <div className="mt-auto h-[92vh] rounded-t-[2rem] bg-white p-4">
+            <div className="mb-3 flex items-center justify-between">
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-cyan-700">Mobile Add Trailer</p>
+                <p className="text-sm text-slate-600">Add additional trailer during discharge.</p>
+              </div>
+              <button type="button" onClick={onCloseAddTrailerSheet} className="rounded-xl border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700">Close</button>
+            </div>
+
+            <div className="h-[76vh] space-y-2 overflow-y-auto pr-1">
+              <select
+                value={addTrailerForm.operationId}
+                onChange={(event) => onAddTrailerFormChange((current) => ({ ...current, operationId: event.target.value }))}
+                className="w-full rounded-2xl border border-slate-200 bg-white px-3 py-3 text-sm"
+              >
+                {vesselOperations.map((operation) => (
+                  <option key={operation.id} value={operation.id}>
+                    {operation.vesselName} {operation.sailingReference ? `(${operation.sailingReference})` : ""}
+                  </option>
+                ))}
+              </select>
+
+              <input value={addTrailerForm.trailerNumber} onChange={(event) => onAddTrailerFormChange((current) => ({ ...current, trailerNumber: event.target.value }))} placeholder="Trailer number" className="w-full rounded-2xl border border-slate-200 px-3 py-3 text-sm" />
+
+              <div className="grid grid-cols-3 gap-2">
+                <button type="button" onClick={() => onAddTrailerFormChange((current) => ({ ...current, ownershipType: "company", trailerSource: "company", externalCompany: "" }))} className={`rounded-xl px-2 py-2 text-xs font-semibold ${addTrailerForm.ownershipType === "company" ? "bg-slate-900 text-white" : "border border-slate-200 bg-white text-slate-700"}`}>Company</button>
+                <button type="button" onClick={() => onAddTrailerFormChange((current) => ({ ...current, ownershipType: "outsourcing", trailerSource: "outsourced" }))} className={`rounded-xl px-2 py-2 text-xs font-semibold ${addTrailerForm.ownershipType === "outsourcing" ? "bg-slate-900 text-white" : "border border-slate-200 bg-white text-slate-700"}`}>Outsourcing</button>
+                <button type="button" onClick={() => onAddTrailerFormChange((current) => ({ ...current, ownershipType: "unknown", trailerSource: "unknown", externalCompany: "" }))} className={`rounded-xl px-2 py-2 text-xs font-semibold ${addTrailerForm.ownershipType === "unknown" ? "bg-slate-900 text-white" : "border border-slate-200 bg-white text-slate-700"}`}>Unknown</button>
+              </div>
+
+              {addTrailerForm.ownershipType === "outsourcing" ? (
+                <input value={addTrailerForm.externalCompany} onChange={(event) => onAddTrailerFormChange((current) => ({ ...current, externalCompany: event.target.value }))} placeholder="External company (required)" className="w-full rounded-2xl border border-slate-200 px-3 py-3 text-sm" />
+              ) : null}
+
+              <input value={addTrailerForm.plannedDestination} onChange={(event) => onAddTrailerFormChange((current) => ({ ...current, plannedDestination: event.target.value }))} placeholder="Planned destination" className="w-full rounded-2xl border border-slate-200 px-3 py-3 text-sm" />
+              <input value={addTrailerForm.manifestChangeReason} onChange={(event) => onAddTrailerFormChange((current) => ({ ...current, manifestChangeReason: event.target.value }))} placeholder="Manifest change reason" className="w-full rounded-2xl border border-slate-200 px-3 py-3 text-sm" />
+              <input value={addTrailerForm.customer} onChange={(event) => onAddTrailerFormChange((current) => ({ ...current, customer: event.target.value }))} placeholder="Customer" className="w-full rounded-2xl border border-slate-200 px-3 py-3 text-sm" />
+              <input value={addTrailerForm.bookingReference} onChange={(event) => onAddTrailerFormChange((current) => ({ ...current, bookingReference: event.target.value }))} placeholder="Booking reference" className="w-full rounded-2xl border border-slate-200 px-3 py-3 text-sm" />
+              <input value={addTrailerForm.loadStatus} onChange={(event) => onAddTrailerFormChange((current) => ({ ...current, loadStatus: event.target.value }))} placeholder="Load status" className="w-full rounded-2xl border border-slate-200 px-3 py-3 text-sm" />
+
+              <div className="grid grid-cols-3 gap-2">
+                <input value={addTrailerForm.expectedFrontTemperature} onChange={(event) => onAddTrailerFormChange((current) => ({ ...current, expectedFrontTemperature: event.target.value }))} placeholder="Front temp" className="rounded-2xl border border-slate-200 px-3 py-3 text-sm" />
+                <input value={addTrailerForm.expectedRearTemperature} onChange={(event) => onAddTrailerFormChange((current) => ({ ...current, expectedRearTemperature: event.target.value }))} placeholder="Rear temp" className="rounded-2xl border border-slate-200 px-3 py-3 text-sm" />
+                <input value={addTrailerForm.expectedTemperatureUnit} onChange={(event) => onAddTrailerFormChange((current) => ({ ...current, expectedTemperatureUnit: event.target.value }))} placeholder="Unit" className="rounded-2xl border border-slate-200 px-3 py-3 text-sm" />
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <button type="button" onClick={() => onAddTrailerFormChange((current) => ({ ...current, priorityLevel: "normal" }))} className={`rounded-xl px-2 py-2 text-xs font-semibold ${addTrailerForm.priorityLevel === "normal" ? "bg-slate-900 text-white" : "border border-slate-200 bg-white text-slate-700"}`}>Normal</button>
+                <button type="button" onClick={() => onAddTrailerFormChange((current) => ({ ...current, priorityLevel: "priority" }))} className={`rounded-xl px-2 py-2 text-xs font-semibold ${addTrailerForm.priorityLevel === "priority" ? "bg-slate-900 text-white" : "border border-slate-200 bg-white text-slate-700"}`}>Priority</button>
+              </div>
+
+              <textarea value={addTrailerForm.notes} onChange={(event) => onAddTrailerFormChange((current) => ({ ...current, notes: event.target.value }))} placeholder="Notes" rows={3} className="w-full rounded-2xl border border-slate-200 px-3 py-3 text-sm" />
+            </div>
+
+            <div className="mt-3 grid grid-cols-2 gap-2">
+              <button type="button" onClick={onCloseAddTrailerSheet} className="rounded-2xl border border-slate-200 bg-white px-3 py-3 text-sm font-semibold text-slate-700">Cancel</button>
+              <button type="button" onClick={onSubmitAddTrailer} className="rounded-2xl bg-cyan-600 px-3 py-3 text-sm font-semibold text-white">Add Trailer</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       <CardShell title="Recent trailers" subtitle="Tap a trailer to reuse it in other tabs">
         <div className="grid grid-cols-2 gap-2">

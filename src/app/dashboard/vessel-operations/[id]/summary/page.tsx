@@ -1,12 +1,12 @@
 "use client";
 
-import Image from "next/image";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import { buildDeterministicVesselOperationAiReportDraft } from "@/lib/reports/vessel-operation-ai-report-shared";
 import { loadVesselOperationSummaryAndPrintReportData } from "@/lib/reports/report-data";
+import { getTrailerOwnershipBadgeLabel } from "@/lib/trailer-ownership";
 import { formatVesselDateTime } from "@/lib/vessel-operations";
 import type {
   VesselOperationalReportData,
@@ -18,7 +18,7 @@ import type {
 } from "@/lib/reports/types";
 import { VesselOperationAiReportPreviewModal } from "@/components/reports/vessel-operation-ai-report-preview-modal";
 
-type SummaryFilter = "all" | "arrived" | "inspected" | "damage" | "temperature_alert" | "not_discharged";
+type SummaryFilter = "all" | "arrived" | "inspected" | "damage" | "temperature_alert" | "not_discharged" | "cancelled" | "no_show";
 type ReportLibraryStatusFilter = "all" | "draft" | "final" | "sent";
 type ReportLoadErrorKind = "auth" | "not_found" | "data" | "unknown";
 type AiReportErrorKind = "signed_out" | "not_found" | "invalid_request" | "configuration" | "database" | "provider" | "unknown";
@@ -70,6 +70,8 @@ const FILTER_OPTIONS: Array<{ value: SummaryFilter; label: string }> = [
   { value: "damage", label: "Damage" },
   { value: "temperature_alert", label: "Temperature Alert" },
   { value: "not_discharged", label: "Not Discharged" },
+  { value: "cancelled", label: "Cancelled" },
+  { value: "no_show", label: "No Show" },
 ];
 
 const formatStatusLabel = (value?: string | null) => {
@@ -84,6 +86,18 @@ const formatStatusLabel = (value?: string | null) => {
 
 const formatTemperatureValue = (value: number | null, unit: string) => {
   return value === null ? "-" : `${value} ${unit}`;
+};
+
+const getOwnershipBadgeClassName = (ownershipType: VesselOperationalReportData["trailers"][number]["ownershipType"]) => {
+  if (ownershipType === "outsourcing") {
+    return "rounded-full bg-amber-100 px-3 py-1 text-xs font-semibold text-amber-800";
+  }
+
+  if (ownershipType === "company") {
+    return "rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-800";
+  }
+
+  return "rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700";
 };
 
 const getInspectionStatusLabel = (trailer: VesselOperationalReportData["trailers"][number]) => {
@@ -780,6 +794,10 @@ export default function VesselSummaryPage() {
           return trailer.hasTemperatureAlert;
         case "not_discharged":
           return trailer.arrivalStatusRaw === "not_discharged";
+        case "cancelled":
+          return trailer.arrivalStatusRaw === "cancelled";
+        case "no_show":
+          return trailer.arrivalStatusRaw === "no_show";
         case "all":
         default:
           return true;
@@ -1047,10 +1065,15 @@ export default function VesselSummaryPage() {
           </div>
         </section>
 
-        <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-7">
+        <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-10">
           <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Expected</p><p className="mt-2 text-2xl font-bold text-slate-950">{statistics.expectedTrailers}</p></div>
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Additional</p><p className="mt-2 text-2xl font-bold text-indigo-700">{statistics.additionalTrailers}</p></div>
           <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Arrived</p><p className="mt-2 text-2xl font-bold text-amber-700">{statistics.arrivedTrailers}</p></div>
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Final Discharged</p><p className="mt-2 text-2xl font-bold text-emerald-700">{statistics.finalDischargedTrailers}</p></div>
           <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Pending</p><p className="mt-2 text-2xl font-bold text-fuchsia-700">{statistics.pendingTrailers}</p></div>
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Cancelled</p><p className="mt-2 text-2xl font-bold text-rose-700">{statistics.cancelledTrailers}</p></div>
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">No Show</p><p className="mt-2 text-2xl font-bold text-orange-700">{statistics.noShowTrailers}</p></div>
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Not Discharged</p><p className="mt-2 text-2xl font-bold text-slate-700">{statistics.notDischargedTrailers}</p></div>
           <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Priority</p><p className="mt-2 text-2xl font-bold text-rose-700">{statistics.priorityTrailers}</p></div>
           <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Inspected</p><p className="mt-2 text-2xl font-bold text-emerald-700">{statistics.inspectedTrailers}</p></div>
           <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Inspection Pending</p><p className="mt-2 text-2xl font-bold text-cyan-700">{statistics.pendingInspections}</p></div>
@@ -1074,6 +1097,7 @@ export default function VesselSummaryPage() {
                       <div className="flex flex-wrap items-center gap-2">
                         <h2 className="text-2xl font-bold text-slate-950">{trailer.trailerNumber}</h2>
                         <span className={`rounded-full px-3 py-1 text-xs font-semibold ${trailer.priority === "priority" ? "bg-rose-100 text-rose-800" : "bg-slate-100 text-slate-700"}`}>{trailer.priority === "priority" ? "Priority" : "Normal"}</span>
+                        <span className={getOwnershipBadgeClassName(trailer.ownershipType)}>{getTrailerOwnershipBadgeLabel(trailer.ownershipType)}</span>
                         <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">{trailer.arrivalStatus}</span>
                         <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">{getInspectionStatusLabel(trailer)}</span>
                         <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">{trailer.receptionStatus}</span>
@@ -1085,6 +1109,7 @@ export default function VesselSummaryPage() {
                         <p>Inspection Status: <span className="font-semibold text-slate-950">{getInspectionStatusLabel(trailer)}</span></p>
                         <p>Photo Count: <span className="font-semibold text-slate-950">{trailer.photos.length}</span></p>
                         <p>Customer: <span className="font-semibold text-slate-950">{trailer.customer ?? "-"}</span></p>
+                        <p>Ownership: <span className="font-semibold text-slate-950">{getTrailerOwnershipBadgeLabel(trailer.ownershipType)}</span></p>
                         <p>Booking Ref: <span className="font-semibold text-slate-950">{trailer.bookingReference ?? "-"}</span></p>
                         <p>Load Status: <span className="font-semibold text-slate-950">{trailer.loadStatus ?? "-"}</span></p>
                         <p>Damages: <span className="font-semibold text-slate-950">{trailer.hasDamage ? "Yes" : "No"}</span></p>
@@ -1131,11 +1156,21 @@ export default function VesselSummaryPage() {
                             {trailer.photos.filter((photo) => photo.url).map((photo) => (
                               <a key={photo.id} href={photo.url ?? undefined} target="_blank" rel="noreferrer" className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
                                 <div className="relative aspect-video w-full bg-slate-200">
-                                  {photo.url ? <Image src={photo.url} alt={photo.caption ?? `${trailer.trailerNumber} photo`} fill className="object-cover" /> : null}
+                                  {photo.url ? (
+                                    <img
+                                      src={photo.url}
+                                      alt={photo.caption ?? `${trailer.trailerNumber} photo`}
+                                      className="absolute inset-0 h-full w-full object-contain"
+                                    />
+                                  ) : null}
                                 </div>
                                 <div className="p-3 text-xs text-slate-600">
                                   <p className="font-semibold text-slate-900">{photo.caption ?? "Inspection Photo"}</p>
-                                  <p>{formatVesselDateTime(photo.recordedAt)}</p>
+                                  <p>Trailer: {photo.trailerNumber || trailer.trailerNumber}</p>
+                                  <p>Category: {photo.category ?? "General"}</p>
+                                  <p>Description: {photo.description?.trim() ? photo.description : "-"}</p>
+                                  <p>Uploaded by: {photo.uploadedBy?.trim() ? photo.uploadedBy : "Unknown"}</p>
+                                  <p>Uploaded: {formatVesselDateTime(photo.recordedAt)}</p>
                                 </div>
                               </a>
                             ))}

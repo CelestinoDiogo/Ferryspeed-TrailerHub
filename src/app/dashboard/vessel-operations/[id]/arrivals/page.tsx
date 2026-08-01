@@ -483,6 +483,25 @@ function VesselArrivalsPageContent() {
     );
   }
 
+  const isListConfirmed = (operation.list_status ?? "draft") === "confirmed";
+
+  if (!isListConfirmed) {
+    return (
+      <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(34,211,238,0.16),_transparent_32%),linear-gradient(135deg,_#020617_0%,_#0f172a_55%,_#111827_100%)] px-4 py-6 text-slate-100 sm:px-6 lg:px-8">
+        <div className="mx-auto flex max-w-4xl flex-col gap-4">
+          <div className="rounded-3xl border border-amber-500/30 bg-amber-500/10 p-6 text-amber-100">
+            <p className="text-sm font-semibold uppercase tracking-[0.25em]">Workflow Gate</p>
+            <p className="mt-2 text-sm">Discharge is locked until the vessel list is confirmed.</p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Link href={`/dashboard/vessel-operations/${operation.id}`} className="rounded-2xl border border-white/10 bg-slate-800 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700">Back to Operation</Link>
+            <Link href={`/dashboard/vessel-operations/${operation.id}/planning`} className="rounded-2xl bg-cyan-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-cyan-400">Go to Planning</Link>
+          </div>
+        </div>
+      </main>
+    );
+  }
+
   return (
     <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(34,211,238,0.16),_transparent_32%),linear-gradient(135deg,_#020617_0%,_#0f172a_55%,_#111827_100%)] px-4 py-6 text-slate-100 sm:px-6 lg:px-8">
       <div className="mx-auto flex max-w-7xl flex-col gap-6">

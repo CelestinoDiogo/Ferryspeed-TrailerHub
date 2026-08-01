@@ -235,6 +235,7 @@ export type Database = {
         Row: {
           id: string;
           alert_key: string;
+          alert_type: string;
           severity: string;
           status: string;
           title: string;
@@ -399,6 +400,9 @@ export type Database = {
           list_status: string;
           list_confirmed_at: string | null;
           list_confirmed_by: string | null;
+          completed_at: string | null;
+          completed_by: string | null;
+          final_locked_at: string | null;
           notes: string | null;
           created_at: string | null;
           updated_at: string | null;
@@ -425,12 +429,25 @@ export type Database = {
           priority_reason: string | null;
           planned_destination: string | null;
           planning_notes: string | null;
+          ownership_type: string | null;
+          trailer_source: string | null;
+          external_company: string | null;
+          added_after_confirmation: boolean | null;
+          added_after_confirmation_at: string | null;
+          added_after_confirmation_by: string | null;
+          manifest_change_reason: string | null;
           status: string | null;
           arrived_at: string | null;
           arrival_status: string;
           arrival_confirmed_at: string | null;
           arrival_record_id: string | null;
           arrival_confirmed_by: string | null;
+          cancelled_at: string | null;
+          cancelled_by: string | null;
+          cancellation_reason: string | null;
+          no_show_at: string | null;
+          no_show_by: string | null;
+          no_show_reason: string | null;
           inspection_started_at: string | null;
           inspection_completed_at: string | null;
           position_assigned_at: string | null;

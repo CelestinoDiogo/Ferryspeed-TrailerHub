@@ -18,9 +18,12 @@ function VesselOperationDetailsPageContent() {
   const {
     operation,
     operationStatus,
+    workflowStep,
     sortedTrailers,
     summary,
     completionSummary,
+    planningReadiness,
+    completionReadiness,
     editable,
     isReadOnly,
     isLoading,
@@ -40,6 +43,10 @@ function VesselOperationDetailsPageContent() {
     handleRemoveTrailer,
     handleConfirmList,
     handleMarkArrived,
+    handleMarkCancelled,
+    handleMarkNoShow,
+    handleUndoCancelled,
+    handleUndoNoShow,
     handleCompleteOperation,
   } = useVesselOperation(operationId);
 
@@ -62,7 +69,7 @@ function VesselOperationDetailsPageContent() {
   return (
     <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(34,211,238,0.16),_transparent_32%),linear-gradient(135deg,_#020617_0%,_#0f172a_55%,_#111827_100%)] px-4 py-6 text-slate-100 sm:px-6 lg:px-8">
       <div className="mx-auto flex max-w-7xl flex-col gap-6">
-        <VesselOperationHeader operation={operation} />
+        <VesselOperationHeader operation={operation} workflowStep={workflowStep} />
 
         {error ? <div className="rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">{error}</div> : null}
         {success ? <SuccessToast message={success} onClose={dismissSuccess} /> : null}
@@ -75,25 +82,33 @@ function VesselOperationDetailsPageContent() {
           isChangingListState={isSaving}
           isSaving={isSaving}
           trailersCount={sortedTrailers.length}
+          planningReadiness={planningReadiness}
           onConfirmList={handleConfirmList}
         />
 
-        {operationStatus === "confirmed" && completionSummary.totalTrailers > 0 ? (
+        {operationStatus !== "completed" ? (
           <section className="rounded-3xl border border-emerald-500/30 bg-emerald-500/10 p-5 shadow-lg shadow-black/20 backdrop-blur sm:p-6">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
-                <p className="text-sm font-semibold uppercase tracking-[0.3em] text-emerald-200">Complete Boat Operation</p>
-                <p className="mt-1 text-sm text-emerald-100">Review totals above, then complete to lock this operation as read-only.</p>
+                <p className="text-sm font-semibold uppercase tracking-[0.3em] text-emerald-200">Complete Discharge and Checks</p>
+                <p className="mt-1 text-sm text-emerald-100">Finalize only when every active trailer is arrived/not discharged and all arrived trailers have checks completed. Cancelled and no-show trailers are terminal outcomes.</p>
               </div>
               <button
                 type="button"
                 onClick={() => void handleCompleteOperation()}
-                disabled={isCompleting || isSaving}
+                disabled={isCompleting || isSaving || operationStatus !== "confirmed" || !completionReadiness.canComplete}
                 className="rounded-2xl bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-emerald-400 disabled:opacity-60"
               >
-                {isCompleting ? "Completing..." : "Complete Boat Operation"}
+                {isCompleting ? "Completing..." : "Complete Discharge and Checks"}
               </button>
             </div>
+
+            {!completionReadiness.canComplete && completionReadiness.blockers.length > 0 ? (
+              <div className="mt-4 rounded-2xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
+                <p className="font-semibold">Completion blocked by required tasks:</p>
+                <p className="mt-1">{completionReadiness.blockers[0].trailerNumber}: {completionReadiness.blockers[0].reason}</p>
+              </div>
+            ) : null}
           </section>
         ) : null}
 
@@ -129,6 +144,10 @@ function VesselOperationDetailsPageContent() {
           onTogglePriority={handleTogglePriority}
           onRemoveTrailer={handleRemoveTrailer}
           onMarkArrived={handleMarkArrived}
+          onMarkCancelled={handleMarkCancelled}
+          onMarkNoShow={handleMarkNoShow}
+          onUndoCancelled={handleUndoCancelled}
+          onUndoNoShow={handleUndoNoShow}
         />
       </div>
     </main>

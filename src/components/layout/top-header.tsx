@@ -1,11 +1,12 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { CalendarDays, Clock3, Menu, Search, Settings, UserCircle2, Bot } from "lucide-react";
+import { CalendarDays, Clock3, Menu, Settings, UserCircle2, Bot } from "lucide-react";
 import { OperationsAssistantDrawer } from "@/components/ai/operations-assistant-drawer";
 import { OperationsToolsButton } from "@/components/layout/operations-tools-button";
 import { OperationsToolsDrawer } from "@/components/layout/operations-tools-drawer";
 import { RealtimeOperationsCenter } from "@/components/layout/realtime-operations-center";
+import { GlobalSearch } from "@/components/search/global-search";
 import { toRoleLabel } from "@/lib/auth/roles";
 import { useCurrentUser } from "@/lib/auth/use-current-user";
 
@@ -87,9 +88,7 @@ export function TopHeader({ title, subtitle: _subtitle, onMenuClick }: TopHeader
             <Clock3 className="h-4 w-4" />
             <span className="text-sm font-medium">{timeText}</span>
           </div>
-          <button className="inline-flex h-11 w-11 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-700 shadow-sm transition hover:bg-slate-50" aria-label="Search">
-            <Search className="h-5 w-5" />
-          </button>
+          <GlobalSearch mode="desktop" className="max-w-[320px]" />
           <button
             type="button"
             onClick={() => setAssistantOpen(true)}
@@ -118,6 +117,7 @@ export function TopHeader({ title, subtitle: _subtitle, onMenuClick }: TopHeader
         </div>
 
         <div className="flex items-center gap-2 lg:hidden">
+          <GlobalSearch mode="mobile" enableKeyboardShortcut={false} />
           <button
             type="button"
             onClick={() => setAssistantOpen(true)}

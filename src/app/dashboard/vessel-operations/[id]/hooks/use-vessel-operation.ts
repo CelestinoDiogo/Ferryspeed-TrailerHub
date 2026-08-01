@@ -4,6 +4,9 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import { createTrailerActivity } from "@/lib/trailer-activity";
 import {
+  deriveVesselWorkflowStep,
+  getCompletionReadiness,
+  getPlanningReadiness,
   buildVesselSupabaseErrorMessage,
   computeVesselOperationSummary,
   logVesselSupabaseError,
@@ -14,13 +17,17 @@ import {
   resolveExpectedRearTemperature,
   sortVesselOperationTrailersForArrivals,
   type SupabaseErrorLike,
+  type CompletionReadiness,
+  type PlanningReadiness,
   type VesselInspectionTemperatureRecord,
   type VesselOperationRecord,
   type VesselOperationSummary,
   type VesselOperationTrailerRecord,
   type VesselPriorityLevel,
   type VesselTrailerStatus,
+  type VesselWorkflowStep,
 } from "@/lib/vessel-operations";
+import type { TrailerOwnershipType } from "@/lib/trailer-ownership";
 import {
   getTemperatureToleranceSettingsFromStorage,
   isTemperatureOutOfRange,
@@ -29,6 +36,12 @@ import { saveVesselInspectionPhoto } from "@/lib/vessel-inspection-photos";
 
 export type TrailerFormState = {
   trailerNumber: string;
+  ownershipType: TrailerOwnershipType;
+  trailerSource: "company" | "outsourced" | "unknown";
+  externalCompany: string;
+  plannedDestination: string;
+  priorityReason: string;
+  manifestChangeReason: string;
   customer: string;
   bookingReference: string;
   loadStatus: string;
@@ -53,6 +66,15 @@ export type TrailerInspectionState = {
 
 type InsertTrailerRow = {
   trailer_number: string;
+  ownership_type: TrailerOwnershipType;
+  trailer_source?: string | null;
+  external_company?: string | null;
+  planned_destination?: string | null;
+  priority_reason?: string | null;
+  manifest_change_reason?: string | null;
+  added_after_confirmation?: boolean;
+  added_after_confirmation_at?: string | null;
+  added_after_confirmation_by?: string | null;
   customer?: string | null;
   booking_reference?: string | null;
   load_status?: string | null;
@@ -73,6 +95,8 @@ export type CompletionSummary = {
   pendingInspection: number;
   notArrived: number;
   notDischarged: number;
+  cancelled: number;
+  noShow: number;
   damages: number;
   temperatureAlerts: number;
 };
@@ -80,10 +104,13 @@ export type CompletionSummary = {
 export type UseVesselOperationResult = {
   operation: VesselOperationRecord | null;
   operationStatus: NormalizedOperationStatus;
+  workflowStep: VesselWorkflowStep;
   trailers: VesselOperationTrailerRecord[];
   sortedTrailers: VesselOperationTrailerRecord[];
   summary: VesselOperationSummary;
   completionSummary: CompletionSummary;
+  planningReadiness: PlanningReadiness;
+  completionReadiness: CompletionReadiness;
   editable: boolean;
   isReadOnly: boolean;
   isLoading: boolean;
@@ -106,6 +133,10 @@ export type UseVesselOperationResult = {
   handleRemoveTrailer: (trailer: VesselOperationTrailerRecord) => Promise<void>;
   handleConfirmList: () => Promise<void>;
   handleMarkArrived: (trailer: VesselOperationTrailerRecord) => Promise<void>;
+  handleMarkCancelled: (trailer: VesselOperationTrailerRecord) => Promise<void>;
+  handleMarkNoShow: (trailer: VesselOperationTrailerRecord) => Promise<void>;
+  handleUndoCancelled: (trailer: VesselOperationTrailerRecord) => Promise<void>;
+  handleUndoNoShow: (trailer: VesselOperationTrailerRecord) => Promise<void>;
   handleSaveInspection: (trailer: VesselOperationTrailerRecord) => Promise<void>;
   handleCompleteOperation: () => Promise<void>;
   reloadOperation: () => Promise<void>;
@@ -113,6 +144,12 @@ export type UseVesselOperationResult = {
 
 const initialTrailerForm: TrailerFormState = {
   trailerNumber: "",
+  ownershipType: "unknown",
+  trailerSource: "unknown",
+  externalCompany: "",
+  plannedDestination: "Compound",
+  priorityReason: "",
+  manifestChangeReason: "",
   customer: "",
   bookingReference: "",
   loadStatus: "",
@@ -140,7 +177,7 @@ const getOperationStatus = (operation?: VesselOperationRecord | null): Normalize
     return "draft";
   }
 
-  if (operation.status === "completed" || operation.status === "cancelled") {
+  if (operation.status === "completed" || operation.status === "cancelled" || operation.final_locked_at) {
     return "completed";
   }
 
@@ -160,8 +197,10 @@ const getOperationStatus = (operation?: VesselOperationRecord | null): Normalize
 const normalizeTrailerStatus = (status?: string | null, arrivalStatus?: string | null): VesselTrailerStatus => {
   if (status === "inspected" || status === "positioned") return "inspected";
   if (status === "arrived" || status === "inspection_pending" || status === "inspection_in_progress") return "arrived";
+  if (status === "no_show") return "no_show";
   if (status === "not_arrived" || status === "cancelled" || status === "not_discharged") return "not_arrived";
   if (arrivalStatus === "arrived") return "arrived";
+  if (arrivalStatus === "no_show") return "no_show";
   if (arrivalStatus === "not_arrived" || arrivalStatus === "cancelled" || arrivalStatus === "not_discharged") return "not_arrived";
   return "expected";
 };
@@ -293,12 +332,12 @@ export function useVesselOperation(operationId: string): UseVesselOperationResul
       const [operationResult, trailersResult] = await Promise.all([
         supabase
           .from("vessel_operations")
-          .select("id, vessel_name, sailing_reference, origin_port, berth, expected_arrival_at, actual_arrival_at, status, list_status, list_confirmed_at, list_confirmed_by, notes, created_at, updated_at")
+          .select("id, vessel_name, sailing_reference, origin_port, berth, expected_arrival_at, actual_arrival_at, status, list_status, list_confirmed_at, list_confirmed_by, notes, completed_at, completed_by, final_locked_at, created_at, updated_at")
           .eq("id", operationId)
           .single(),
         supabase
           .from("vessel_operation_trailers")
-          .select("id, vessel_operation_id, trailer_id, trailer_number, customer, booking_reference, load_status, load_description, temperature_required, expected_front_temperature, expected_rear_temperature, expected_temperature_unit, priority_level, priority_reason, planned_destination, planning_notes, status, arrived_at, arrival_status, arrival_confirmed_at, arrival_record_id, arrival_confirmed_by, inspection_started_at, inspection_completed_at, position_assigned_at, assigned_position, has_damage, has_temperature_alert, created_at, updated_at")
+          .select("id, vessel_operation_id, trailer_id, trailer_number, customer, booking_reference, load_status, load_description, temperature_required, expected_front_temperature, expected_rear_temperature, expected_temperature_unit, priority_level, priority_reason, planned_destination, planning_notes, ownership_type, trailer_source, external_company, added_after_confirmation, added_after_confirmation_at, added_after_confirmation_by, manifest_change_reason, status, arrived_at, arrival_status, arrival_confirmed_at, arrival_record_id, arrival_confirmed_by, inspection_started_at, inspection_completed_at, position_assigned_at, assigned_position, has_damage, has_temperature_alert, created_at, updated_at")
           .eq("vessel_operation_id", operationId)
           .order("created_at", { ascending: true }),
       ]);
@@ -340,11 +379,19 @@ export function useVesselOperation(operationId: string): UseVesselOperationResul
         temperaturesByTrailer.set(trailerId, collection);
       });
 
+      const confirmedAtMs = operationResult.data.list_confirmed_at ? Date.parse(operationResult.data.list_confirmed_at) : Number.NaN;
+
       const normalizedTrailers = trailerRows.map((item) => {
         const normalizedStatus = normalizeTrailerStatus(item.status, item.arrival_status);
+        const createdAtMs = item.created_at ? Date.parse(item.created_at) : Number.NaN;
+        const derivedAddedAfterConfirmation =
+          Boolean(item.added_after_confirmation) ||
+          (Number.isFinite(confirmedAtMs) && Number.isFinite(createdAtMs) && createdAtMs > confirmedAtMs);
 
         return {
           ...item,
+          added_after_confirmation: derivedAddedAfterConfirmation,
+          added_after_confirmation_at: item.added_after_confirmation_at ?? (derivedAddedAfterConfirmation ? item.created_at ?? null : null),
           status: normalizedStatus,
           arrival_status: (item.arrival_status ?? "expected") as VesselOperationTrailerRecord["arrival_status"],
         };
@@ -389,11 +436,17 @@ export function useVesselOperation(operationId: string): UseVesselOperationResul
 
   const operationStatus = getOperationStatus(operation);
   const isReadOnly = operationStatus === "completed";
-  const editable = operationStatus === "draft";
+  const editable = !isReadOnly;
 
   const summary = useMemo(() => computeVesselOperationSummary(trailers), [trailers]);
   const completionSummary = useMemo<CompletionSummary>(() => {
-    const activeTrailers = trailers.filter((item) => item.arrival_status !== "cancelled" && item.status !== "cancelled");
+    const activeTrailers = trailers.filter(
+      (item) =>
+        item.arrival_status !== "cancelled" &&
+        item.status !== "cancelled" &&
+        item.arrival_status !== "no_show" &&
+        item.status !== "no_show",
+    );
 
     const totalTrailers = activeTrailers.length;
     const arrived = activeTrailers.filter((item) => item.arrival_status === "arrived").length;
@@ -401,6 +454,8 @@ export function useVesselOperation(operationId: string): UseVesselOperationResul
     const pendingInspection = activeTrailers.filter((item) => item.arrival_status === "arrived" && item.status !== "inspected").length;
     const notArrived = activeTrailers.filter((item) => item.arrival_status === "expected" || item.arrival_status === "available_for_arrival").length;
     const notDischarged = activeTrailers.filter((item) => item.arrival_status === "not_discharged" || item.status === "not_discharged").length;
+    const cancelled = trailers.filter((item) => item.arrival_status === "cancelled" || item.status === "cancelled").length;
+    const noShow = trailers.filter((item) => item.arrival_status === "no_show" || item.status === "no_show").length;
     const damages = activeTrailers.filter((item) => Boolean(item.has_damage)).length;
     const temperatureAlerts = activeTrailers.filter((item) => Boolean(item.has_temperature_alert)).length;
 
@@ -411,10 +466,16 @@ export function useVesselOperation(operationId: string): UseVesselOperationResul
       pendingInspection,
       notArrived,
       notDischarged,
+      cancelled,
+      noShow,
       damages,
       temperatureAlerts,
     };
   }, [trailers]);
+
+  const planningReadiness = useMemo(() => getPlanningReadiness(trailers), [trailers]);
+  const completionReadiness = useMemo(() => getCompletionReadiness(trailers), [trailers]);
+  const workflowStep = useMemo(() => deriveVesselWorkflowStep(operation, trailers), [operation, trailers]);
   const sortedTrailers = useMemo(() => sortVesselOperationTrailersForArrivals(trailers), [trailers]);
 
   const existingTrailerNumbers = useMemo(
@@ -445,13 +506,23 @@ export function useVesselOperation(operationId: string): UseVesselOperationResul
   );
 
   const insertTrailers = useCallback(
-    async (rows: InsertTrailerRow[]) => {
+    async (rows: InsertTrailerRow[], operatorName: string) => {
       if (!operation) return;
 
       const nowIso = new Date().toISOString();
+      const isPostConfirmation = (operation.list_status ?? "draft") === "confirmed";
       const payload = rows.map((row) => ({
         vessel_operation_id: operation.id,
         trailer_number: row.trailer_number,
+        ownership_type: row.ownership_type,
+        trailer_source: row.trailer_source ?? null,
+        external_company: row.external_company ?? null,
+        planned_destination: row.planned_destination ?? "Compound",
+        priority_reason: row.priority_reason ?? null,
+        manifest_change_reason: row.manifest_change_reason ?? null,
+        added_after_confirmation: row.added_after_confirmation ?? isPostConfirmation,
+        added_after_confirmation_at: row.added_after_confirmation_at ?? (isPostConfirmation ? nowIso : null),
+        added_after_confirmation_by: row.added_after_confirmation_by ?? (isPostConfirmation ? operatorName : null),
         customer: row.customer ?? null,
         booking_reference: row.booking_reference ?? null,
         load_status: row.load_status ?? null,
@@ -461,7 +532,7 @@ export function useVesselOperation(operationId: string): UseVesselOperationResul
         temperature_required: row.temperature_required ?? null,
         priority_level: row.priority_level,
         status: "expected" as VesselTrailerStatus,
-        arrival_status: "expected",
+        arrival_status: isPostConfirmation ? "available_for_arrival" : "expected",
         planning_notes: row.notes ?? null,
         created_at: nowIso,
         updated_at: nowIso,
@@ -492,8 +563,8 @@ export function useVesselOperation(operationId: string): UseVesselOperationResul
   );
 
   const handleAddSingleTrailer = useCallback(async () => {
-    if (!editable) {
-      setError("Trailer list is locked after confirmation.");
+    if (isReadOnly) {
+      setError("Trailer list is locked after completion.");
       return;
     }
 
@@ -521,15 +592,39 @@ export function useVesselOperation(operationId: string): UseVesselOperationResul
     }
 
     const expectedTemperatureUnit = normalizeExpectedTemperatureUnit(formState.expectedTemperatureUnit);
+    const ownershipType = formState.ownershipType;
+
+    if (ownershipType === "unknown") {
+      setError("Ownership is required before adding a trailer.");
+      return;
+    }
+
+    if (!formState.plannedDestination.trim()) {
+      setError("Planned destination is required.");
+      return;
+    }
+
+    if (ownershipType === "outsourcing" && !formState.customer.trim() && !formState.externalCompany.trim()) {
+      setError("Outsourcing trailers require customer or external company.");
+      return;
+    }
 
     setIsSaving(true);
     setError(null);
     setSuccess(null);
 
     try {
+      const operatorName = await resolveOperatorName();
+
       await insertTrailers([
         {
           trailer_number: trailerNumber,
+          ownership_type: ownershipType,
+          trailer_source: formState.trailerSource,
+          external_company: formState.externalCompany.trim() || null,
+          planned_destination: formState.plannedDestination.trim() || "Compound",
+          priority_reason: formState.priorityReason.trim() || null,
+          manifest_change_reason: formState.manifestChangeReason.trim() || null,
           customer: formState.customer.trim() || null,
           booking_reference: formState.bookingReference.trim() || null,
           load_status: formState.loadStatus.trim() || null,
@@ -540,10 +635,10 @@ export function useVesselOperation(operationId: string): UseVesselOperationResul
           priority_level: formState.priorityLevel,
           notes: formState.notes.trim() || null,
         },
-      ]);
+      ], operatorName);
 
       setFormState(initialTrailerForm);
-      setSuccess("Trailer added to vessel operation.");
+      setSuccess((operation?.list_status ?? "draft") === "confirmed" ? "Trailer added after confirmation and queued for arrivals." : "Trailer added to vessel operation.");
       await loadOperation();
     } catch (saveErr) {
       console.error("Unable to add trailer:", saveErr);
@@ -551,11 +646,11 @@ export function useVesselOperation(operationId: string): UseVesselOperationResul
     } finally {
       setIsSaving(false);
     }
-  }, [editable, existingTrailerNumbers, formState, insertTrailers, loadOperation]);
+  }, [existingTrailerNumbers, formState, insertTrailers, isReadOnly, loadOperation, operation?.list_status]);
 
   const handleBulkAdd = useCallback(async () => {
-    if (!editable) {
-      setError("Trailer list is locked after confirmation.");
+    if (isReadOnly) {
+      setError("Trailer list is locked after completion.");
       return;
     }
 
@@ -577,14 +672,23 @@ export function useVesselOperation(operationId: string): UseVesselOperationResul
     setSuccess(null);
 
     try {
+      const operatorName = await resolveOperatorName();
+
       await insertTrailers(
         newTrailerNumbers.map((trailerNumber) => ({
           trailer_number: trailerNumber,
+          ownership_type: "unknown",
+          trailer_source: "unknown",
+          planned_destination: "Compound",
+          manifest_change_reason: (operation?.list_status ?? "draft") === "confirmed" ? "Bulk add after confirmation" : null,
           priority_level: "normal" as VesselPriorityLevel,
         })),
+        operatorName,
       );
       setBulkTextState("");
-      setSuccess(`${newTrailerNumbers.length} trailer${newTrailerNumbers.length === 1 ? "" : "s"} added.`);
+      setSuccess((operation?.list_status ?? "draft") === "confirmed"
+        ? `${newTrailerNumbers.length} trailer${newTrailerNumbers.length === 1 ? "" : "s"} added after confirmation.`
+        : `${newTrailerNumbers.length} trailer${newTrailerNumbers.length === 1 ? "" : "s"} added.`);
       await loadOperation();
     } catch (saveErr) {
       console.error("Unable to add bulk trailer list:", saveErr);
@@ -592,7 +696,7 @@ export function useVesselOperation(operationId: string): UseVesselOperationResul
     } finally {
       setIsSaving(false);
     }
-  }, [bulkText, editable, existingTrailerNumbers, insertTrailers, loadOperation]);
+  }, [bulkText, existingTrailerNumbers, insertTrailers, isReadOnly, loadOperation, operation?.list_status]);
 
   const handleTogglePriority = useCallback(
     async (trailer: VesselOperationTrailerRecord) => {
@@ -674,31 +778,64 @@ export function useVesselOperation(operationId: string): UseVesselOperationResul
 
   const handleRemoveTrailer = useCallback(
     async (trailer: VesselOperationTrailerRecord) => {
-      if (!editable) {
-        setError("Trailer list is locked after confirmation.");
+      if (isReadOnly) {
+        setError("Trailer list is locked after completion.");
         return;
       }
 
-      if (trailer.status !== "expected") {
-        setError("Only expected trailers can be removed.");
+      const isConfirmed = (operation?.list_status ?? "draft") === "confirmed";
+      const hasOperationalHistory =
+        Boolean(trailer.arrival_record_id) ||
+        Boolean(trailer.inspection_started_at) ||
+        Boolean(trailer.inspection_completed_at) ||
+        trailer.status === "inspected";
+
+      if (hasOperationalHistory) {
+        setError("Cannot remove a trailer after arrival/inspection history exists.");
         return;
       }
 
-      const confirmed = window.confirm(`Remove trailer ${trailer.trailer_number ?? ""} from this vessel operation?`);
+      const confirmed = window.confirm(
+        isConfirmed
+          ? `Mark trailer ${trailer.trailer_number ?? ""} as Not Discharged and keep audit history?`
+          : `Remove trailer ${trailer.trailer_number ?? ""} from this vessel operation?`,
+      );
       if (!confirmed) return;
 
       setActioningTrailerId(trailer.id);
       setError(null);
 
       try {
-        const { error: deleteError } = await supabase.from("vessel_operation_trailers").delete().eq("id", trailer.id);
-        if (deleteError) {
-          logVesselSupabaseError("Delete vessel trailer failed", deleteError);
-          throw deleteError;
+        if (isConfirmed) {
+          const reason = window.prompt("Reason for removing from manifest:", trailer.manifest_change_reason ?? "") ?? "";
+          const nowIso = new Date().toISOString();
+          const { error: updateError } = await supabase
+            .from("vessel_operation_trailers")
+            .update({
+              status: "not_arrived",
+              arrival_status: "not_discharged",
+              manifest_change_reason: reason.trim() || "Removed from manifest",
+              updated_at: nowIso,
+            })
+            .eq("id", trailer.id)
+            .in("arrival_status", ["expected", "available_for_arrival"]);
+
+          if (updateError) {
+            logVesselSupabaseError("Mark vessel trailer not discharged failed", updateError);
+            throw updateError;
+          }
+        } else {
+          const { error: deleteError } = await supabase.from("vessel_operation_trailers").delete().eq("id", trailer.id);
+          if (deleteError) {
+            logVesselSupabaseError("Delete vessel trailer failed", deleteError);
+            throw deleteError;
+          }
         }
 
         await loadOperation();
-        setSuccess(`Trailer ${trailer.trailer_number ?? ""} removed.`);
+        setSuccess(isConfirmed
+          ? `Trailer ${trailer.trailer_number ?? ""} marked as Not Discharged.`
+          : `Trailer ${trailer.trailer_number ?? ""} removed.`);
       } catch (deleteErr) {
         console.error("Unable to remove trailer:", deleteErr);
         setError("Unable to remove trailer.");
@@ -706,7 +843,7 @@ export function useVesselOperation(operationId: string): UseVesselOperationResul
         setActioningTrailerId(null);
       }
     },
-    [editable, loadOperation],
+    [isReadOnly, loadOperation, operation?.list_status],
   );
 
   const handleConfirmList = useCallback(async () => {
@@ -717,7 +854,12 @@ export function useVesselOperation(operationId: string): UseVesselOperationResul
       return;
     }
 
-    const confirmed = window.confirm("Confirm trailer list? After confirmation the list becomes read-only.");
+    if (!planningReadiness.canConfirmList) {
+      setError("Planning is incomplete. Complete required fields before confirming the list.");
+      return;
+    }
+
+    const confirmed = window.confirm("Confirm trailer list? You can still add extra trailers later with Added After Confirmation tracking.");
     if (!confirmed) return;
 
     setIsSaving(true);
@@ -760,7 +902,7 @@ export function useVesselOperation(operationId: string): UseVesselOperationResul
     } finally {
       setIsSaving(false);
     }
-  }, [loadOperation, operation]);
+  }, [loadOperation, operation, planningReadiness.canConfirmList]);
 
   const handleMarkArrived = useCallback(
     async (trailer: VesselOperationTrailerRecord) => {
@@ -861,6 +1003,249 @@ export function useVesselOperation(operationId: string): UseVesselOperationResul
     },
     [loadOperation, operationStatus],
   );
+
+  const handleSetTrailerOutcome = useCallback(
+    async (trailer: VesselOperationTrailerRecord, outcome: "cancelled" | "no_show") => {
+      if (isReadOnly) {
+        setError("Trailer list is locked after completion.");
+        return;
+      }
+
+      const alreadySet = trailer.arrival_status === outcome;
+      if (alreadySet) {
+        setSuccess(`${trailer.trailer_number ?? "Trailer"} is already marked ${outcome === "cancelled" ? "Cancelled" : "No Show"}.`);
+        return;
+      }
+
+      const hasOperationalHistory =
+        Boolean(trailer.arrival_record_id) ||
+        Boolean(trailer.inspection_started_at) ||
+        Boolean(trailer.inspection_completed_at) ||
+        trailer.status === "inspected";
+
+      if (hasOperationalHistory) {
+        setError("Cannot apply this outcome after arrival/inspection history exists.");
+        return;
+      }
+
+      const reason = window.prompt(`Reason for ${outcome === "cancelled" ? "cancellation" : "no show"}:`, trailer.manifest_change_reason ?? "") ?? "";
+
+      setActioningTrailerId(trailer.id);
+      setError(null);
+      setSuccess(null);
+
+      try {
+        const nowIso = new Date().toISOString();
+        const operatorName = await resolveOperatorName();
+
+        const updatePayload = outcome === "cancelled"
+          ? {
+              status: "not_arrived" as VesselTrailerStatus,
+              arrival_status: "cancelled" as VesselOperationTrailerRecord["arrival_status"],
+              cancelled_at: nowIso,
+              cancelled_by: operatorName,
+              cancellation_reason: reason.trim() || null,
+              no_show_at: null,
+              no_show_by: null,
+              no_show_reason: null,
+              manifest_change_reason: reason.trim() || trailer.manifest_change_reason || "Cancelled",
+              updated_at: nowIso,
+            }
+          : {
+              status: "not_arrived" as VesselTrailerStatus,
+              arrival_status: "no_show" as VesselOperationTrailerRecord["arrival_status"],
+              no_show_at: nowIso,
+              no_show_by: operatorName,
+              no_show_reason: reason.trim() || null,
+              cancelled_at: null,
+              cancelled_by: null,
+              cancellation_reason: null,
+              manifest_change_reason: reason.trim() || trailer.manifest_change_reason || "No Show",
+              updated_at: nowIso,
+            };
+
+        const { error: updateError } = await supabase
+          .from("vessel_operation_trailers")
+          .update(updatePayload as never)
+          .eq("id", trailer.id)
+          .in("arrival_status", ["expected", "available_for_arrival", "cancelled", "no_show"]);
+
+        if (updateError) {
+          logVesselSupabaseError("Set trailer outcome failed", updateError);
+          throw updateError;
+        }
+
+        const eventType = outcome === "cancelled" ? "vessel_trailer_cancelled" : "vessel_trailer_no_show";
+        const eventTitle = outcome === "cancelled" ? "Trailer marked cancelled" : "Trailer marked no show";
+        await supabase.from("trailer_events").insert({
+          trailer_id: trailer.trailer_id ?? null,
+          trailer_number: trailer.trailer_number ?? null,
+          event_type: eventType,
+          event_description: reason.trim()
+            ? `${eventTitle}. Reason: ${reason.trim()}`
+            : `${eventTitle}.`,
+          old_value: {
+            vessel_trailer_id: trailer.id,
+            arrival_status: trailer.arrival_status,
+            status: trailer.status,
+          },
+          new_value: {
+            vessel_trailer_id: trailer.id,
+            arrival_status: outcome,
+            status: "not_arrived",
+            reason: reason.trim() || null,
+          },
+        });
+
+        await createTrailerActivity({
+          trailerId: trailer.trailer_id ?? null,
+          trailerNumber: trailer.trailer_number ?? trailer.id,
+          eventType: "operational_status_changed",
+          eventTitle,
+          eventDescription: reason.trim() ? `${eventTitle}. Reason: ${reason.trim()}` : eventTitle,
+          sourceModule: "vessel",
+          sourceRecordId: trailer.id,
+          previousStatus: trailer.arrival_status ?? trailer.status,
+          newStatus: outcome,
+          metadata: {
+            vessel_operation_id: trailer.vessel_operation_id,
+            vessel_trailer_id: trailer.id,
+            reason: reason.trim() || null,
+          },
+          performedBy: operatorName,
+          createdAt: nowIso,
+        });
+
+        await loadOperation();
+        setSuccess(`${trailer.trailer_number ?? "Trailer"} marked ${outcome === "cancelled" ? "Cancelled" : "No Show"}.`);
+      } catch (outcomeErr) {
+        console.error("Unable to set trailer outcome:", outcomeErr);
+        setError("Unable to update trailer outcome.");
+      } finally {
+        setActioningTrailerId(null);
+      }
+    },
+    [isReadOnly, loadOperation],
+  );
+
+  const handleUndoTrailerOutcome = useCallback(
+    async (trailer: VesselOperationTrailerRecord, outcome: "cancelled" | "no_show") => {
+      if (isReadOnly) {
+        setError("Trailer list is locked after completion.");
+        return;
+      }
+
+      if (trailer.arrival_status !== outcome) {
+        setSuccess(`${trailer.trailer_number ?? "Trailer"} is already pending arrival.`);
+        return;
+      }
+
+      const hasOperationalHistory =
+        Boolean(trailer.arrival_record_id) ||
+        Boolean(trailer.inspection_started_at) ||
+        Boolean(trailer.inspection_completed_at) ||
+        trailer.status === "inspected";
+
+      if (hasOperationalHistory) {
+        setError("Cannot undo this outcome after arrival/inspection history exists.");
+        return;
+      }
+
+      setActioningTrailerId(trailer.id);
+      setError(null);
+      setSuccess(null);
+
+      try {
+        const nowIso = new Date().toISOString();
+        const operatorName = await resolveOperatorName();
+        const nextArrivalStatus = (operation?.list_status ?? "draft") === "confirmed" ? "available_for_arrival" : "expected";
+
+        const { error: updateError } = await supabase
+          .from("vessel_operation_trailers")
+          .update({
+            status: "expected",
+            arrival_status: nextArrivalStatus,
+            cancelled_at: null,
+            cancelled_by: null,
+            cancellation_reason: null,
+            no_show_at: null,
+            no_show_by: null,
+            no_show_reason: null,
+            updated_at: nowIso,
+          } as never)
+          .eq("id", trailer.id)
+          .eq("arrival_status", outcome);
+
+        if (updateError) {
+          logVesselSupabaseError("Undo trailer outcome failed", updateError);
+          throw updateError;
+        }
+
+        const eventType = outcome === "cancelled" ? "vessel_trailer_cancelled_undo" : "vessel_trailer_no_show_undo";
+        const eventTitle = outcome === "cancelled" ? "Cancelled undone" : "No Show undone";
+
+        await supabase.from("trailer_events").insert({
+          trailer_id: trailer.trailer_id ?? null,
+          trailer_number: trailer.trailer_number ?? null,
+          event_type: eventType,
+          event_description: `${eventTitle} from vessel operation list.`,
+          old_value: {
+            vessel_trailer_id: trailer.id,
+            arrival_status: trailer.arrival_status,
+            status: trailer.status,
+          },
+          new_value: {
+            vessel_trailer_id: trailer.id,
+            arrival_status: nextArrivalStatus,
+            status: "expected",
+          },
+        });
+
+        await createTrailerActivity({
+          trailerId: trailer.trailer_id ?? null,
+          trailerNumber: trailer.trailer_number ?? trailer.id,
+          eventType: "operational_status_changed",
+          eventTitle,
+          eventDescription: "Trailer restored to pending arrival.",
+          sourceModule: "vessel",
+          sourceRecordId: trailer.id,
+          previousStatus: trailer.arrival_status ?? trailer.status,
+          newStatus: nextArrivalStatus,
+          metadata: {
+            vessel_operation_id: trailer.vessel_operation_id,
+            vessel_trailer_id: trailer.id,
+          },
+          performedBy: operatorName,
+          createdAt: nowIso,
+        });
+
+        await loadOperation();
+        setSuccess(`${trailer.trailer_number ?? "Trailer"} restored to pending arrival.`);
+      } catch (undoErr) {
+        console.error("Unable to undo trailer outcome:", undoErr);
+        setError("Unable to undo trailer outcome.");
+      } finally {
+        setActioningTrailerId(null);
+      }
+    },
+    [isReadOnly, loadOperation, operation?.list_status],
+  );
+
+  const handleMarkCancelled = useCallback(async (trailer: VesselOperationTrailerRecord) => {
+    await handleSetTrailerOutcome(trailer, "cancelled");
+  }, [handleSetTrailerOutcome]);
+
+  const handleMarkNoShow = useCallback(async (trailer: VesselOperationTrailerRecord) => {
+    await handleSetTrailerOutcome(trailer, "no_show");
+  }, [handleSetTrailerOutcome]);
+
+  const handleUndoCancelled = useCallback(async (trailer: VesselOperationTrailerRecord) => {
+    await handleUndoTrailerOutcome(trailer, "cancelled");
+  }, [handleUndoTrailerOutcome]);
+
+  const handleUndoNoShow = useCallback(async (trailer: VesselOperationTrailerRecord) => {
+    await handleUndoTrailerOutcome(trailer, "no_show");
+  }, [handleUndoTrailerOutcome]);
 
   const handleSaveInspection = useCallback(
     async (trailer: VesselOperationTrailerRecord) => {
@@ -1074,32 +1459,17 @@ export function useVesselOperation(operationId: string): UseVesselOperationResul
       return;
     }
 
+    if (!completionReadiness.canComplete) {
+      setError("Complete Discharge and Checks is blocked. Review incomplete trailers and mandatory checks.");
+      return;
+    }
+
     const confirmation = window.confirm(
-      `Complete boat operation?\n\nTotal Trailers: ${completionSummary.totalTrailers}\nArrived: ${completionSummary.arrived}\nInspected: ${completionSummary.inspected}\nPending inspection: ${completionSummary.pendingInspection}\nNot arrived: ${completionSummary.notArrived}\nDamages: ${completionSummary.damages}\nTemperature alerts: ${completionSummary.temperatureAlerts}`,
+      `Complete boat operation?\n\nTotal Trailers: ${completionSummary.totalTrailers}\nArrived: ${completionSummary.arrived}\nInspected: ${completionSummary.inspected}\nPending inspection: ${completionSummary.pendingInspection}\nNot arrived: ${completionSummary.notArrived}\nCancelled: ${completionSummary.cancelled}\nNo show: ${completionSummary.noShow}\nDamages: ${completionSummary.damages}\nTemperature alerts: ${completionSummary.temperatureAlerts}`,
     );
 
     if (!confirmation) {
       return;
-    }
-
-    if (completionSummary.pendingInspection > 0) {
-      const pendingConfirmation = window.confirm(
-        "Some arrived trailers have not been inspected.\nComplete operation anyway?",
-      );
-
-      if (!pendingConfirmation) {
-        return;
-      }
-    }
-
-    if (completionSummary.notArrived > 0) {
-      const notArrivedConfirmation = window.confirm(
-        "Some trailers have not been discharged.\nThey will be marked as Not Discharged.",
-      );
-
-      if (!notArrivedConfirmation) {
-        return;
-      }
     }
 
     setIsCompleting(true);
@@ -1108,6 +1478,7 @@ export function useVesselOperation(operationId: string): UseVesselOperationResul
 
     try {
       const nowIso = new Date().toISOString();
+      const operatorName = await resolveOperatorName();
 
       const { error: markNotArrivedError } = await supabase
         .from("vessel_operation_trailers")
@@ -1131,6 +1502,9 @@ export function useVesselOperation(operationId: string): UseVesselOperationResul
 
       const completePayload = {
         status: "completed",
+        completed_at: nowIso,
+        completed_by: operatorName,
+        final_locked_at: nowIso,
         updated_at: nowIso,
       };
 
@@ -1158,7 +1532,7 @@ export function useVesselOperation(operationId: string): UseVesselOperationResul
     } finally {
       setIsCompleting(false);
     }
-  }, [completionSummary, loadOperation, operation, operationStatus]);
+  }, [completionReadiness.canComplete, completionSummary, loadOperation, operation, operationStatus]);
 
   const setBulkText = useCallback((value: string) => {
     setBulkTextState(value);
@@ -1171,10 +1545,13 @@ export function useVesselOperation(operationId: string): UseVesselOperationResul
   return {
     operation,
     operationStatus,
+    workflowStep,
     trailers,
     sortedTrailers,
     summary,
     completionSummary,
+    planningReadiness,
+    completionReadiness,
     editable,
     isReadOnly,
     isLoading,
@@ -1197,6 +1574,10 @@ export function useVesselOperation(operationId: string): UseVesselOperationResul
     handleRemoveTrailer,
     handleConfirmList,
     handleMarkArrived,
+    handleMarkCancelled,
+    handleMarkNoShow,
+    handleUndoCancelled,
+    handleUndoNoShow,
     handleSaveInspection,
     handleCompleteOperation,
     reloadOperation: loadOperation,

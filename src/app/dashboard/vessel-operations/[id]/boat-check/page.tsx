@@ -64,7 +64,7 @@ function VesselBoatCheckPageContent() {
       const [operationResult, trailersResult] = await Promise.all([
         supabase
           .from("vessel_operations")
-          .select("id, vessel_name, sailing_reference, origin_port, berth, expected_arrival_at, actual_arrival_at, status, notes, created_at, updated_at")
+          .select("id, vessel_name, sailing_reference, origin_port, berth, expected_arrival_at, actual_arrival_at, status, list_status, notes, created_at, updated_at")
           .eq("id", operationId)
           .single(),
         supabase
@@ -155,7 +155,12 @@ function VesselBoatCheckPageContent() {
   }, [success]);
 
   const visibleTrailers = useMemo(() => {
-    return trailers.filter((item) => item.arrival_status !== "cancelled" && item.arrival_status !== "not_discharged");
+    return trailers.filter(
+      (item) =>
+        item.arrival_status !== "cancelled" &&
+        item.arrival_status !== "no_show" &&
+        item.arrival_status !== "not_discharged",
+    );
   }, [trailers]);
 
   const summary = useMemo<BoatCheckSummary>(() => {
@@ -199,6 +204,50 @@ function VesselBoatCheckPageContent() {
     return (
       <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(34,211,238,0.16),_transparent_32%),linear-gradient(135deg,_#020617_0%,_#0f172a_55%,_#111827_100%)] px-4 py-6 text-slate-100 sm:px-6 lg:px-8">
         <div className="mx-auto max-w-7xl rounded-3xl border border-rose-500/30 bg-rose-500/10 p-6 text-sm text-rose-200">{error ?? "Vessel operation not found."}</div>
+      </main>
+    );
+  }
+
+  const isListConfirmed = (operation.list_status ?? "draft") === "confirmed";
+  const hasDischargeProgress = trailers.some(
+    (item) =>
+      item.arrival_status === "arrived" ||
+      item.status === "arrived" ||
+      item.status === "inspection_pending" ||
+      item.status === "inspection_in_progress" ||
+      item.status === "inspected",
+  );
+
+  if (!isListConfirmed) {
+    return (
+      <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(34,211,238,0.16),_transparent_32%),linear-gradient(135deg,_#020617_0%,_#0f172a_55%,_#111827_100%)] px-4 py-6 text-slate-100 sm:px-6 lg:px-8">
+        <div className="mx-auto flex max-w-4xl flex-col gap-4">
+          <div className="rounded-3xl border border-amber-500/30 bg-amber-500/10 p-6 text-amber-100">
+            <p className="text-sm font-semibold uppercase tracking-[0.25em]">Workflow Gate</p>
+            <p className="mt-2 text-sm">Inspection is locked until the vessel list is confirmed and discharge has started.</p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Link href={`/dashboard/vessel-operations/${operation.id}`} className="rounded-2xl border border-white/10 bg-slate-800 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700">Back to Operation</Link>
+            <Link href={`/dashboard/vessel-operations/${operation.id}/planning`} className="rounded-2xl bg-cyan-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-cyan-400">Go to Planning</Link>
+          </div>
+        </div>
+      </main>
+    );
+  }
+
+  if (!hasDischargeProgress) {
+    return (
+      <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(34,211,238,0.16),_transparent_32%),linear-gradient(135deg,_#020617_0%,_#0f172a_55%,_#111827_100%)] px-4 py-6 text-slate-100 sm:px-6 lg:px-8">
+        <div className="mx-auto flex max-w-4xl flex-col gap-4">
+          <div className="rounded-3xl border border-amber-500/30 bg-amber-500/10 p-6 text-amber-100">
+            <p className="text-sm font-semibold uppercase tracking-[0.25em]">Workflow Gate</p>
+            <p className="mt-2 text-sm">Inspection can start only after at least one trailer is discharged as arrived.</p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Link href={`/dashboard/vessel-operations/${operation.id}/arrivals`} className="rounded-2xl bg-cyan-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-cyan-400">Go to Discharge</Link>
+            <Link href={`/dashboard/vessel-operations/${operation.id}`} className="rounded-2xl border border-white/10 bg-slate-800 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700">Back to Operation</Link>
+          </div>
+        </div>
       </main>
     );
   }

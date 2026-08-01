@@ -47,6 +47,35 @@ export function VesselPrintStyles() {
           overflow-wrap: anywhere;
           vertical-align: top;
         }
+
+        .vessel-print-report .print-photo-grid {
+          display: grid !important;
+          grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+          gap: 10px !important;
+        }
+
+        .vessel-print-report .print-photo-card,
+        .vessel-print-report .print-photo-frame {
+          break-inside: avoid !important;
+          page-break-inside: avoid !important;
+        }
+
+        .vessel-print-report .print-photo-frame {
+          max-height: 95mm !important;
+          min-height: 60mm !important;
+        }
+
+        .vessel-print-report .print-photo-frame img {
+          object-fit: contain !important;
+          max-height: 95mm !important;
+          width: 100% !important;
+        }
+
+        .vessel-print-report h2,
+        .vessel-print-report h3 {
+          break-after: avoid-page;
+          page-break-after: avoid;
+        }
       }
     `}</style>
   );

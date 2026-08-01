@@ -10,7 +10,6 @@ import { PrintReportLayout } from "@/components/print/print-report-layout";
 import { ReportPrintLayout } from "@/components/print/report-print-layout";
 import { PrintSummary } from "@/components/print/print-summary";
 import { PrintTable } from "@/components/print/print-table";
-import { loadDeliveriesForReport } from "@/lib/reports/report-data";
 import { supabase } from "@/lib/supabase";
 import {
   getDateKey,
@@ -40,6 +39,7 @@ type DeliveryBooking = {
   notes?: string | null;
   created_at?: string | null;
   trailer_number?: string | null;
+  trailer_container_number?: string | null;
   trailer_active?: boolean;
   trailer_compound_position?: string | null;
   // Collection fields
@@ -135,13 +135,28 @@ function DeliveriesPageContent() {
       setError(null);
 
       try {
-        const data = await loadDeliveriesForReport(supabase);
+        const { data, error: queryError } = await supabase
+          .from("delivery_bookings")
+          .select(
+            `id, trailer_id, delivery_date, delivery_time, customer, consignee,
+             delivery_location, booking_reference, escort_required, status, notes, created_at,
+             delivered_at, waiting_collection_since, collection_due_date, collected_at,
+             demurrage_free_days, demurrage_daily_rate, demurrage_currency, demurrage_notes,
+             trailers(trailer_number, container_number, compound_position, departure_date)`,
+          )
+          .order("delivery_date", { ascending: true })
+          .order("delivery_time", { ascending: true });
+
+        if (queryError) {
+          throw queryError;
+        }
 
         const enriched = ((data ?? []) as Array<Record<string, unknown>>).map((booking) => {
           const trailerFromJoin = booking["trailers"] as Record<string, unknown> | null;
           return {
             ...booking,
             trailer_number: (trailerFromJoin?.["trailer_number"] as string | null) ?? "—",
+            trailer_container_number: (trailerFromJoin?.["container_number"] as string | null) ?? null,
             trailer_compound_position: (trailerFromJoin?.["compound_position"] as string | null) ?? null,
             trailer_active: !(trailerFromJoin?.["departure_date"] as string | null),
           };
@@ -490,6 +505,12 @@ function DeliveriesPageContent() {
                               {booking.delivery_location}
                             </p>
                           ) : null}
+                          {booking.trailer_container_number ? (
+                            <p className="text-sm text-slate-300">
+                              <span className="text-slate-500">Container:</span>{" "}
+                              {booking.trailer_container_number}
+                            </p>
+                          ) : null}
                           {booking.booking_reference ? (
                             <p className="text-sm text-slate-300">
                               <span className="text-slate-500">Ref:</span>{" "}
@@ -641,6 +662,10 @@ function DeliveriesPageContent() {
                         <div>
                           <p className="text-[10px] uppercase tracking-[0.25em] text-slate-500">Trailer</p>
                           <p className="mt-0.5 text-slate-300">{b.trailer_number ?? "—"}</p>
+                        </div>
+                        <div>
+                          <p className="text-[10px] uppercase tracking-[0.25em] text-slate-500">Container</p>
+                          <p className="mt-0.5 text-slate-300">{b.trailer_container_number ?? "—"}</p>
                         </div>
                         <div>
                           <p className="text-[10px] uppercase tracking-[0.25em] text-slate-500">Customer</p>

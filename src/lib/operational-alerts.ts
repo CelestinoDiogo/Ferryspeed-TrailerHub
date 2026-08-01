@@ -1,7 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, Json } from "@/lib/database.types";
 import { supabase } from "@/lib/supabase";
-import { isExportAllocationOverdue, normalizeExportAllocationRecord, type ExportAllocationRecord, type ExportAllocationStatus } from "@/lib/export-allocation";
+import { normalizeExportAllocationRecord, type ExportAllocationRecord, type ExportAllocationStatus } from "@/lib/export-allocation";
 import { normalizeTrailerNumber } from "@/lib/compound-stock-check";
 
 export type OperationalAlertRow = Database["public"]["Tables"]["operational_alerts"]["Row"];
@@ -9,7 +9,7 @@ export type OperationalAlertSettingsRow = Database["public"]["Tables"]["operatio
 export type OperationalAlertSummaryRow = Database["public"]["Views"]["operational_alert_summary"]["Row"];
 
 export type OperationalAlertSeverity = "critical" | "high" | "warning" | "info";
-export type OperationalAlertStatus = "active" | "acknowledged" | "resolved" | "dismissed";
+export type OperationalAlertStatus = "active" | "resolved" | "dismissed";
 
 type ServiceOk<T> = { ok: true; data: T };
 type ServiceErr = { ok: false; error: string; details?: string | null };
@@ -177,10 +177,20 @@ type ExportAllocationRow = {
   updated_at: string | null;
 };
 
-const ACTIVE_ALERT_STATUSES: OperationalAlertStatus[] = ["active", "acknowledged"];
+type TrailerMovementActivityRow = {
+  trailer_id: string | null;
+  normalized_trailer_number: string | null;
+  event_type: string | null;
+  created_at: string | null;
+};
+
+const ACTIVE_ALERT_STATUSES: OperationalAlertStatus[] = ["active"];
+const OPERATIONAL_ALERTS_ACTIVE_DEDUPE_INDEX = "operational_alerts_active_dedupe_idx";
 const isDev = process.env.NODE_ENV === "development";
 const SETTINGS_CACHE_MS = 15_000;
 const DETECTION_COOLDOWN_MS = 10_000;
+const COMPOUND_AGE_WARNING_HOURS = 48;
+const COMPOUND_NO_MOVEMENT_HIGH_HOURS = 96;
 const DEFAULT_SETTINGS: OperationalAlertSettings = {
   enabled: true,
   compoundDwellWarningDays: 7,
@@ -208,6 +218,8 @@ const getClient = (supabaseClient?: SupabaseClient<Database>) => supabaseClient 
 
 const normalizeText = (value?: string | null) => (value ?? "").trim();
 
+const normalizeKeyText = (value?: string | null) => normalizeText(value).toUpperCase();
+
 const isUuidLike = (value: string) =>
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 
@@ -218,11 +230,27 @@ const isMissingColumnError = (message?: string | null) => {
 
 const normalizeAlertStatus = (value?: string | null): OperationalAlertStatus => {
   const normalized = normalizeText(value).toLowerCase();
-  if (normalized === "acknowledged" || normalized === "resolved" || normalized === "dismissed") {
+  if (normalized === "resolved" || normalized === "dismissed") {
     return normalized;
   }
 
   return "active";
+};
+
+const slugifyAlertToken = (value: string, fallback: string) => {
+  const normalized = normalizeText(value).toLowerCase();
+  if (!normalized) {
+    return fallback;
+  }
+
+  const slug = normalized.replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+  return slug || fallback;
+};
+
+const getAlertType = (sourceModule: string, title: string) => {
+  const sourceToken = slugifyAlertToken(sourceModule, "unknown");
+  const titleToken = slugifyAlertToken(title, "untitled");
+  return `${sourceToken}_${titleToken}`;
 };
 
 const normalizeSeverity = (value?: string | null): OperationalAlertSeverity => {
@@ -267,18 +295,46 @@ const toBoolean = (value: unknown, fallback: boolean) => {
   return fallback;
 };
 
-const getCandidateKey = (candidate: AlertCandidate) => {
-  const sourceModule = normalizeText(candidate.sourceModule) || "unknown";
-  const title = normalizeText(candidate.title) || "untitled";
-  const recordRef = candidate.sourceRecordId ?? candidate.trailerId ?? "global";
-  return `${sourceModule}:${title}:${recordRef}`;
+const buildAlertKey = (
+  sourceModule: string,
+  title: string,
+  sourceRecordId?: string | null,
+  trailerId?: string | null,
+  overrideAlertKey?: string | null,
+) => {
+  const normalizedAlertKey = normalizeText(overrideAlertKey);
+  if (normalizedAlertKey) {
+    return normalizedAlertKey;
+  }
+
+  const normalizedSourceModule = normalizeText(sourceModule) || "unknown";
+  const normalizedTitle = normalizeText(title) || "untitled";
+  const recordRef = normalizeText(sourceRecordId) || normalizeText(trailerId) || "global";
+  return `${normalizedSourceModule}:${normalizedTitle}:${recordRef}`;
 };
 
-const getAlertKey = (row: Pick<OperationalAlertRow, "source_module" | "title" | "source_record_id" | "trailer_id">) => {
-  const sourceModule = normalizeText(row.source_module) || "unknown";
-  const title = normalizeText(row.title) || "untitled";
-  const recordRef = row.source_record_id ?? row.trailer_id ?? "global";
-  return `${sourceModule}:${title}:${recordRef}`;
+const buildAlertIdentity = (
+  alertKey: string,
+  sourceRecordId?: string | null,
+  trailerId?: string | null,
+) => {
+  return `${normalizeText(alertKey) || "unknown"}::${normalizeText(sourceRecordId) || "global"}::${normalizeText(trailerId) || "global"}`;
+};
+
+const getCandidateKey = (candidate: AlertCandidate) => {
+  return buildAlertIdentity(
+    buildAlertKey(candidate.sourceModule, candidate.title, candidate.sourceRecordId, candidate.trailerId),
+    candidate.sourceRecordId,
+    candidate.trailerId,
+  );
+};
+
+const getAlertKey = (row: Pick<OperationalAlertRow, "alert_key" | "source_module" | "title" | "source_record_id" | "trailer_id">) => {
+  return buildAlertIdentity(
+    buildAlertKey(row.source_module, row.title, row.source_record_id, row.trailer_id, row.alert_key),
+    row.source_record_id,
+    row.trailer_id,
+  );
 };
 
 const getAlertRank = (severity: string) => severityOrder.indexOf(normalizeSeverity(severity));
@@ -306,6 +362,135 @@ const parseJsonMetadata = (metadata: unknown): Json => {
 };
 
 const getNowIso = () => new Date().toISOString();
+
+const parseIsoMillis = (timestamp?: string | null) => {
+  if (!timestamp) {
+    return null;
+  }
+
+  const parsed = new Date(timestamp).getTime();
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const getHoursSinceTimestamp = (timestamp?: string | null) => {
+  const millis = parseIsoMillis(timestamp);
+  if (millis === null) {
+    return null;
+  }
+
+  return Math.max(0, (Date.now() - millis) / 3_600_000);
+};
+
+const isCompoundMovementEventType = (eventType?: string | null) => {
+  const normalized = normalizeText(eventType).toLowerCase();
+  return (
+    normalized === "compound_entered"
+    || normalized === "compound_position_changed"
+    || normalized === "arrived"
+    || normalized === "vessel_arrived"
+  );
+};
+
+const getActivityLookupKey = (row: { trailer_id?: string | null; normalized_trailer_number?: string | null }) => {
+  if (row.trailer_id) {
+    return `id:${row.trailer_id}`;
+  }
+
+  const trailerNumber = normalizeKeyText(row.normalized_trailer_number);
+  return trailerNumber ? `number:${trailerNumber}` : null;
+};
+
+const buildMovementActivityMap = (rows: TrailerMovementActivityRow[]) => {
+  const map = new Map<string, TrailerMovementActivityRow[]>();
+
+  for (const row of rows) {
+    if (!isCompoundMovementEventType(row.event_type)) {
+      continue;
+    }
+
+    const key = getActivityLookupKey(row);
+    if (!key) {
+      continue;
+    }
+
+    const list = map.get(key) ?? [];
+    list.push(row);
+    map.set(key, list);
+  }
+
+  return map;
+};
+
+const getTrailerActivityCandidates = (
+  trailer: Pick<TrailerRow, "id" | "trailer_number">,
+  movementMap: Map<string, TrailerMovementActivityRow[]>,
+) => {
+  const byId = movementMap.get(`id:${trailer.id}`) ?? [];
+  const trailerNumberKey = normalizeKeyText(trailer.trailer_number);
+  const byTrailerNumber = trailerNumberKey ? movementMap.get(`number:${trailerNumberKey}`) ?? [] : [];
+
+  return [...byId, ...byTrailerNumber];
+};
+
+const resolveCompoundEntryTimestamp = (
+  trailer: Pick<TrailerRow, "arrival_date" | "created_at">,
+  activityRows: TrailerMovementActivityRow[],
+) => {
+  if (trailer.arrival_date) {
+    return trailer.arrival_date;
+  }
+
+  if (activityRows.length > 0) {
+    let earliest: string | null = null;
+    let earliestMillis: number | null = null;
+
+    for (const row of activityRows) {
+      const millis = parseIsoMillis(row.created_at);
+      if (millis === null) {
+        continue;
+      }
+
+      if (earliestMillis === null || millis < earliestMillis) {
+        earliestMillis = millis;
+        earliest = row.created_at;
+      }
+    }
+
+    if (earliest) {
+      return earliest;
+    }
+  }
+
+  return trailer.created_at;
+};
+
+const resolveLatestCompoundMovementTimestamp = (
+  trailer: Pick<TrailerRow, "arrival_date" | "created_at">,
+  activityRows: TrailerMovementActivityRow[],
+) => {
+  if (activityRows.length > 0) {
+    let latest: string | null = null;
+    let latestMillis: number | null = null;
+
+    for (const row of activityRows) {
+      const millis = parseIsoMillis(row.created_at);
+      if (millis === null) {
+        continue;
+      }
+
+      if (latestMillis === null || millis > latestMillis) {
+        latestMillis = millis;
+        latest = row.created_at;
+      }
+    }
+
+    if (latest) {
+      return latest;
+    }
+  }
+
+  return resolveCompoundEntryTimestamp(trailer, activityRows);
+};
 
 const resolveActorName = async (supabaseClient: SupabaseClient<Database>, fallback = "TrailerHub User") => {
   const { data, error } = await supabaseClient.auth.getUser();
@@ -455,45 +640,29 @@ const normalizeAlertRow = (row: OperationalAlertRow): OperationalAlertRow => ({
   trailer_number: row.trailer_number ? normalizeTrailerNumber(row.trailer_number) : null,
 });
 
-const selectActiveAlerts = async (supabaseClient: SupabaseClient<Database>) => {
-  const { data, error } = await supabaseClient
-    .from("operational_alerts")
-    .select("*")
-    .in("status", ACTIVE_ALERT_STATUSES)
-    .order("created_at", { ascending: true });
-
-  if (error) {
-    throw new Error(error.message || "Unable to load operational alerts.");
-  }
-
-  return ((data ?? []) as OperationalAlertRow[]).map(normalizeAlertRow);
-};
-
 const findLatestAlert = async (
   supabaseClient: SupabaseClient<Database>,
-  sourceModule: string,
-  title: string,
+  alertKey: string,
   sourceRecordId?: string | null,
   trailerId?: string | null,
 ) => {
-  const normalizedSourceRecordId = normalizeText(sourceRecordId);
-  const normalizedSourceModule = normalizeText(sourceModule);
-  const normalizedTitle = normalizeText(title);
-
   let query = supabaseClient
     .from("operational_alerts")
     .select("*")
-    .eq("source_module", normalizedSourceModule)
-    .eq("title", normalizedTitle)
+    .eq("alert_key", alertKey)
     .order("created_at", { ascending: false })
     .limit(1);
 
-  if (normalizedSourceRecordId && isUuidLike(normalizedSourceRecordId)) {
-    query = query.eq("source_record_id", normalizedSourceRecordId);
-  } else if (trailerId) {
+  if (sourceRecordId) {
+    query = query.eq("source_record_id", sourceRecordId);
+  } else {
+    query = query.is("source_record_id", null);
+  }
+
+  if (trailerId) {
     query = query.eq("trailer_id", trailerId);
   } else {
-    query = query.is("source_record_id", null).is("trailer_id", null);
+    query = query.is("trailer_id", null);
   }
 
   const { data, error } = await query;
@@ -503,6 +672,53 @@ const findLatestAlert = async (
 
   const row = (data ?? [])[0] ?? null;
   return row ? normalizeAlertRow(row as OperationalAlertRow) : null;
+};
+
+const findActiveAlertByIdentity = async (
+  supabaseClient: SupabaseClient<Database>,
+  alertKey: string,
+  sourceRecordId?: string | null,
+  trailerId?: string | null,
+) => {
+  let query = supabaseClient
+    .from("operational_alerts")
+    .select("*")
+    .eq("alert_key", alertKey)
+    .eq("status", "active")
+    .order("created_at", { ascending: false })
+    .limit(1);
+
+  if (sourceRecordId) {
+    query = query.eq("source_record_id", sourceRecordId);
+  } else {
+    query = query.is("source_record_id", null);
+  }
+
+  if (trailerId) {
+    query = query.eq("trailer_id", trailerId);
+  } else {
+    query = query.is("trailer_id", null);
+  }
+
+  const { data, error } = await query;
+  if (error) {
+    throw new Error(error.message || "Unable to load existing active operational alert.");
+  }
+
+  const row = (data ?? [])[0] ?? null;
+  return row ? normalizeAlertRow(row as OperationalAlertRow) : null;
+};
+
+const isActiveAlertDedupeConstraintError = (error: unknown) => {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+
+  const maybeError = error as SupabaseErrorLike;
+  const code = normalizeText(maybeError.code);
+  const message = normalizeText(maybeError.message).toLowerCase();
+
+  return code === "23505" && message.includes(OPERATIONAL_ALERTS_ACTIVE_DEDUPE_INDEX);
 };
 
 const updateAlertRow = async (
@@ -535,7 +751,33 @@ const insertAlertRow = async (
     .single();
 
   if (error || !data) {
-    throw new Error(error?.message || "Unable to create operational alert.");
+    if (error && isDev) {
+      const baseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "<missing NEXT_PUBLIC_SUPABASE_URL>";
+      console.error("[alerts] operational_alerts insert failed", {
+        requestUrl: `${baseUrl}/rest/v1/operational_alerts?select=*`,
+        requestMethod: "POST",
+        selectClause: "*",
+        filters: [],
+        order: [],
+        requestBody: payload,
+        supabaseError: {
+          code: error.code ?? null,
+          message: error.message ?? null,
+          details: error.details ?? null,
+          hint: error.hint ?? null,
+        },
+      });
+    }
+
+    if (error) {
+      const insertError = new Error(error.message || "Unable to create operational alert.") as Error & SupabaseErrorLike;
+      insertError.code = error.code ?? null;
+      insertError.details = error.details ?? null;
+      insertError.hint = error.hint ?? null;
+      throw insertError;
+    }
+
+    throw new Error("Unable to create operational alert.");
   }
 
   return normalizeAlertRow(data as OperationalAlertRow);
@@ -751,6 +993,12 @@ export async function createOperationalAlert(
   const sourceRecordId = normalizedSourceRecordIdText && isUuidLike(normalizedSourceRecordIdText)
     ? normalizedSourceRecordIdText
     : null;
+  const normalizedTrailerIdText = normalizeText(input.trailerId);
+  const trailerId = normalizedTrailerIdText && isUuidLike(normalizedTrailerIdText)
+    ? normalizedTrailerIdText
+    : null;
+  const alertKey = buildAlertKey(sourceModule, title, sourceRecordId, trailerId, input.alertKey);
+  const alertType = getAlertType(sourceModule, title);
   const status = normalizeAlertStatus(input.status ?? "active");
   const severity = normalizeSeverity(input.severity);
 
@@ -763,9 +1011,7 @@ export async function createOperationalAlert(
   }
 
   try {
-    const existing = input.existingAlert !== undefined
-      ? input.existingAlert
-      : await findLatestAlert(client, sourceModule, title, sourceRecordId, input.trailerId ?? null);
+    const existing = input.existingAlert ?? await findLatestAlert(client, alertKey, sourceRecordId, trailerId);
 
     if (existing?.status === "dismissed") {
       return { ok: true, data: existing };
@@ -773,10 +1019,12 @@ export async function createOperationalAlert(
 
     if (existing && ACTIVE_ALERT_STATUSES.includes(existing.status as OperationalAlertStatus)) {
       const updated = await updateAlertRow(client, existing.id, {
+        alert_key: alertKey,
+        alert_type: alertType,
         severity,
         title,
         description,
-        trailer_id: input.trailerId ?? existing.trailer_id,
+        trailer_id: trailerId ?? existing.trailer_id,
         trailer_number: trailerNumber ?? existing.trailer_number,
         source_module: sourceModule,
         source_record_id: sourceRecordId ?? existing.source_record_id,
@@ -787,26 +1035,57 @@ export async function createOperationalAlert(
       return { ok: true, data: updated };
     }
 
-    const performedBy = normalizeText(input.performedBy) || (await resolveActorName(client));
-    const inserted = await insertAlertRow(client, {
+    const basePayload: Database["public"]["Tables"]["operational_alerts"]["Insert"] = {
+      alert_type: alertType,
+      alert_key: alertKey,
       severity,
       status,
       title,
       description,
-      trailer_id: input.trailerId ?? null,
+      trailer_id: trailerId,
       trailer_number: trailerNumber,
       source_module: sourceModule,
       source_record_id: sourceRecordId,
       metadata: parseJsonMetadata(input.metadata),
-      acknowledged_at: null,
-      acknowledged_by: null,
-      resolved_at: null,
-      resolved_by: null,
-      dismissed_at: null,
-      dismissed_by: null,
       created_at: getNowIso(),
-      updated_at: getNowIso(),
-    });
+    };
+
+    const performedBy = normalizeText(input.performedBy) || (await resolveActorName(client));
+    let inserted: OperationalAlertRow;
+
+    try {
+      inserted = await insertAlertRow(client, basePayload);
+    } catch (error) {
+      if (!isActiveAlertDedupeConstraintError(error)) {
+        throw error;
+      }
+
+      const recoveredActive = await findActiveAlertByIdentity(client, alertKey, sourceRecordId, trailerId);
+      if (!recoveredActive) {
+        throw error;
+      }
+
+      const recoveryPayload: Partial<Database["public"]["Tables"]["operational_alerts"]["Update"]> = {
+        alert_key: alertKey,
+        alert_type: alertType,
+        severity,
+        title,
+        description,
+        trailer_id: trailerId ?? recoveredActive.trailer_id,
+        trailer_number: trailerNumber ?? recoveredActive.trailer_number,
+        source_module: sourceModule,
+        source_record_id: sourceRecordId ?? recoveredActive.source_record_id,
+        metadata: parseJsonMetadata(input.metadata),
+        status: recoveredActive.status,
+      };
+
+      try {
+        const updatedRecovered = await updateAlertRow(client, recoveredActive.id, recoveryPayload);
+        return { ok: true, data: updatedRecovered };
+      } catch {
+        return { ok: true, data: recoveredActive };
+      }
+    }
 
     if (performedBy && inserted.status === "active") {
       return { ok: true, data: inserted };
@@ -868,23 +1147,11 @@ const isTimestampOlderThanHours = (timestamp?: string | null, hours = 0) => {
   return Date.now() - timestampMs >= hours * 3_600_000;
 };
 
-const isTimestampOlderThanDays = (timestamp?: string | null, days = 0) => {
-  if (!timestamp) {
-    return false;
-  }
-
-  const timestampMs = new Date(timestamp).getTime();
-  if (Number.isNaN(timestampMs)) {
-    return false;
-  }
-
-  return Date.now() - timestampMs >= days * 86_400_000;
-};
-
 const buildTargetAlerts = (
   settings: OperationalAlertSettings,
   data: {
     trailers: TrailerRow[];
+    trailerMovementActivity: TrailerMovementActivityRow[];
     vesselTrailers: VesselTrailerRow[];
     temperatures: TemperatureRow[];
     photos: PhotoRow[];
@@ -893,6 +1160,7 @@ const buildTargetAlerts = (
   },
 ): AlertCandidate[] => {
   const candidates: AlertCandidate[] = [];
+  const movementMap = buildMovementActivityMap(data.trailerMovementActivity);
 
   const compoundTrailers = data.trailers.filter((trailer) => {
     const active = !trailer.departure_date || trailer.departure_date.trim() === "";
@@ -900,15 +1168,20 @@ const buildTargetAlerts = (
   });
 
   for (const trailer of compoundTrailers) {
-    const dwellTimestamp = trailer.arrival_date ?? trailer.created_at;
-    const warningActive = isTimestampOlderThanDays(dwellTimestamp, settings.compoundDwellWarningDays);
-    const criticalActive = isTimestampOlderThanDays(dwellTimestamp, settings.compoundDwellCriticalDays);
+    const activityRows = getTrailerActivityCandidates(trailer, movementMap);
+    const entryTimestamp = resolveCompoundEntryTimestamp(trailer, activityRows);
+    const lastMovementTimestamp = resolveLatestCompoundMovementTimestamp(trailer, activityRows);
+    const entryAgeHours = getHoursSinceTimestamp(entryTimestamp);
+    const noMovementHours = getHoursSinceTimestamp(lastMovementTimestamp);
 
-    if (criticalActive) {
+    const noMovementHigh = typeof noMovementHours === "number" && noMovementHours >= COMPOUND_NO_MOVEMENT_HIGH_HOURS;
+    const ageWarning = typeof entryAgeHours === "number" && entryAgeHours >= COMPOUND_AGE_WARNING_HOURS;
+
+    if (noMovementHigh) {
       candidates.push({
-        severity: "critical",
-        title: "Compound dwell critical",
-        description: `Trailer ${normalizeTrailerNumber(trailer.trailer_number ?? "") || "unknown"} has been in compound longer than the critical dwell threshold.`,
+        severity: "high",
+        title: "Compound age requires movement",
+        description: `Trailer ${normalizeTrailerNumber(trailer.trailer_number ?? "") || "unknown"} has had no compound movement for more than 96 hours.`,
         sourceModule: "compound",
         sourceRecordId: trailer.id,
         trailerId: trailer.id,
@@ -918,14 +1191,19 @@ const buildTargetAlerts = (
           trailer_number: trailer.trailer_number,
           compound_position: trailer.compound_position,
           arrival_date: trailer.arrival_date,
-          dwell_days: settings.compoundDwellCriticalDays,
+          entry_timestamp: entryTimestamp,
+          last_movement_timestamp: lastMovementTimestamp,
+          age_hours: entryAgeHours,
+          no_movement_hours: noMovementHours,
+          age_threshold_hours: COMPOUND_AGE_WARNING_HOURS,
+          no_movement_threshold_hours: COMPOUND_NO_MOVEMENT_HIGH_HOURS,
         }),
       });
-    } else if (warningActive) {
+    } else if (ageWarning) {
       candidates.push({
         severity: "warning",
-        title: "Compound dwell warning",
-        description: `Trailer ${normalizeTrailerNumber(trailer.trailer_number ?? "") || "unknown"} is approaching the dwell threshold in compound.`,
+        title: "Compound age requires movement",
+        description: `Trailer ${normalizeTrailerNumber(trailer.trailer_number ?? "") || "unknown"} has remained in compound for more than 48 hours.`,
         sourceModule: "compound",
         sourceRecordId: trailer.id,
         trailerId: trailer.id,
@@ -935,7 +1213,12 @@ const buildTargetAlerts = (
           trailer_number: trailer.trailer_number,
           compound_position: trailer.compound_position,
           arrival_date: trailer.arrival_date,
-          dwell_days: settings.compoundDwellWarningDays,
+          entry_timestamp: entryTimestamp,
+          last_movement_timestamp: lastMovementTimestamp,
+          age_hours: entryAgeHours,
+          no_movement_hours: noMovementHours,
+          age_threshold_hours: COMPOUND_AGE_WARNING_HOURS,
+          no_movement_threshold_hours: COMPOUND_NO_MOVEMENT_HIGH_HOURS,
         }),
       });
     }
@@ -1091,11 +1374,25 @@ const buildTargetAlerts = (
 };
 
 const loadOperationalAlertSourceData = async (client: SupabaseClient<Database>) => {
-  const [trailersResult, vesselTrailersResult, temperaturesResult, photosResult, stockCheckItemsResult, exportAllocationsResult] = await Promise.all([
+  const [
+    trailersResult,
+    movementActivityResult,
+    vesselTrailersResult,
+    temperaturesResult,
+    photosResult,
+    stockCheckItemsResult,
+    exportAllocationsResult,
+  ] = await Promise.all([
     client
       .from("trailers")
       .select("id, trailer_number, load_status, arrival_date, departure_date, compound_position, operational_status, is_local, customer, load_description, created_at")
       .is("departure_date", null),
+    client
+      .from("trailer_activity_log")
+      .select("trailer_id, normalized_trailer_number, event_type, created_at")
+      .in("event_type", ["compound_entered", "compound_position_changed", "arrived", "vessel_arrived"])
+      .order("created_at", { ascending: false })
+      .limit(5000),
     client
       .from("vessel_operation_trailers")
       .select("id, vessel_operation_id, trailer_id, trailer_number, priority_level, arrival_status, arrived_at, arrival_confirmed_at, inspection_started_at, inspection_completed_at, status, has_damage, has_temperature_alert, temperature_required, created_at")
@@ -1118,13 +1415,21 @@ const loadOperationalAlertSourceData = async (client: SupabaseClient<Database>) 
       .order("created_at", { ascending: false }),
   ]);
 
-  const firstError = trailersResult.error ?? vesselTrailersResult.error ?? temperaturesResult.error ?? photosResult.error ?? stockCheckItemsResult.error ?? exportAllocationsResult.error;
+  const firstError =
+    trailersResult.error
+    ?? movementActivityResult.error
+    ?? vesselTrailersResult.error
+    ?? temperaturesResult.error
+    ?? photosResult.error
+    ?? stockCheckItemsResult.error
+    ?? exportAllocationsResult.error;
   if (firstError) {
     throw new Error(firstError.message || "Unable to load operational alert source data.");
   }
 
   return {
     trailers: (trailersResult.data ?? []) as TrailerRow[],
+    trailerMovementActivity: (movementActivityResult.data ?? []) as TrailerMovementActivityRow[],
     vesselTrailers: (vesselTrailersResult.data ?? []) as VesselTrailerRow[],
     temperatures: (temperaturesResult.data ?? []) as TemperatureRow[],
     photos: (photosResult.data ?? []) as PhotoRow[],
@@ -1202,7 +1507,7 @@ export async function runOperationalAlertDetection(
         const activeRow = activeMap.get(key);
         const result = await createOperationalAlert({
           ...candidate,
-          existingAlert: activeRow ?? null,
+          existingAlert: activeRow,
         }, client);
         if (!result.ok) {
           if (isMissingColumnError(result.error)) {
@@ -1210,6 +1515,10 @@ export async function runOperationalAlertDetection(
           }
           errors.push(result.error);
           continue;
+        }
+
+        if (result.data.status === "active") {
+          activeMap.set(key, result.data);
         }
 
         if (activeRow) {
@@ -1252,7 +1561,7 @@ export async function runOperationalAlertDetection(
     }
   };
 
-  const shouldCache = !supabaseClient;
+  const shouldCache = !supabaseClient || supabaseClient === supabase;
 
   if (!shouldCache) {
     return executeDetection();
@@ -1281,3 +1590,9 @@ export async function runOperationalAlertDetection(
 
   return inFlightOperationalAlertDetectionPromise;
 }
+
+export const operationalAlertTestUtils = {
+  resolveCompoundEntryTimestamp,
+  resolveLatestCompoundMovementTimestamp,
+  isCompoundMovementEventType,
+};

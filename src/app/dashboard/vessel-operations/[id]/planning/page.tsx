@@ -6,6 +6,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { Json } from "@/lib/database.types";
 import { supabase } from "@/lib/supabase";
 import {
+  applyPlanningOwnershipSelection,
   PLANNED_DESTINATION_SUGGESTIONS,
   computeVesselOperationSummary,
   formatVesselDateTime,
@@ -19,12 +20,13 @@ import {
   normalizeExpectedTemperatureUnit,
   normalizeVesselText,
   sortVesselOperationTrailersForArrivals,
+  validateTrailerPlanning,
   type VesselOperationRecord,
-  type VesselOperationStatus,
   type VesselOperationTrailerRecord,
   type VesselPriorityLevel,
   type VesselTrailerStatus,
 } from "@/lib/vessel-operations";
+import type { TrailerOwnershipType } from "@/lib/trailer-ownership";
 
 type FleetTrailer = {
   id: string;
@@ -43,6 +45,9 @@ type DraftTrailer = {
   clientId: string;
   trailer_id?: string | null;
   trailer_number: string;
+  ownership_type: TrailerOwnershipType;
+  trailer_source: "company" | "outsourced" | "unknown" | "local";
+  external_company: string;
   customer: string;
   booking_reference: string;
   load_description: string;
@@ -53,6 +58,7 @@ type DraftTrailer = {
   priority_reason: string;
   planned_destination: string;
   planning_notes: string;
+  manifest_change_reason: string;
   status: VesselTrailerStatus;
 };
 
@@ -60,6 +66,9 @@ const emptyDraft = (): DraftTrailer => ({
   clientId: crypto.randomUUID(),
   trailer_id: null,
   trailer_number: "",
+  ownership_type: "unknown",
+  trailer_source: "unknown",
+  external_company: "",
   customer: "",
   booking_reference: "",
   load_description: "",
@@ -70,6 +79,7 @@ const emptyDraft = (): DraftTrailer => ({
   priority_reason: "",
   planned_destination: "Compound",
   planning_notes: "",
+  manifest_change_reason: "",
   status: "expected",
 });
 
@@ -181,6 +191,20 @@ const parseImportedRows = (rawText: string) => {
   }).filter((row) => Boolean(row.trailer_number));
 };
 
+const resolveOperatorName = async () => {
+  const { data } = await supabase.auth.getUser();
+  const user = data.user;
+  if (!user) {
+    return "TrailerHub User";
+  }
+
+  const metadataName =
+    (typeof user.user_metadata?.full_name === "string" && user.user_metadata.full_name.trim()) ||
+    (typeof user.user_metadata?.name === "string" && user.user_metadata.name.trim());
+
+  return metadataName || user.email || user.id || "TrailerHub User";
+};
+
 function VesselPlanningPageContent() {
   const params = useParams();
   const router = useRouter();
@@ -188,6 +212,7 @@ function VesselPlanningPageContent() {
 
   const [operation, setOperation] = useState<VesselOperationRecord | null>(null);
   const [trailers, setTrailers] = useState<DraftTrailer[]>([]);
+  const [persistedTrailerIds, setPersistedTrailerIds] = useState<Set<string>>(new Set());
   const [fleetTrailers, setFleetTrailers] = useState<FleetTrailer[]>([]);
   const [newDraft, setNewDraft] = useState<DraftTrailer>(emptyDraft);
   const [importText, setImportText] = useState("");
@@ -198,7 +223,7 @@ function VesselPlanningPageContent() {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
-  const isEditable = (operation?.list_status ?? "draft") === "draft" || (operation?.list_status ?? "draft") === "reopened";
+  const isEditable = operation?.status !== "completed" && operation?.status !== "cancelled";
 
   useEffect(() => {
     const loadPlanning = async () => {
@@ -215,19 +240,18 @@ function VesselPlanningPageContent() {
         const [operationResult, trailersResult, fleetResult] = await Promise.all([
           supabase
             .from("vessel_operations")
-            .select("id, vessel_name, sailing_reference, origin_port, berth, expected_arrival_at, actual_arrival_at, status, list_status, list_confirmed_at, list_confirmed_by, notes, created_at, updated_at")
+            .select("id, vessel_name, sailing_reference, origin_port, berth, expected_arrival_at, actual_arrival_at, status, list_status, list_confirmed_at, list_confirmed_by, notes, completed_at, completed_by, final_locked_at, created_at, updated_at")
             .eq("id", operationId)
             .single(),
           supabase
             .from("vessel_operation_trailers")
-            .select("id, vessel_operation_id, trailer_id, trailer_number, customer, booking_reference, load_status, load_description, temperature_required, expected_front_temperature, expected_rear_temperature, expected_temperature_unit, priority_level, priority_reason, planned_destination, planning_notes, status, arrived_at, arrival_confirmed_by, inspection_started_at, inspection_completed_at, position_assigned_at, assigned_position, has_damage, has_temperature_alert, created_at, updated_at")
+            .select("id, vessel_operation_id, trailer_id, trailer_number, customer, booking_reference, load_status, load_description, temperature_required, expected_front_temperature, expected_rear_temperature, expected_temperature_unit, priority_level, priority_reason, planned_destination, planning_notes, ownership_type, trailer_source, external_company, manifest_change_reason, status, arrived_at, arrival_confirmed_by, inspection_started_at, inspection_completed_at, position_assigned_at, assigned_position, has_damage, has_temperature_alert, created_at, updated_at")
             .eq("vessel_operation_id", operationId)
             .order("created_at", { ascending: true }),
           supabase
             .from("trailers")
             .select("id, trailer_number, customer, load_description, load_status, departure_date, compound_position, trailer_source, external_company, is_local")
             .is("departure_date", null)
-            .neq("is_local", true)
             .order("trailer_number", { ascending: true }),
         ]);
 
@@ -240,6 +264,13 @@ function VesselPlanningPageContent() {
           clientId: row.id,
           trailer_id: row.trailer_id ?? null,
           trailer_number: row.trailer_number ?? "",
+          ownership_type: (row.ownership_type === "company" || row.ownership_type === "outsourcing" || row.ownership_type === "unknown"
+            ? row.ownership_type
+            : "unknown") as TrailerOwnershipType,
+          trailer_source: (row.trailer_source === "company" || row.trailer_source === "outsourced" || row.trailer_source === "local"
+            ? row.trailer_source
+            : "unknown") as DraftTrailer["trailer_source"],
+          external_company: row.external_company ?? "",
           customer: row.customer ?? "",
           booking_reference: row.booking_reference ?? "",
           load_description: row.load_description ?? "",
@@ -252,14 +283,16 @@ function VesselPlanningPageContent() {
               ? String(row.expected_rear_temperature)
               : "",
           expected_temperature_unit: normalizeExpectedTemperatureUnit(row.expected_temperature_unit),
-          priority_level: row.priority_level,
+          priority_level: (row.priority_level ?? "normal") as VesselPriorityLevel,
           priority_reason: row.priority_reason ?? "",
           planned_destination: row.planned_destination ?? "Compound",
           planning_notes: row.planning_notes ?? "",
-          status: row.status,
+          manifest_change_reason: row.manifest_change_reason ?? "",
+          status: (row.status ?? "expected") as VesselTrailerStatus,
         }));
 
         setTrailers(sortVesselOperationTrailersForArrivals(nextTrailers));
+        setPersistedTrailerIds(new Set(nextTrailers.map((item) => item.clientId)));
         setFleetTrailers((fleetResult.data ?? []) as FleetTrailer[]);
         setNewDraft(emptyDraft());
       } catch (loadErr) {
@@ -288,10 +321,129 @@ function VesselPlanningPageContent() {
 
   const summary = useMemo(() => computeVesselOperationSummary(trailers), [trailers]);
 
+  const toValidationInput = (trailer: DraftTrailer): Pick<
+    VesselOperationTrailerRecord,
+    | "id"
+    | "trailer_number"
+    | "customer"
+    | "priority_level"
+    | "planned_destination"
+    | "temperature_required"
+    | "expected_front_temperature"
+    | "expected_rear_temperature"
+    | "ownership_type"
+    | "external_company"
+    | "status"
+    | "arrival_status"
+  > => {
+    const front = parseOptionalTemperatureInput(trailer.expected_front_temperature);
+    const rear = parseOptionalTemperatureInput(trailer.expected_rear_temperature);
+
+    return {
+      id: trailer.clientId,
+      trailer_number: trailer.trailer_number,
+      customer: trailer.customer,
+      priority_level: trailer.priority_level,
+      planned_destination: trailer.planned_destination,
+      temperature_required: front.value !== null ? String(front.value) : null,
+      expected_front_temperature: front.value,
+      expected_rear_temperature: rear.value,
+      ownership_type: trailer.ownership_type,
+      external_company: trailer.external_company,
+      status: trailer.status,
+      arrival_status: "expected",
+    };
+  };
+
+  const trailerPlanningIssues = useMemo(() => {
+    const issuesById = new Map<string, string[]>();
+
+    for (const trailer of trailers) {
+      const validation = validateTrailerPlanning(toValidationInput(trailer));
+      if (validation.issues.length > 0) {
+        issuesById.set(
+          trailer.clientId,
+          validation.issues.map((issue) => issue.message),
+        );
+      }
+    }
+
+    return issuesById;
+  }, [trailers]);
+
+  const isLocalSource = (value?: string | null) => normalizeVesselText(value) === "local";
+
+  const applyOwnershipToDraft = (draft: DraftTrailer, requestedOwnership: TrailerOwnershipType): DraftTrailer => {
+    const nextOwnership = applyPlanningOwnershipSelection(
+      requestedOwnership,
+      draft.trailer_source,
+      draft.external_company,
+    );
+
+    return {
+      ...draft,
+      ownership_type: nextOwnership.ownershipType,
+      trailer_source: nextOwnership.trailerSource,
+      external_company: nextOwnership.externalCompany,
+    };
+  };
+
+  const applyOwnershipForTrailer = (clientId: string, requestedOwnership: TrailerOwnershipType) => {
+    setTrailers((current) =>
+      sortVesselOperationTrailersForArrivals(
+        current.map((item) => {
+          if (item.clientId !== clientId) {
+            return item;
+          }
+          return applyOwnershipToDraft(item, requestedOwnership);
+        }),
+      ),
+    );
+  };
+
   const updateDraft = <K extends keyof DraftTrailer>(field: K, value: DraftTrailer[K], clientId: string) => {
     setTrailers((current) =>
       sortVesselOperationTrailersForArrivals(
-        current.map((item) => (item.clientId === clientId ? { ...item, [field]: value } : item)),
+        current.map((item) => {
+          if (item.clientId !== clientId) {
+            return item;
+          }
+
+          if (field === "ownership_type") {
+            return applyOwnershipToDraft(item, value as TrailerOwnershipType);
+          }
+
+          if (field === "trailer_source") {
+            const requestedSource = value as DraftTrailer["trailer_source"];
+            if (requestedSource === "local") {
+              return {
+                ...item,
+                trailer_source: "local",
+                ownership_type: "unknown",
+                external_company: "",
+              };
+            }
+
+            const requestedOwnership: TrailerOwnershipType =
+              requestedSource === "outsourced"
+                ? "outsourcing"
+                : (requestedSource === "company" ? "company" : "unknown");
+            const canonicalOwnership = applyPlanningOwnershipSelection(
+              requestedOwnership,
+              requestedSource,
+              item.external_company,
+            );
+
+            return {
+              ...item,
+              ownership_type: canonicalOwnership.ownershipType,
+              trailer_source: canonicalOwnership.trailerSource,
+              external_company: canonicalOwnership.externalCompany,
+            };
+          }
+
+          return { ...item, [field]: value };
+        }),
       ),
     );
   };
@@ -313,10 +465,29 @@ function VesselPlanningPageContent() {
       return;
     }
 
+    const canonicalOwnership = applyPlanningOwnershipSelection(
+      newDraft.ownership_type,
+      newDraft.trailer_source,
+      newDraft.external_company,
+    );
+
+    if (canonicalOwnership.ownershipType === "outsourcing" && !canonicalOwnership.externalCompany) {
+      setError("Enter external company for outsourcing trailer.");
+      return;
+    }
+
+    if (canonicalOwnership.ownershipType === "unknown") {
+      setError("Select trailer ownership.");
+      return;
+    }
+
     const nextTrailer: DraftTrailer = {
       ...newDraft,
       clientId: crypto.randomUUID(),
       trailer_number: trailerNumber,
+      ownership_type: canonicalOwnership.ownershipType,
+      trailer_source: canonicalOwnership.trailerSource,
+      external_company: canonicalOwnership.externalCompany,
       status: "expected",
       planned_destination: newDraft.planned_destination.trim() || "Compound",
     };
@@ -360,7 +531,7 @@ function VesselPlanningPageContent() {
 
   const savePlanning = async () => {
     if (!operation || !isEditable) {
-      return;
+      return false;
     }
 
     const normalizedNumbers = new Set<string>();
@@ -368,24 +539,39 @@ function VesselPlanningPageContent() {
       const normalized = normalizeTrailerNumber(trailer.trailer_number);
       if (!normalized) {
         setError("Every trailer needs a trailer number.");
-        return;
+        return false;
       }
 
       if (normalizedNumbers.has(normalized)) {
         setError(`Duplicate trailer number found: ${normalized}`);
-        return;
+        return false;
+      }
+
+      if (!trailer.planned_destination.trim()) {
+        setError(`${normalized}: planned destination is required.`);
+        return false;
+      }
+
+      if (trailer.ownership_type === "outsourcing" && !trailer.external_company.trim()) {
+        setError(`${normalized}: enter external company for outsourcing trailer.`);
+        return false;
+      }
+
+      if (trailer.ownership_type === "unknown") {
+        setError(`${normalized}: select trailer ownership.`);
+        return false;
       }
 
       const parsedFront = parseOptionalTemperatureInput(trailer.expected_front_temperature);
       if (parsedFront.error) {
         setError(`${normalized}: expected front temperature must be numeric.`);
-        return;
+        return false;
       }
 
       const parsedRear = parseOptionalTemperatureInput(trailer.expected_rear_temperature);
       if (parsedRear.error) {
         setError(`${normalized}: expected rear temperature must be numeric.`);
-        return;
+        return false;
       }
 
       normalizedNumbers.add(normalized);
@@ -397,39 +583,112 @@ function VesselPlanningPageContent() {
 
     try {
       const nowIso = new Date().toISOString();
-      const { error: deleteError } = await supabase.from("vessel_operation_trailers").delete().eq("vessel_operation_id", operation.id);
-      if (deleteError) throw deleteError;
+      const operatorName = await resolveOperatorName();
+      const isPostConfirmation = (operation.list_status ?? "draft") === "confirmed";
 
-      const rowsToInsert = trailers.map((trailer) => {
+      const rowsToPersist = trailers.map((trailer) => {
         const parsedFront = parseOptionalTemperatureInput(trailer.expected_front_temperature);
         const parsedRear = parseOptionalTemperatureInput(trailer.expected_rear_temperature);
         const unit = normalizeExpectedTemperatureUnit(trailer.expected_temperature_unit || "C");
+        const canonicalOwnership = applyPlanningOwnershipSelection(
+          trailer.ownership_type,
+          trailer.trailer_source,
+          trailer.external_company,
+        );
 
         return {
-        vessel_operation_id: operation.id,
-        trailer_id: trailer.trailer_id ?? null,
-        trailer_number: normalizeTrailerNumber(trailer.trailer_number),
-        customer: trailer.customer.trim() || null,
-        booking_reference: trailer.booking_reference.trim() || null,
-        load_description: trailer.load_description.trim() || null,
-        expected_front_temperature: parsedFront.value,
-        expected_rear_temperature: parsedRear.value,
-        expected_temperature_unit: unit,
-        temperature_required: parsedFront.value !== null ? String(parsedFront.value) : null,
-        priority_level: trailer.priority_level,
-        priority_reason: trailer.priority_reason.trim() || null,
-        planned_destination: trailer.planned_destination.trim() || "Compound",
-        planning_notes: trailer.planning_notes.trim() || null,
-        status: "expected" as VesselTrailerStatus,
-        arrival_status: "expected",
-        created_at: nowIso,
-        updated_at: nowIso,
-      }});
+          vessel_operation_id: operation.id,
+          trailer_id: trailer.trailer_id ?? null,
+          trailer_number: normalizeTrailerNumber(trailer.trailer_number),
+          ownership_type: canonicalOwnership.ownershipType,
+          trailer_source: canonicalOwnership.trailerSource,
+          external_company: canonicalOwnership.externalCompany || null,
+          customer: trailer.customer.trim() || null,
+          booking_reference: trailer.booking_reference.trim() || null,
+          load_description: trailer.load_description.trim() || null,
+          expected_front_temperature: parsedFront.value,
+          expected_rear_temperature: parsedRear.value,
+          expected_temperature_unit: unit,
+          temperature_required: parsedFront.value !== null ? String(parsedFront.value) : null,
+          priority_level: trailer.priority_level,
+          priority_reason: trailer.priority_reason.trim() || null,
+          planned_destination: trailer.planned_destination.trim() || "Compound",
+          planning_notes: trailer.planning_notes.trim() || null,
+          manifest_change_reason: trailer.manifest_change_reason.trim() || null,
+          status: "expected" as VesselTrailerStatus,
+          arrival_status: isPostConfirmation ? "available_for_arrival" : "expected",
+          added_after_confirmation: isPostConfirmation,
+          added_after_confirmation_at: isPostConfirmation ? nowIso : null,
+          added_after_confirmation_by: isPostConfirmation ? operatorName : null,
+          created_at: nowIso,
+          updated_at: nowIso,
+        };
+      });
 
-      const { error: insertError } = await supabase.from("vessel_operation_trailers").insert(rowsToInsert);
-      if (insertError) throw insertError;
+      for (const trailer of trailers) {
+        const parsedFront = parseOptionalTemperatureInput(trailer.expected_front_temperature);
+        const parsedRear = parseOptionalTemperatureInput(trailer.expected_rear_temperature);
+        const unit = normalizeExpectedTemperatureUnit(trailer.expected_temperature_unit || "C");
+        const canonicalOwnership = applyPlanningOwnershipSelection(
+          trailer.ownership_type,
+          trailer.trailer_source,
+          trailer.external_company,
+        );
+        const updatePayload = {
+          trailer_id: trailer.trailer_id ?? null,
+          trailer_number: normalizeTrailerNumber(trailer.trailer_number),
+          ownership_type: canonicalOwnership.ownershipType,
+          trailer_source: canonicalOwnership.trailerSource,
+          external_company: canonicalOwnership.externalCompany || null,
+          customer: trailer.customer.trim() || null,
+          booking_reference: trailer.booking_reference.trim() || null,
+          load_description: trailer.load_description.trim() || null,
+          expected_front_temperature: parsedFront.value,
+          expected_rear_temperature: parsedRear.value,
+          expected_temperature_unit: unit,
+          temperature_required: parsedFront.value !== null ? String(parsedFront.value) : null,
+          priority_level: trailer.priority_level,
+          priority_reason: trailer.priority_reason.trim() || null,
+          planned_destination: trailer.planned_destination.trim() || "Compound",
+          planning_notes: trailer.planning_notes.trim() || null,
+          manifest_change_reason: trailer.manifest_change_reason.trim() || null,
+          updated_at: nowIso,
+        };
 
-      for (const trailer of rowsToInsert) {
+        if (persistedTrailerIds.has(trailer.clientId)) {
+          const { error: updateError } = await supabase
+            .from("vessel_operation_trailers")
+            .update(updatePayload)
+            .eq("id", trailer.clientId)
+            .eq("vessel_operation_id", operation.id);
+
+          if (updateError) {
+            throw updateError;
+          }
+          continue;
+        }
+
+        const insertPayload = {
+          ...updatePayload,
+          vessel_operation_id: operation.id,
+          status: "expected" as VesselTrailerStatus,
+          arrival_status: isPostConfirmation ? "available_for_arrival" : "expected",
+          added_after_confirmation: isPostConfirmation,
+          added_after_confirmation_at: isPostConfirmation ? nowIso : null,
+          added_after_confirmation_by: isPostConfirmation ? operatorName : null,
+          created_at: nowIso,
+        };
+
+        const { error: insertError } = await supabase
+          .from("vessel_operation_trailers")
+          .insert(insertPayload);
+
+        if (insertError) {
+          throw insertError;
+        }
+      }
+
+      for (const trailer of rowsToPersist) {
         const eventPayload = {
           trailer_id: trailer.trailer_id,
           trailer_number: trailer.trailer_number,
@@ -452,39 +711,48 @@ function VesselPlanningPageContent() {
       router.refresh();
       const { data: reloadedTrailers } = await supabase
         .from("vessel_operation_trailers")
-        .select("id, vessel_operation_id, trailer_id, trailer_number, customer, booking_reference, load_status, load_description, temperature_required, expected_front_temperature, expected_rear_temperature, expected_temperature_unit, priority_level, priority_reason, planned_destination, planning_notes, status, arrived_at, arrival_confirmed_by, inspection_started_at, inspection_completed_at, position_assigned_at, assigned_position, has_damage, has_temperature_alert, created_at, updated_at")
+        .select("id, vessel_operation_id, trailer_id, trailer_number, customer, booking_reference, load_status, load_description, temperature_required, expected_front_temperature, expected_rear_temperature, expected_temperature_unit, priority_level, priority_reason, planned_destination, planning_notes, ownership_type, trailer_source, external_company, manifest_change_reason, status, arrived_at, arrival_confirmed_by, inspection_started_at, inspection_completed_at, position_assigned_at, assigned_position, has_damage, has_temperature_alert, created_at, updated_at")
         .eq("vessel_operation_id", operation.id)
         .order("created_at", { ascending: true });
 
-      setTrailers(
-        sortVesselOperationTrailersForArrivals(
-          ((reloadedTrailers ?? []) as VesselOperationTrailerRecord[]).map((row) => ({
-            clientId: row.id,
-            trailer_id: row.trailer_id ?? null,
-            trailer_number: row.trailer_number ?? "",
-            customer: row.customer ?? "",
-            booking_reference: row.booking_reference ?? "",
-            load_description: row.load_description ?? "",
-            expected_front_temperature:
-              typeof row.expected_front_temperature === "number"
-                ? String(row.expected_front_temperature)
-                : parseLegacyFrontExpectedTemperature(row.temperature_required),
-            expected_rear_temperature:
-              typeof row.expected_rear_temperature === "number"
-                ? String(row.expected_rear_temperature)
-                : "",
-            expected_temperature_unit: normalizeExpectedTemperatureUnit(row.expected_temperature_unit),
-            priority_level: row.priority_level,
-            priority_reason: row.priority_reason ?? "",
-            planned_destination: row.planned_destination ?? "Compound",
-            planning_notes: row.planning_notes ?? "",
-            status: row.status,
-          })),
-        ),
-      );
+      const mappedReload = ((reloadedTrailers ?? []) as VesselOperationTrailerRecord[]).map((row) => ({
+        clientId: row.id,
+        trailer_id: row.trailer_id ?? null,
+        trailer_number: row.trailer_number ?? "",
+        ownership_type: (row.ownership_type === "company" || row.ownership_type === "outsourcing" || row.ownership_type === "unknown"
+          ? row.ownership_type
+          : "unknown") as TrailerOwnershipType,
+        trailer_source: (row.trailer_source === "company" || row.trailer_source === "outsourced" || row.trailer_source === "local"
+          ? row.trailer_source
+          : "unknown") as DraftTrailer["trailer_source"],
+        external_company: row.external_company ?? "",
+        customer: row.customer ?? "",
+        booking_reference: row.booking_reference ?? "",
+        load_description: row.load_description ?? "",
+        expected_front_temperature:
+          typeof row.expected_front_temperature === "number"
+            ? String(row.expected_front_temperature)
+            : parseLegacyFrontExpectedTemperature(row.temperature_required),
+        expected_rear_temperature:
+          typeof row.expected_rear_temperature === "number"
+            ? String(row.expected_rear_temperature)
+            : "",
+        expected_temperature_unit: normalizeExpectedTemperatureUnit(row.expected_temperature_unit),
+        priority_level: (row.priority_level ?? "normal") as VesselPriorityLevel,
+        priority_reason: row.priority_reason ?? "",
+        planned_destination: row.planned_destination ?? "Compound",
+        planning_notes: row.planning_notes ?? "",
+        manifest_change_reason: row.manifest_change_reason ?? "",
+        status: (row.status ?? "expected") as VesselTrailerStatus,
+      }));
+
+      setTrailers(sortVesselOperationTrailersForArrivals(mappedReload));
+      setPersistedTrailerIds(new Set(mappedReload.map((item) => item.clientId)));
+      return true;
     } catch (saveErr) {
       console.error("Unable to save planning:", saveErr);
       setError("Unable to save planning.");
+      return false;
     } finally {
       setIsSaving(false);
     }
@@ -495,25 +763,18 @@ function VesselPlanningPageContent() {
       return;
     }
 
-    await savePlanning();
-
-    try {
-      const nowIso = new Date().toISOString();
-      const { error: updateError } = await supabase
-        .from("vessel_operations")
-        .update({ status: "arriving" as VesselOperationStatus, updated_at: nowIso })
-        .eq("id", operation.id);
-
-      if (updateError) {
-        throw updateError;
-      }
-
-      setSuccess("Arrivals started.");
-      router.push(`/dashboard/vessel-operations/${operation.id}/arrivals`);
-    } catch (startErr) {
-      console.error("Unable to start arrivals:", startErr);
-      setError("Unable to start arrivals.");
+    const saved = await savePlanning();
+    if (!saved) {
+      return;
     }
+
+    if ((operation.list_status ?? "draft") !== "confirmed") {
+      setSuccess("Planning saved. Confirm the vessel list before arrivals.");
+      router.push(`/dashboard/vessel-operations/${operation.id}`);
+      return;
+    }
+
+    router.push(`/dashboard/vessel-operations/${operation.id}/arrivals`);
   };
 
   if (isLoading) {
@@ -562,7 +823,7 @@ function VesselPlanningPageContent() {
                 onClick={() => void startArrivals()}
                 className="rounded-2xl border border-amber-500/30 bg-amber-500/15 px-4 py-2 text-sm font-semibold text-amber-100 hover:bg-amber-500/25 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                Start Arrivals
+                Continue To Arrivals
               </button>
             </div>
           </div>
@@ -585,7 +846,7 @@ function VesselPlanningPageContent() {
               <p className="mt-2 text-sm text-slate-300">Create the expected trailer list before the ferry arrives.</p>
             </div>
             {!isEditable ? (
-              <p className="rounded-2xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-100">Planning is read-only once arrivals have started.</p>
+              <p className="rounded-2xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-100">Planning is read-only after final completion.</p>
             ) : null}
           </div>
 
@@ -599,6 +860,76 @@ function VesselPlanningPageContent() {
                     onChange={(event) => updateNewDraft("trailer_number", event.target.value)}
                     className="w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm outline-none"
                     placeholder="PRO810"
+                    disabled={!isEditable}
+                  />
+                </div>
+
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-slate-200">Ownership *</label>
+                  <select
+                    value={newDraft.ownership_type}
+                    onChange={(event) => {
+                      setNewDraft((current) =>
+                        applyOwnershipToDraft(current, event.target.value as TrailerOwnershipType),
+                      );
+                    }}
+                    className="w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm outline-none"
+                    disabled={!isEditable}
+                  >
+                    <option value="company">Company Trailer</option>
+                    <option value="outsourcing">Outsourcing Trailer</option>
+                    <option value="unknown">Unknown</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-slate-200">Source</label>
+                  <select
+                    value={newDraft.trailer_source}
+                    onChange={(event) => {
+                      const source = event.target.value as DraftTrailer["trailer_source"];
+                      if (source === "local") {
+                        setNewDraft((current) => ({
+                          ...current,
+                          trailer_source: "local",
+                          ownership_type: "unknown",
+                          external_company: "",
+                        }));
+                        return;
+                      }
+
+                      setNewDraft((current) => {
+                        const requestedOwnership: TrailerOwnershipType =
+                          source === "outsourced" ? "outsourcing" : (source === "company" ? "company" : "unknown");
+                        const canonicalOwnership = applyPlanningOwnershipSelection(
+                          requestedOwnership,
+                          source,
+                          current.external_company,
+                        );
+                        return {
+                          ...current,
+                          ownership_type: canonicalOwnership.ownershipType,
+                          trailer_source: canonicalOwnership.trailerSource,
+                          external_company: canonicalOwnership.externalCompany,
+                        };
+                      });
+                    }}
+                    className="w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm outline-none"
+                    disabled={!isEditable}
+                  >
+                    <option value="unknown">Unknown</option>
+                    <option value="company">Company Fleet</option>
+                    <option value="outsourced">Outsourcing</option>
+                    <option value="local">Local Trailer</option>
+                  </select>
+                </div>
+
+                <div className="md:col-span-2" hidden={newDraft.ownership_type !== "outsourcing"}>
+                  <label className="mb-2 block text-sm font-medium text-slate-200">External Company / Supplier *</label>
+                  <input
+                    value={newDraft.external_company}
+                    onChange={(event) => updateNewDraft("external_company", event.target.value)}
+                    className="w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm outline-none"
                     disabled={!isEditable}
                   />
                 </div>
@@ -686,6 +1017,16 @@ function VesselPlanningPageContent() {
                   <label className="mb-2 block text-sm font-medium text-slate-200">Planning Notes</label>
                   <textarea value={newDraft.planning_notes} onChange={(event) => updateNewDraft("planning_notes", event.target.value)} rows={3} className="w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm outline-none" disabled={!isEditable} />
                 </div>
+
+                <div className="md:col-span-2">
+                  <label className="mb-2 block text-sm font-medium text-slate-200">Manifest Change Reason</label>
+                  <input
+                    value={newDraft.manifest_change_reason}
+                    onChange={(event) => updateNewDraft("manifest_change_reason", event.target.value)}
+                    className="w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm outline-none"
+                    disabled={!isEditable}
+                  />
+                </div>
               </div>
 
               <div className="mt-4 flex flex-wrap gap-2">
@@ -712,12 +1053,12 @@ function VesselPlanningPageContent() {
               </div>
 
               <div className="mt-4">
-                <label className="mb-2 block text-sm font-medium text-slate-200">Company Fleet Search</label>
+                <label className="mb-2 block text-sm font-medium text-slate-200">Existing Trailer Search</label>
                 <input
                   value={fleetSearch}
                   onChange={(event) => setFleetSearch(event.target.value)}
                   className="w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm outline-none"
-                  placeholder="Search company fleet trailers"
+                  placeholder="Search company, outsourcing, local, or supplier trailers"
                   disabled={!isEditable}
                 />
 
@@ -731,13 +1072,29 @@ function VesselPlanningPageContent() {
                         type="button"
                         onClick={() => {
                           setSelectedFleetTrailerId(fleetTrailer.id);
-                          setNewDraft((current) => ({
-                            ...current,
-                            trailer_id: fleetTrailer.id,
-                            trailer_number: fleetTrailer.trailer_number ?? current.trailer_number,
-                            customer: fleetTrailer.customer ?? current.customer,
-                            load_description: fleetTrailer.load_description ?? current.load_description,
-                          }));
+                          setNewDraft((current) => {
+                            const sourceHint: DraftTrailer["trailer_source"] = fleetTrailer.is_local
+                              ? "local"
+                              : (fleetTrailer.trailer_source === "outsourced" ? "outsourced" : "company");
+                            const requestedOwnership: TrailerOwnershipType =
+                              sourceHint === "outsourced" ? "outsourcing" : (sourceHint === "company" ? "company" : "unknown");
+                            const canonicalOwnership = applyPlanningOwnershipSelection(
+                              requestedOwnership,
+                              sourceHint,
+                              fleetTrailer.external_company ?? current.external_company,
+                            );
+
+                            return {
+                              ...current,
+                              trailer_id: fleetTrailer.id,
+                              trailer_number: fleetTrailer.trailer_number ?? current.trailer_number,
+                              ownership_type: canonicalOwnership.ownershipType,
+                              trailer_source: canonicalOwnership.trailerSource,
+                              external_company: canonicalOwnership.externalCompany,
+                              customer: fleetTrailer.customer ?? current.customer,
+                              load_description: fleetTrailer.load_description ?? current.load_description,
+                            };
+                          });
                         }}
                         className={`w-full border-b border-white/5 px-4 py-3 text-left text-sm hover:bg-white/5 ${selectedFleetTrailerId === fleetTrailer.id ? "bg-cyan-500/10 text-cyan-100" : "text-slate-200"}`}
                       >
@@ -778,14 +1135,32 @@ function VesselPlanningPageContent() {
                         <p className="text-xl font-semibold text-white">{trailer.trailer_number || "Trailer Number"}</p>
                         <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${getVesselPriorityClass(trailer.priority_level)}`}>{getVesselPriorityLabel(trailer.priority_level)}</span>
                         <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${getVesselTrailerStatusClass(trailer.status)}`}>{getVesselTrailerStatusLabel(trailer.status)}</span>
+                        {isLocalSource(trailer.trailer_source) ? (
+                          <span className="rounded-full border border-amber-400/50 bg-amber-500/10 px-3 py-1 text-xs font-semibold text-amber-200">Local Trailer</span>
+                        ) : null}
                       </div>
                       <p className="text-sm text-slate-300">Planned Destination: {trailer.planned_destination || "-"}</p>
+                      <p className="text-sm text-slate-300">Ownership: {trailer.ownership_type}</p>
+                      <p className="text-sm text-slate-300">Source: {trailer.trailer_source}</p>
                       <p className="text-sm text-slate-300">Customer: {trailer.customer || "-"}</p>
+                      {trailer.ownership_type === "outsourcing" ? <p className="text-sm text-slate-300">External Company: {trailer.external_company || "-"}</p> : null}
                       <p className="text-sm text-slate-300">Booking Reference: {trailer.booking_reference || "-"}</p>
                     </div>
 
                     <div className="grid flex-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
                       <input value={trailer.trailer_number} onChange={(event) => updateDraft("trailer_number", event.target.value, trailer.clientId)} className="rounded-2xl border border-white/10 bg-slate-900 px-4 py-3 text-sm outline-none" disabled={!isEditable} placeholder="Trailer Number" />
+                      <select value={trailer.ownership_type} onChange={(event) => applyOwnershipForTrailer(trailer.clientId, event.target.value as TrailerOwnershipType)} className="rounded-2xl border border-white/10 bg-slate-900 px-4 py-3 text-sm outline-none" disabled={!isEditable || isLocalSource(trailer.trailer_source)}>
+                        <option value="company">Company Trailer</option>
+                        <option value="outsourcing">Outsourcing Trailer</option>
+                        <option value="unknown">Unknown</option>
+                      </select>
+                      <select value={trailer.trailer_source} onChange={(event) => updateDraft("trailer_source", event.target.value as DraftTrailer["trailer_source"], trailer.clientId)} className="rounded-2xl border border-white/10 bg-slate-900 px-4 py-3 text-sm outline-none" disabled={!isEditable}>
+                        <option value="unknown">Source: Unknown</option>
+                        <option value="company">Source: Company Fleet</option>
+                        <option value="outsourced">Source: Outsourcing</option>
+                        <option value="local">Source: Local Trailer</option>
+                      </select>
+                      <input value={trailer.external_company} onChange={(event) => updateDraft("external_company", event.target.value, trailer.clientId)} className="rounded-2xl border border-white/10 bg-slate-900 px-4 py-3 text-sm outline-none" disabled={!isEditable || trailer.ownership_type !== "outsourcing" || isLocalSource(trailer.trailer_source)} placeholder="External Company" hidden={trailer.ownership_type !== "outsourcing" || isLocalSource(trailer.trailer_source)} />
                       <input value={trailer.customer} onChange={(event) => updateDraft("customer", event.target.value, trailer.clientId)} className="rounded-2xl border border-white/10 bg-slate-900 px-4 py-3 text-sm outline-none" disabled={!isEditable} placeholder="Customer" />
                       <input value={trailer.booking_reference} onChange={(event) => updateDraft("booking_reference", event.target.value, trailer.clientId)} className="rounded-2xl border border-white/10 bg-slate-900 px-4 py-3 text-sm outline-none" disabled={!isEditable} placeholder="Booking Reference" />
                       <input value={trailer.load_description} onChange={(event) => updateDraft("load_description", event.target.value, trailer.clientId)} className="rounded-2xl border border-white/10 bg-slate-900 px-4 py-3 text-sm outline-none" disabled={!isEditable} placeholder="Load Description" />
@@ -801,9 +1176,15 @@ function VesselPlanningPageContent() {
                       </select>
                       <input value={trailer.priority_reason} onChange={(event) => updateDraft("priority_reason", event.target.value, trailer.clientId)} className="rounded-2xl border border-white/10 bg-slate-900 px-4 py-3 text-sm outline-none" disabled={!isEditable} placeholder="Priority Reason" />
                       <input list="planned-destinations" value={trailer.planned_destination} onChange={(event) => updateDraft("planned_destination", event.target.value, trailer.clientId)} className="rounded-2xl border border-white/10 bg-slate-900 px-4 py-3 text-sm outline-none" disabled={!isEditable} placeholder="Planned Destination" />
+                      <input value={trailer.manifest_change_reason} onChange={(event) => updateDraft("manifest_change_reason", event.target.value, trailer.clientId)} className="rounded-2xl border border-white/10 bg-slate-900 px-4 py-3 text-sm outline-none" disabled={!isEditable} placeholder="Manifest Change Reason" />
                       <textarea value={trailer.planning_notes} onChange={(event) => updateDraft("planning_notes", event.target.value, trailer.clientId)} rows={2} className="rounded-2xl border border-white/10 bg-slate-900 px-4 py-3 text-sm outline-none md:col-span-2 xl:col-span-3" disabled={!isEditable} placeholder="Planning Notes" />
                     </div>
                   </div>
+                  {(trailerPlanningIssues.get(trailer.clientId) ?? []).length > 0 ? (
+                    <div className="mt-3 rounded-2xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-200">
+                      {(trailerPlanningIssues.get(trailer.clientId) ?? []).join(" ")}
+                    </div>
+                  ) : null}
                 </article>
               ))
             )}

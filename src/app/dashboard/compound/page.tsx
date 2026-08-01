@@ -32,6 +32,7 @@ import {
   type CompoundMovementRecord,
   type CompoundPositionSnapshot,
 } from "@/lib/compound-yard";
+import { getTrailerOwnershipBadgeLabel, getTrailerOwnershipType, type TrailerOwnershipType } from "@/lib/trailer-ownership";
 import { loadCompoundReportData } from "@/lib/reports/report-data";
 import { useOperationalRealtime } from "@/lib/realtime/operational-realtime";
 import { createTrailerActivity } from "@/lib/trailer-activity";
@@ -87,6 +88,7 @@ type FilterType = "all" | "ready" | "needs_preparation" | "action_required" | "e
 type OperationalFilter = "all" | "empty" | "loaded" | "maintenance" | "available";
 type PriorityFilter = "all" | "priority";
 type ExportFilter = "all" | "active" | "overdue" | "allocated" | "waiting_loading" | "delivered_empty" | "collected_loaded";
+type OwnershipFilter = "all" | "company" | "outsourcing";
 type SortOption = "trailer_asc" | "trailer_desc" | "position" | "arrival_desc";
 
 // ============================================================================
@@ -267,6 +269,17 @@ const parseExportFilterValue = (value?: string | null): ExportFilter => {
   }
 };
 
+const parseOwnershipFilterValue = (value?: string | null): OwnershipFilter => {
+  const normalized = value?.trim().toLowerCase();
+  switch (normalized) {
+    case "company":
+    case "outsourcing":
+      return normalized;
+    default:
+      return "all";
+  }
+};
+
 // ============================================================================
 // Colour system (operational-importance based)
 // ============================================================================
@@ -389,6 +402,7 @@ export default function CompoundPage() {
   const [customerFilter, setCustomerFilter] = useState<string>("all");
   const [vesselFilter, setVesselFilter] = useState<string>("all");
   const [exportFilter, setExportFilter] = useState<ExportFilter>("all");
+  const [ownershipFilter, setOwnershipFilter] = useState<OwnershipFilter>("all");
   const [tabletMode] = useState<boolean>(() => {
     if (typeof window === "undefined") {
       return false;
@@ -417,6 +431,7 @@ export default function CompoundPage() {
       setCustomerFilter(params.get("customer")?.trim() ?? "all");
       setVesselFilter(params.get("vessel")?.trim() ?? "all");
       setExportFilter(parseExportFilterValue(params.get("export")));
+      setOwnershipFilter(parseOwnershipFilterValue(params.get("ownership")));
       setSortBy(parseSortValue(params.get("sort")));
       setHasSyncedFiltersFromUrl(true);
     };
@@ -492,6 +507,12 @@ export default function CompoundPage() {
       params.delete("export");
     }
 
+    if (ownershipFilter !== "all") {
+      params.set("ownership", ownershipFilter);
+    } else {
+      params.delete("ownership");
+    }
+
     const nextQuery = params.toString();
     const nextUrl = nextQuery ? `${pathname}?${nextQuery}` : pathname;
     const currentUrl = `${window.location.pathname}${window.location.search}`;
@@ -499,7 +520,7 @@ export default function CompoundPage() {
     if (currentUrl !== nextUrl) {
       router.replace(nextUrl, { scroll: false });
     }
-  }, [customerFilter, exportFilter, filter, hasSyncedFiltersFromUrl, operationalFilter, pathname, prefixFilter, priorityFilter, router, search, sortBy, vesselFilter]);
+  }, [customerFilter, exportFilter, filter, hasSyncedFiltersFromUrl, operationalFilter, ownershipFilter, pathname, prefixFilter, priorityFilter, router, search, sortBy, vesselFilter]);
 
   // Load trailers and bookings in parallel ÔÇö single round trip
   const loadData = useCallback(async () => {
@@ -855,6 +876,28 @@ export default function CompoundPage() {
     [],
   );
 
+  const ownershipOptions = useMemo(
+    () => [
+      { value: "all", label: "All ownership" },
+      { value: "company", label: "Company" },
+      { value: "outsourcing", label: "Outsourcing" },
+    ] as Array<{ value: OwnershipFilter; label: string }>,
+    [],
+  );
+
+  const resolveOwnershipType = useCallback((trailer: TrailerRecord | null): TrailerOwnershipType => {
+    if (!trailer) {
+      return "unknown";
+    }
+
+    return getTrailerOwnershipType({
+      trailerSource: trailer.trailer_source,
+      externalCompany: trailer.external_company,
+      isLocal: trailer.is_local,
+      trailerNumber: trailer.trailer_number,
+    });
+  }, []);
+
   // Apply filters then sorting with no additional Supabase queries.
   const filteredPositions = useMemo((): PositionState[] => {
     const term = search.trim().toUpperCase();
@@ -917,6 +960,13 @@ export default function CompoundPage() {
         }
       }
 
+      if (ownershipFilter !== "all") {
+        const ownershipType = resolveOwnershipType(state.trailer);
+        if (ownershipType !== ownershipFilter) {
+          return false;
+        }
+      }
+
       // Existing readiness/queue filter
       switch (filter) {
         case "empty":
@@ -962,7 +1012,7 @@ export default function CompoundPage() {
     });
 
     return sorted;
-  }, [allPositionStates, customerFilter, exportFilter, filter, operationalFilter, priorityFilter, resolvedPrefixFilter, search, sortBy, vesselFilter]);
+  }, [allPositionStates, customerFilter, exportFilter, filter, operationalFilter, ownershipFilter, priorityFilter, resolveOwnershipType, resolvedPrefixFilter, search, sortBy, vesselFilter]);
 
   const shownTrailerCount = useMemo(
     () => filteredPositions.reduce((total, state) => total + (state.trailer ? 1 : 0), 0),
@@ -1009,6 +1059,7 @@ export default function CompoundPage() {
     setCustomerFilter("all");
     setVesselFilter("all");
     setExportFilter("all");
+    setOwnershipFilter("all");
     setSortBy(DEFAULT_SORT);
   }, []);
 
@@ -1085,6 +1136,7 @@ export default function CompoundPage() {
                   { label: "View", value: FILTERS.find((item) => item.value === filter)?.label ?? "All" },
                   { label: "Prefix", value: prefixFilter === PREFIX_FILTER_ALL ? "All" : prefixFilter },
                   { label: "Load Status", value: operationalFilters.find((item) => item.value === operationalFilter)?.label ?? "All statuses" },
+                  { label: "Ownership", value: ownershipOptions.find((item) => item.value === ownershipFilter)?.label ?? "All ownership" },
                   { label: "Search", value: search.trim() || "Current filtered positions" },
                 ]}
               />
@@ -1103,6 +1155,7 @@ export default function CompoundPage() {
               columns={[
                 { key: "position", header: "Position", render: (state) => state.position },
                 { key: "trailer", header: "Trailer", render: (state) => state.trailer?.trailer_number ?? "Available" },
+                { key: "ownership", header: "Ownership", render: (state) => state.trailer ? getTrailerOwnershipBadgeLabel(resolveOwnershipType(state.trailer)) : "—" },
                 { key: "customer", header: "Customer", render: (state) => state.trailer?.customer ?? "—" },
                 { key: "load_status", header: "Load", render: (state) => state.trailer?.load_status ?? "—" },
                 { key: "booking_status", header: "Booking Status", render: (state) => state.booking ? statusLabel(state.booking.status) : "No Booking" },
@@ -1257,6 +1310,19 @@ export default function CompoundPage() {
                       ))}
                     </select>
                   </label>
+
+                  <label className="space-y-2 text-sm text-slate-300">
+                    <span className="block text-xs uppercase tracking-[0.25em] text-slate-500">Ownership</span>
+                    <select
+                      value={ownershipFilter}
+                      onChange={(event) => setOwnershipFilter(event.target.value as OwnershipFilter)}
+                      className="w-full rounded-2xl border border-white/10 bg-slate-950 px-3 py-2 text-sm text-white"
+                    >
+                      {ownershipOptions.map((option) => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))}
+                    </select>
+                  </label>
                 </div>
               </div>
 
@@ -1383,6 +1449,10 @@ export default function CompoundPage() {
                           {state.trailer.load_status ?? "Unknown"}
                         </p>
 
+                        <p className="text-[10px] uppercase tracking-wider text-cyan-300">
+                          {getTrailerOwnershipBadgeLabel(resolveOwnershipType(state.trailer))}
+                        </p>
+
                         {/* Booking Status */}
                         {state.booking ? (
                           <p className="text-[10px] text-slate-400">{statusLabel(state.booking.status)}</p>
@@ -1473,6 +1543,7 @@ export default function CompoundPage() {
                     <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
                       {[
                         { label: "Customer", value: selectedState.trailer.customer },
+                        { label: "Ownership", value: getTrailerOwnershipBadgeLabel(resolveOwnershipType(selectedState.trailer)) },
                         { label: "Consignee", value: selectedState.trailer.consignee },
                         { label: "Load Status", value: selectedState.trailer.load_status },
                         { label: "Container", value: selectedState.trailer.container_number },

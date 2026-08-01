@@ -139,6 +139,17 @@ const buildBaseData = () => ({
   ],
   export_allocations: [],
   delivery_bookings: [],
+  vessel_operations: [
+    {
+      id: "op-1",
+      vessel_name: "MV Caledonia",
+      sailing_reference: "SAIL-100",
+      status: "confirmed",
+      list_status: "confirmed",
+      final_locked_at: null,
+      updated_at: "2026-08-01T09:00:00.000Z",
+    },
+  ],
   vessel_operation_trailers: [
     {
       id: "vt-1",
@@ -244,5 +255,16 @@ describe("SupervisorMobileDashboard", () => {
     expect(await screen.findByText("Completion checklist")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Save Progress" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Complete" })).toBeDisabled();
+  });
+
+  it("opens mobile add trailer sheet from operations tab", async () => {
+    render(<SupervisorMobileDashboard />);
+    const user = userEvent.setup();
+
+    await user.click((await screen.findAllByRole("button", { name: "Ops" }))[0]);
+    await user.click(screen.getByRole("button", { name: "Add Trailer (Mobile)" }));
+
+    expect(await screen.findByText("Mobile Add Trailer")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Trailer number")).toBeInTheDocument();
   });
 });

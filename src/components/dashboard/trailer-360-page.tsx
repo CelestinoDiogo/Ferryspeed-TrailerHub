@@ -1,6 +1,5 @@
 "use client";
 
-import Image from "next/image";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ArrowLeft } from "lucide-react";
@@ -26,7 +25,7 @@ import {
   type TrailerOperationalProfile,
 } from "@/lib/operations/trailer-operational-engine";
 
-const PHOTO_SIGNED_URL_TTL_SECONDS = 60 * 60;
+const PHOTO_SIGNED_URL_TTL_SECONDS = 24 * 60 * 60;
 
 type PhotoView = VesselInspectionPhotoRecord & {
   previewUrl: string;
@@ -372,16 +371,22 @@ export function Trailer360Page({ trailerId }: Trailer360PageProps) {
           .filter((row) => Boolean(row.storage_path))
           .map(async (row) => {
             const storagePath = row.storage_path as string;
-            const signedResult = await supabase.storage
-              .from("vessel-inspection-photos")
-              .createSignedUrl(storagePath, PHOTO_SIGNED_URL_TTL_SECONDS);
-            const previewUrl =
-              signedResult.data?.signedUrl ??
-              supabase.storage.from("vessel-inspection-photos").getPublicUrl(storagePath).data.publicUrl;
+     const { data: signedData, error: signedError } =
+  await supabase.storage
+    .from("vessel-inspection-photos")
+    .createSignedUrl(
+      storagePath,
+      PHOTO_SIGNED_URL_TTL_SECONDS,
+    );
 
-            if (!previewUrl) {
-              throw new Error(`Unable to resolve preview URL for photo ${row.id}`);
-            }
+if (signedError || !signedData?.signedUrl) {
+  throw new Error(
+    signedError?.message ||
+      `Unable to create signed URL for photo ${row.id}`,
+  );
+}
+
+const previewUrl = signedData.signedUrl;
 
             return {
               ...row,
@@ -511,17 +516,17 @@ export function Trailer360Page({ trailerId }: Trailer360PageProps) {
         throw new Error("Photo path missing.");
       }
 
-      const signedResult = await supabase.storage
+      const { data: signedData, error: signedError } = await supabase.storage
         .from("vessel-inspection-photos")
         .createSignedUrl(storagePath, PHOTO_SIGNED_URL_TTL_SECONDS);
 
-      const refreshedUrl =
-        signedResult.data?.signedUrl ??
-        supabase.storage.from("vessel-inspection-photos").getPublicUrl(storagePath).data.publicUrl;
-
-      if (!refreshedUrl) {
-        throw new Error("Unable to refresh photo URL.");
+      if (signedError || !signedData?.signedUrl) {
+        throw new Error(
+          signedError?.message ?? "Unable to refresh photo URL.",
+        );
       }
+
+      const refreshedUrl = signedData.signedUrl;
 
       setPhotos((current) =>
         current.map((row) => (row.id === photo.id ? { ...row, previewUrl: refreshedUrl } : row)),
@@ -1008,7 +1013,21 @@ export function Trailer360Page({ trailerId }: Trailer360PageProps) {
               {photos.map((photo) => (
                 <button key={photo.id} type="button" onClick={() => void getPhotoPreview(photo)} className="overflow-hidden rounded-2xl border border-slate-200 bg-slate-50 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md">
                   <div className="relative aspect-square w-full bg-slate-100">
-                    {photo.previewUrl ? <Image src={photo.previewUrl} alt={photo.file_name ?? "Inspection photo"} fill className="object-cover" /> : null}
+                    {photo.previewUrl ? (
+                      // Signed Supabase URLs must be rendered directly. Next/Image optimization can reject private, temporary URLs.
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={photo.previewUrl}
+                        alt={photo.file_name ?? "Inspection photo"}
+                        className="h-full w-full object-cover"
+                        loading="lazy"
+                        decoding="async"
+                      />
+                    ) : (
+                      <div className="flex h-full w-full items-center justify-center px-4 text-center text-sm text-slate-500">
+                        Photo preview unavailable
+                      </div>
+                    )}
                   </div>
                   <div className="space-y-1 p-4 text-xs text-slate-600">
                     <p className="text-sm font-semibold text-slate-950">{photo.file_name ?? photo.category ?? "Photo"}</p>
@@ -1041,7 +1060,13 @@ export function Trailer360Page({ trailerId }: Trailer360PageProps) {
                 <button type="button" onClick={() => setSelectedPreview(null)} className="rounded-2xl border border-slate-200 bg-slate-100 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-200">Close</button>
               </div>
               <div className="relative h-[70vh] w-[85vw] max-w-5xl bg-slate-100">
-                <Image src={selectedPreview.url} alt={selectedPreview.title} fill className="object-contain" />
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={selectedPreview.url}
+                  alt={selectedPreview.title}
+                  className="h-full w-full object-contain"
+                  decoding="async"
+                />
               </div>
             </div>
           </div>

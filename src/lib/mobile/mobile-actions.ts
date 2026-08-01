@@ -1,7 +1,12 @@
 import { z } from "zod";
 
 export const mobileActionTypes = [
+  "ADD_VESSEL_TRAILER",
   "MARK_ARRIVED",
+  "MARK_CANCELLED",
+  "MARK_NO_SHOW",
+  "UNDO_CANCELLED",
+  "UNDO_NO_SHOW",
   "MOVE_COMPOUND_POSITION",
   "CHANGE_LOAD_STATUS",
   "START_INSPECTION",
@@ -14,6 +19,8 @@ export type MobileActionType = (typeof mobileActionTypes)[number];
 const isoDateTimeSchema = z.string().datetime().optional();
 
 const loadStatusSchema = z.enum(["Loaded", "Empty"]);
+const ownershipTypeSchema = z.enum(["company", "outsourcing", "unknown"]);
+const trailerSourceSchema = z.enum(["company", "outsourced", "unknown"]);
 
 const inspectionDamageSchema = z.object({
   hasDamage: z.boolean(),
@@ -37,6 +44,47 @@ export const markArrivedPayloadSchema = z.object({
   trailerNumber: z.string().trim().min(1).max(80).optional(),
   operationId: z.string().uuid().optional(),
   receivedAt: isoDateTimeSchema,
+});
+
+export const addVesselTrailerPayloadSchema = z.object({
+  operationId: z.string().uuid(),
+  trailerNumber: z.string().trim().min(1).max(80),
+  ownershipType: ownershipTypeSchema,
+  trailerSource: trailerSourceSchema.optional().nullable(),
+  externalCompany: z.string().trim().max(200).optional().nullable(),
+  plannedDestination: z.string().trim().min(1).max(200),
+  priorityReason: z.string().trim().max(500).optional().nullable(),
+  manifestChangeReason: z.string().trim().max(500).optional().nullable(),
+  customer: z.string().trim().max(200).optional().nullable(),
+  bookingReference: z.string().trim().max(120).optional().nullable(),
+  loadStatus: z.string().trim().max(60).optional().nullable(),
+  expectedFrontTemperature: z.number().finite().optional().nullable(),
+  expectedRearTemperature: z.number().finite().optional().nullable(),
+  expectedTemperatureUnit: z.string().trim().max(8).optional().nullable(),
+  priorityLevel: z.enum(["priority", "normal"]).optional().nullable(),
+  notes: z.string().trim().max(4000).optional().nullable(),
+});
+
+export const markCancelledPayloadSchema = z.object({
+  vesselTrailerId: z.string().uuid(),
+  trailerNumber: z.string().trim().max(80).optional(),
+  reason: z.string().trim().max(1000).optional().nullable(),
+});
+
+export const markNoShowPayloadSchema = z.object({
+  vesselTrailerId: z.string().uuid(),
+  trailerNumber: z.string().trim().max(80).optional(),
+  reason: z.string().trim().max(1000).optional().nullable(),
+});
+
+export const undoCancelledPayloadSchema = z.object({
+  vesselTrailerId: z.string().uuid(),
+  trailerNumber: z.string().trim().max(80).optional(),
+});
+
+export const undoNoShowPayloadSchema = z.object({
+  vesselTrailerId: z.string().uuid(),
+  trailerNumber: z.string().trim().max(80).optional(),
 });
 
 export const moveCompoundPositionPayloadSchema = z.object({
@@ -69,7 +117,12 @@ export const saveInspectionProgressPayloadSchema = inspectionPayloadBaseSchema;
 export const completeInspectionPayloadSchema = inspectionPayloadBaseSchema;
 
 export const mobileActionRequestSchema = z.discriminatedUnion("actionType", [
+  z.object({ actionType: z.literal("ADD_VESSEL_TRAILER"), payload: addVesselTrailerPayloadSchema }),
   z.object({ actionType: z.literal("MARK_ARRIVED"), payload: markArrivedPayloadSchema }),
+  z.object({ actionType: z.literal("MARK_CANCELLED"), payload: markCancelledPayloadSchema }),
+  z.object({ actionType: z.literal("MARK_NO_SHOW"), payload: markNoShowPayloadSchema }),
+  z.object({ actionType: z.literal("UNDO_CANCELLED"), payload: undoCancelledPayloadSchema }),
+  z.object({ actionType: z.literal("UNDO_NO_SHOW"), payload: undoNoShowPayloadSchema }),
   z.object({ actionType: z.literal("MOVE_COMPOUND_POSITION"), payload: moveCompoundPositionPayloadSchema }),
   z.object({ actionType: z.literal("CHANGE_LOAD_STATUS"), payload: changeLoadStatusPayloadSchema }),
   z.object({ actionType: z.literal("START_INSPECTION"), payload: startInspectionPayloadSchema }),
@@ -266,8 +319,18 @@ export const getMobileActionLabel = (item: Pick<MobileActionQueueItem, "actionTy
   const trailerNumber = item.trailerNumber ?? ("trailerNumber" in item.payload ? (item.payload as { trailerNumber?: string }).trailerNumber : null);
 
   switch (item.actionType) {
+    case "ADD_VESSEL_TRAILER":
+      return `Add trailer ${(item.payload as { trailerNumber?: string }).trailerNumber ?? trailerNumber ?? "trailer"}`;
     case "MARK_ARRIVED":
       return `Mark arrived ${trailerNumber ?? "trailer"}`;
+    case "MARK_CANCELLED":
+      return `Mark cancelled ${trailerNumber ?? "trailer"}`;
+    case "MARK_NO_SHOW":
+      return `Mark no show ${trailerNumber ?? "trailer"}`;
+    case "UNDO_CANCELLED":
+      return `Undo cancelled ${trailerNumber ?? "trailer"}`;
+    case "UNDO_NO_SHOW":
+      return `Undo no show ${trailerNumber ?? "trailer"}`;
     case "MOVE_COMPOUND_POSITION":
       return `Move ${trailerNumber ?? "trailer"} to ${(item.payload as { targetPosition?: string }).targetPosition ?? "position"}`;
     case "CHANGE_LOAD_STATUS":
@@ -297,6 +360,14 @@ export const getMobileActionDedupeKey = (input: {
   trailerNumber?: string | null;
 }) => {
   switch (input.actionType) {
+    case "ADD_VESSEL_TRAILER": {
+      const payload = input.payload as Extract<MobileActionRequest, { actionType: "ADD_VESSEL_TRAILER" }>["payload"];
+      return [
+        input.actionType,
+        normalizeDedupeValue(payload.operationId),
+        normalizeDedupeValue(payload.trailerNumber ?? input.trailerNumber),
+      ].join("::");
+    }
     case "MARK_ARRIVED": {
       const payload = input.payload as Extract<MobileActionRequest, { actionType: "MARK_ARRIVED" }>["payload"];
       return [
@@ -305,6 +376,22 @@ export const getMobileActionDedupeKey = (input: {
         normalizeDedupeValue(payload.operationId),
         normalizeDedupeValue(payload.trailerNumber ?? input.trailerNumber),
       ].join("::");
+    }
+    case "MARK_CANCELLED": {
+      const payload = input.payload as Extract<MobileActionRequest, { actionType: "MARK_CANCELLED" }> ["payload"];
+      return [input.actionType, normalizeDedupeValue(payload.vesselTrailerId)].join("::");
+    }
+    case "MARK_NO_SHOW": {
+      const payload = input.payload as Extract<MobileActionRequest, { actionType: "MARK_NO_SHOW" }> ["payload"];
+      return [input.actionType, normalizeDedupeValue(payload.vesselTrailerId)].join("::");
+    }
+    case "UNDO_CANCELLED": {
+      const payload = input.payload as Extract<MobileActionRequest, { actionType: "UNDO_CANCELLED" }> ["payload"];
+      return [input.actionType, normalizeDedupeValue(payload.vesselTrailerId)].join("::");
+    }
+    case "UNDO_NO_SHOW": {
+      const payload = input.payload as Extract<MobileActionRequest, { actionType: "UNDO_NO_SHOW" }> ["payload"];
+      return [input.actionType, normalizeDedupeValue(payload.vesselTrailerId)].join("::");
     }
     case "MOVE_COMPOUND_POSITION": {
       const payload = input.payload as Extract<MobileActionRequest, { actionType: "MOVE_COMPOUND_POSITION" }>["payload"];

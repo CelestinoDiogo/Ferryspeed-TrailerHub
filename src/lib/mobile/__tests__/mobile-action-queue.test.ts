@@ -110,4 +110,53 @@ describe("mobile typed queue", () => {
     expect(first).toBe(second);
     expect(first).not.toBe(different);
   });
+
+  it("generates dedupe keys for add-vessel-trailer regardless of casing", () => {
+    const first = getMobileActionDedupeKey({
+      actionType: "ADD_VESSEL_TRAILER",
+      payload: {
+        operationId: "22222222-2222-4222-8222-222222222222",
+        trailerNumber: "FS7001",
+        ownershipType: "company",
+        plannedDestination: "Compound",
+      },
+      trailerNumber: "FS7001",
+    });
+
+    const second = getMobileActionDedupeKey({
+      actionType: "ADD_VESSEL_TRAILER",
+      payload: {
+        operationId: "22222222-2222-4222-8222-222222222222",
+        trailerNumber: "fs7001",
+        ownershipType: "company",
+        plannedDestination: "Compound",
+      },
+      trailerNumber: "fs7001",
+    });
+
+    expect(first).toBe(second);
+  });
+
+  it("returns user-friendly labels for no-show outcomes", () => {
+    const noShowLabel = getMobileActionLabel({
+      actionType: "MARK_NO_SHOW",
+      payload: {
+        vesselTrailerId: "11111111-1111-4111-8111-111111111111",
+        trailerNumber: "FS5000",
+      },
+      trailerNumber: "FS5000",
+    });
+
+    const undoLabel = getMobileActionLabel({
+      actionType: "UNDO_NO_SHOW",
+      payload: {
+        vesselTrailerId: "11111111-1111-4111-8111-111111111111",
+        trailerNumber: "FS5000",
+      },
+      trailerNumber: "FS5000",
+    });
+
+    expect(noShowLabel).toContain("no show");
+    expect(undoLabel).toContain("Undo no show");
+  });
 });

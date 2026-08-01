@@ -9,6 +9,7 @@ import { parseDateParam } from "@/lib/calendar-utils";
 type TrailerOption = {
   id: string;
   trailer_number: string;
+  container_number?: string | null;
   customer?: string | null;
   consignee?: string | null;
 };
@@ -78,7 +79,7 @@ function NewDeliveryForm() {
       try {
         const { data, error: supabaseError } = await supabase
           .from("trailers")
-          .select("id, trailer_number, customer, consignee")
+          .select("id, trailer_number, container_number, customer, consignee")
           .is("departure_date", null)
           .order("trailer_number", { ascending: true });
 
@@ -246,7 +247,9 @@ function NewDeliveryForm() {
                   <option value="">Select a trailer...</option>
                   {trailers.map((trailer) => (
                     <option key={trailer.id} value={trailer.id}>
-                      {trailer.trailer_number}
+                      {trailer.container_number
+                        ? `${trailer.trailer_number} - ${trailer.container_number}`
+                        : trailer.trailer_number}
                     </option>
                   ))}
                 </select>

@@ -1,3 +1,5 @@
+import type { TrailerOwnershipType } from "@/lib/trailer-ownership";
+
 export type VesselOperationStatus =
   | "draft"
   | "confirmed"
@@ -13,6 +15,7 @@ export type VesselTrailerStatus =
   | "arrived"
   | "inspected"
   | "not_arrived"
+  | "no_show"
   | "available_for_arrival"
   | "inspection_pending"
   | "inspection_in_progress"
@@ -35,6 +38,9 @@ export type VesselOperationRecord = {
   list_confirmed_at?: string | null;
   list_confirmed_by?: string | null;
   notes?: string | null;
+  completed_at?: string | null;
+  completed_by?: string | null;
+  final_locked_at?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
 };
@@ -56,12 +62,25 @@ export type VesselOperationTrailerRecord = {
   priority_reason?: string | null;
   planned_destination?: string | null;
   planning_notes?: string | null;
+  ownership_type?: TrailerOwnershipType | null;
+  trailer_source?: string | null;
+  external_company?: string | null;
+  added_after_confirmation?: boolean | null;
+  added_after_confirmation_at?: string | null;
+  added_after_confirmation_by?: string | null;
+  manifest_change_reason?: string | null;
   status: VesselTrailerStatus;
   arrived_at?: string | null;
-  arrival_status?: "expected" | "arrived" | "not_arrived" | "available_for_arrival" | "cancelled" | "not_discharged" | null;
+  arrival_status?: "expected" | "arrived" | "not_arrived" | "available_for_arrival" | "cancelled" | "not_discharged" | "no_show" | null;
   arrival_confirmed_at?: string | null;
   arrival_record_id?: string | null;
   arrival_confirmed_by?: string | null;
+  cancelled_at?: string | null;
+  cancelled_by?: string | null;
+  cancellation_reason?: string | null;
+  no_show_at?: string | null;
+  no_show_by?: string | null;
+  no_show_reason?: string | null;
   inspection_started_at?: string | null;
   inspection_completed_at?: string | null;
   position_assigned_at?: string | null;
@@ -70,6 +89,52 @@ export type VesselOperationTrailerRecord = {
   has_temperature_alert?: boolean | null;
   created_at?: string | null;
   updated_at?: string | null;
+};
+
+export type VesselWorkflowStep =
+  | "vessel"
+  | "boat_list"
+  | "planning"
+  | "confirmed"
+  | "discharge"
+  | "checks"
+  | "completed";
+
+export type TrailerPlanningIssue = {
+  field:
+    | "trailer_number"
+    | "ownership_type"
+    | "customer_or_owner"
+    | "priority_level"
+    | "planned_destination"
+    | "temperature_category"
+    | "expected_front_temperature"
+    | "expected_rear_temperature";
+  message: string;
+};
+
+export type TrailerPlanningValidation = {
+  trailerId: string;
+  trailerNumber: string;
+  issues: TrailerPlanningIssue[];
+};
+
+export type PlanningReadiness = {
+  canConfirmList: boolean;
+  incompleteTrailers: TrailerPlanningValidation[];
+};
+
+export type CompletionReadiness = {
+  canComplete: boolean;
+  blockers: Array<{ trailerId: string; trailerNumber: string; reason: string }>;
+};
+
+export type PlanningOwnershipSource = "company" | "outsourced" | "unknown" | "local";
+
+export type PlanningOwnershipState = {
+  ownershipType: TrailerOwnershipType;
+  trailerSource: PlanningOwnershipSource;
+  externalCompany: string;
 };
 
 export type SupabaseErrorLike = {
@@ -140,6 +205,7 @@ export type VesselOperationSummary = {
   priorityRemaining: number;
   normal: number;
   cancelled: number;
+  noShow: number;
   notDischarged: number;
   inProgress: number;
   positioned: number;
@@ -170,6 +236,7 @@ export const VESSEL_TRAILER_STATUS_LABELS: Record<VesselTrailerStatus, string> =
   arrived: "Arrived",
   inspected: "Inspected",
   not_arrived: "Not Arrived",
+  no_show: "No Show",
   available_for_arrival: "Expected",
   inspection_pending: "Arrived",
   inspection_in_progress: "Arrived",
@@ -384,7 +451,14 @@ export const getVesselArrivalWorkflowState = (
     "arrival_status" | "arrival_record_id" | "status" | "inspection_started_at" | "inspection_completed_at" | "has_damage" | "has_temperature_alert"
   >,
 ): VesselArrivalWorkflowState => {
-  if (trailer.arrival_status === "cancelled" || trailer.status === "cancelled" || trailer.arrival_status === "not_discharged" || trailer.status === "not_discharged") {
+  if (
+    trailer.arrival_status === "cancelled" ||
+    trailer.status === "cancelled" ||
+    trailer.arrival_status === "no_show" ||
+    trailer.status === "no_show" ||
+    trailer.arrival_status === "not_discharged" ||
+    trailer.status === "not_discharged"
+  ) {
     return "cancelled";
   }
 
@@ -481,6 +555,7 @@ export const getVesselTrailerStatusClass = (status: VesselTrailerStatus) => {
     case "positioned":
       return "border-emerald-500/30 bg-emerald-500/10 text-emerald-200";
     case "not_arrived":
+    case "no_show":
     case "not_discharged":
     case "cancelled":
       return "border-fuchsia-500/30 bg-fuchsia-500/10 text-fuchsia-200";
@@ -513,6 +588,7 @@ export const getVesselTrailerSortRank = (status: VesselTrailerStatus) => {
     case "positioned":
       return 2;
     case "not_arrived":
+    case "no_show":
     case "not_discharged":
     case "cancelled":
       return 3;
@@ -538,7 +614,14 @@ export const computeVesselOperationSummary = (
   trailers: Array<Pick<VesselOperationTrailerRecord, "priority_level" | "status" | "has_damage" | "has_temperature_alert" | "arrival_status">>,
 ): VesselOperationSummary => {
   const isNotArrived = (item: Pick<VesselOperationTrailerRecord, "status" | "arrival_status">) =>
-    item.status === "not_arrived" || item.arrival_status === "not_arrived" || item.status === "cancelled" || item.arrival_status === "cancelled" || item.status === "not_discharged" || item.arrival_status === "not_discharged";
+    item.status === "not_arrived" ||
+    item.arrival_status === "not_arrived" ||
+    item.status === "cancelled" ||
+    item.arrival_status === "cancelled" ||
+    item.status === "no_show" ||
+    item.arrival_status === "no_show" ||
+    item.status === "not_discharged" ||
+    item.arrival_status === "not_discharged";
 
   const isArrived = (item: Pick<VesselOperationTrailerRecord, "status" | "arrival_status">) =>
     item.arrival_status === "arrived" || item.status === "arrived" || item.status === "inspected" || item.status === "positioned" || item.status === "inspection_pending" || item.status === "inspection_in_progress";
@@ -558,6 +641,7 @@ export const computeVesselOperationSummary = (
   const priorityRemaining = trailers.filter((item) => item.priority_level === "priority" && !isArrived(item) && !isNotArrived(item)).length;
   const normal = trailers.filter((item) => item.priority_level !== "priority").length;
   const cancelled = trailers.filter((item) => item.status === "cancelled" || item.arrival_status === "cancelled").length;
+  const noShow = trailers.filter((item) => item.status === "no_show" || item.arrival_status === "no_show").length;
   const notDischarged = trailers.filter((item) => item.status === "not_discharged" || item.arrival_status === "not_discharged").length;
   const inProgress = trailers.filter((item) => item.status === "inspection_in_progress").length;
   const positioned = trailers.filter((item) => item.status === "positioned").length;
@@ -579,6 +663,7 @@ export const computeVesselOperationSummary = (
     priorityRemaining,
     normal,
     cancelled,
+    noShow,
     notDischarged,
     inProgress,
     positioned,
@@ -626,4 +711,293 @@ export const buildVesselSupabaseErrorMessage = (error?: SupabaseErrorLike | null
   }
 
   return fallback;
+};
+
+const normalizeOwnership = (value?: string | null): TrailerOwnershipType => {
+  if (value === "company" || value === "outsourcing" || value === "unknown") {
+    return value;
+  }
+
+  return "unknown";
+};
+
+export const applyPlanningOwnershipSelection = (
+  requestedOwnership: TrailerOwnershipType,
+  currentSource?: string | null,
+  currentExternalCompany?: string | null,
+): PlanningOwnershipState => {
+  const normalizedSource = normalizeVesselText(currentSource);
+  const isLocal = normalizedSource === "local";
+  const externalCompany = (currentExternalCompany ?? "").trim();
+
+  if (isLocal) {
+    return {
+      ownershipType: "unknown",
+      trailerSource: "local",
+      externalCompany: "",
+    };
+  }
+
+  if (requestedOwnership === "outsourcing") {
+    return {
+      ownershipType: "outsourcing",
+      trailerSource: "outsourced",
+      externalCompany,
+    };
+  }
+
+  if (requestedOwnership === "company") {
+    return {
+      ownershipType: "company",
+      trailerSource: "company",
+      externalCompany: "",
+    };
+  }
+
+  return {
+    ownershipType: "unknown",
+    trailerSource: "unknown",
+    externalCompany: "",
+  };
+};
+
+const looksTemperatureControlled = (trailer: Pick<VesselOperationTrailerRecord, "temperature_required" | "expected_front_temperature" | "expected_rear_temperature">) => {
+  if (typeof trailer.expected_front_temperature === "number" || typeof trailer.expected_rear_temperature === "number") {
+    return true;
+  }
+
+  const requiredText = normalizeVesselText(trailer.temperature_required);
+  if (requiredText) {
+    return true;
+  }
+
+  return false;
+};
+
+export const validateTrailerPlanning = (
+  trailer: Pick<
+    VesselOperationTrailerRecord,
+    | "id"
+    | "trailer_number"
+    | "customer"
+    | "priority_level"
+    | "planned_destination"
+    | "temperature_required"
+    | "expected_front_temperature"
+    | "expected_rear_temperature"
+    | "ownership_type"
+    | "external_company"
+    | "status"
+    | "arrival_status"
+  >,
+): TrailerPlanningValidation => {
+  const trailerNumber = normalizeTrailerNumber(trailer.trailer_number);
+  const issues: TrailerPlanningIssue[] = [];
+  const ownershipType = normalizeOwnership(trailer.ownership_type);
+  const temperatureControlled = looksTemperatureControlled(trailer);
+
+  if (!trailerNumber) {
+    issues.push({
+      field: "trailer_number",
+      message: "Trailer number is required.",
+    });
+  }
+
+  if (!trailer.ownership_type) {
+    issues.push({
+      field: "ownership_type",
+      message: "Ownership is required.",
+    });
+  }
+
+  if (ownershipType === "unknown") {
+    issues.push({
+      field: "ownership_type",
+      message: "Select trailer ownership.",
+    });
+  }
+
+  if (ownershipType === "outsourcing") {
+    const hasOwner = normalizeVesselText(trailer.external_company).length > 0;
+    if (!hasOwner) {
+      issues.push({
+        field: "customer_or_owner",
+        message: "Enter external company for outsourcing trailer.",
+      });
+    }
+  }
+
+  if (!(trailer.priority_level === "priority" || trailer.priority_level === "normal")) {
+    issues.push({
+      field: "priority_level",
+      message: "Priority is required.",
+    });
+  }
+
+  if (!normalizeVesselText(trailer.planned_destination)) {
+    issues.push({
+      field: "planned_destination",
+      message: "Planned destination is required.",
+    });
+  }
+
+  if (temperatureControlled && trailer.expected_front_temperature === null) {
+    issues.push({
+      field: "expected_front_temperature",
+      message: "Expected front temperature is required for temperature-controlled trailers.",
+    });
+  }
+
+  if (temperatureControlled && trailer.expected_rear_temperature === null) {
+    issues.push({
+      field: "expected_rear_temperature",
+      message: "Expected rear temperature is required for temperature-controlled trailers.",
+    });
+  }
+
+  return {
+    trailerId: trailer.id,
+    trailerNumber: trailerNumber || "(missing trailer number)",
+    issues,
+  };
+};
+
+export const getPlanningReadiness = (
+  trailers: Array<
+    Pick<
+      VesselOperationTrailerRecord,
+      | "id"
+      | "trailer_number"
+      | "customer"
+      | "priority_level"
+      | "planned_destination"
+      | "temperature_required"
+      | "expected_front_temperature"
+      | "expected_rear_temperature"
+      | "ownership_type"
+      | "external_company"
+      | "status"
+      | "arrival_status"
+    >
+  >,
+): PlanningReadiness => {
+  const incompleteTrailers = trailers
+    .filter((item) => item.status !== "cancelled" && item.arrival_status !== "cancelled" && item.status !== "no_show" && item.arrival_status !== "no_show")
+    .map((item) => validateTrailerPlanning(item))
+    .filter((item) => item.issues.length > 0);
+
+  return {
+    canConfirmList: trailers.length > 0 && incompleteTrailers.length === 0,
+    incompleteTrailers,
+  };
+};
+
+export const getCompletionReadiness = (
+  trailers: Array<
+    Pick<
+      VesselOperationTrailerRecord,
+      | "id"
+      | "trailer_number"
+      | "status"
+      | "arrival_status"
+      | "inspection_completed_at"
+      | "temperature_required"
+      | "expected_front_temperature"
+      | "expected_rear_temperature"
+      | "added_after_confirmation"
+      | "customer"
+      | "priority_level"
+      | "planned_destination"
+      | "ownership_type"
+      | "external_company"
+    >
+  >,
+): CompletionReadiness => {
+  const blockers: Array<{ trailerId: string; trailerNumber: string; reason: string }> = [];
+
+  for (const trailer of trailers) {
+    const trailerNumber = normalizeTrailerNumber(trailer.trailer_number) || "(missing trailer number)";
+    const isTerminalExcluded =
+      trailer.status === "cancelled" ||
+      trailer.arrival_status === "cancelled" ||
+      trailer.status === "no_show" ||
+      trailer.arrival_status === "no_show";
+    if (isTerminalExcluded) {
+      continue;
+    }
+
+    const arrivalStatus = trailer.arrival_status ?? "expected";
+    const isArrived = arrivalStatus === "arrived";
+    const isNotDischarged = arrivalStatus === "not_discharged" || trailer.status === "not_arrived" || trailer.status === "not_discharged";
+    const isExpected = arrivalStatus === "expected" || arrivalStatus === "available_for_arrival";
+
+    if (!isArrived && !isNotDischarged && isExpected) {
+      blockers.push({
+        trailerId: trailer.id,
+        trailerNumber,
+        reason: "Trailer must be arrived or explicitly marked not discharged/cancelled.",
+      });
+      continue;
+    }
+
+    if (trailer.added_after_confirmation) {
+      const planning = validateTrailerPlanning(trailer);
+      if (planning.issues.length > 0) {
+        blockers.push({
+          trailerId: trailer.id,
+          trailerNumber,
+          reason: "Added-after-confirmation trailer has incomplete planning data.",
+        });
+      }
+    }
+
+    if (isArrived && !trailer.inspection_completed_at && trailer.status !== "inspected") {
+      blockers.push({
+        trailerId: trailer.id,
+        trailerNumber,
+        reason: "Arrived trailer still has pending checks.",
+      });
+    }
+  }
+
+  return {
+    canComplete: trailers.length > 0 && blockers.length === 0,
+    blockers,
+  };
+};
+
+export const deriveVesselWorkflowStep = (
+  operation: Pick<VesselOperationRecord, "status" | "list_status" | "completed_at" | "final_locked_at"> | null | undefined,
+  trailers: Array<Pick<VesselOperationTrailerRecord, "arrival_status" | "status" | "inspection_completed_at">>,
+): VesselWorkflowStep => {
+  if (!operation) {
+    return "vessel";
+  }
+
+  if (operation.status === "completed" || operation.final_locked_at || operation.completed_at) {
+    return "completed";
+  }
+
+  if (trailers.length === 0) {
+    return "boat_list";
+  }
+
+  if ((operation.list_status ?? "draft") !== "confirmed") {
+    return "planning";
+  }
+
+  const hasArrivals = trailers.some((trailer) => trailer.arrival_status === "arrived" || trailer.status === "arrived" || trailer.status === "inspected");
+  if (!hasArrivals) {
+    return "confirmed";
+  }
+
+  const pendingChecks = trailers.some(
+    (trailer) => trailer.arrival_status === "arrived" && trailer.status !== "inspected" && !trailer.inspection_completed_at,
+  );
+
+  if (pendingChecks) {
+    return "checks";
+  }
+
+  return "discharge";
 };

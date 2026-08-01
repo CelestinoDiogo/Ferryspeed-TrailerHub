@@ -32,11 +32,20 @@ type MobileActionResult = {
   } | null;
   updatedVesselTrailer?: {
     vesselTrailerId: string;
+    vesselOperationId: string;
+    trailerId: string | null;
     trailerNumber: string | null;
     arrivalStatus: string | null;
     status: string | null;
     inspectionStartedAt: string | null;
     inspectionCompletedAt: string | null;
+    cancelledAt: string | null;
+    cancelledBy: string | null;
+    cancellationReason: string | null;
+    noShowAt: string | null;
+    noShowBy: string | null;
+    noShowReason: string | null;
+    addedAfterConfirmation: boolean | null;
     hasDamage: boolean | null;
     hasTemperatureAlert: boolean | null;
   } | null;
@@ -85,11 +94,20 @@ const isAlreadyArrivedMessage = (message: string) => {
 const asVesselTrailerState = (row: VesselOperationTrailerRecord) => {
   return {
     vesselTrailerId: row.id,
+    vesselOperationId: row.vessel_operation_id,
+    trailerId: row.trailer_id ?? null,
     trailerNumber: row.trailer_number ?? null,
     arrivalStatus: row.arrival_status ?? null,
     status: row.status ?? null,
     inspectionStartedAt: row.inspection_started_at ?? null,
     inspectionCompletedAt: row.inspection_completed_at ?? null,
+    cancelledAt: row.cancelled_at ?? null,
+    cancelledBy: row.cancelled_by ?? null,
+    cancellationReason: row.cancellation_reason ?? null,
+    noShowAt: row.no_show_at ?? null,
+    noShowBy: row.no_show_by ?? null,
+    noShowReason: row.no_show_reason ?? null,
+    addedAfterConfirmation: row.added_after_confirmation ?? null,
     hasDamage: row.has_damage ?? null,
     hasTemperatureAlert: row.has_temperature_alert ?? null,
   };
@@ -99,7 +117,7 @@ const getVesselTrailer = async (supabase: RouteSupabase, vesselTrailerId: string
   const { data, error } = await supabase
     .from("vessel_operation_trailers")
     .select(
-      "id, vessel_operation_id, trailer_id, trailer_number, customer, load_status, status, arrival_status, arrival_record_id, inspection_started_at, inspection_completed_at, expected_front_temperature, expected_rear_temperature, expected_temperature_unit, temperature_required, has_damage, has_temperature_alert",
+      "id, vessel_operation_id, trailer_id, trailer_number, customer, load_status, status, arrival_status, arrival_record_id, inspection_started_at, inspection_completed_at, expected_front_temperature, expected_rear_temperature, expected_temperature_unit, temperature_required, has_damage, has_temperature_alert, cancelled_at, cancelled_by, cancellation_reason, no_show_at, no_show_by, no_show_reason, added_after_confirmation",
     )
     .eq("id", vesselTrailerId)
     .maybeSingle();
@@ -127,7 +145,7 @@ const resolveVesselTrailerForArrival = async (
   const query = supabase
     .from("vessel_operation_trailers")
     .select(
-      "id, vessel_operation_id, trailer_id, trailer_number, customer, load_status, status, arrival_status, arrival_record_id, inspection_started_at, inspection_completed_at, expected_front_temperature, expected_rear_temperature, expected_temperature_unit, temperature_required, has_damage, has_temperature_alert",
+      "id, vessel_operation_id, trailer_id, trailer_number, customer, load_status, status, arrival_status, arrival_record_id, inspection_started_at, inspection_completed_at, expected_front_temperature, expected_rear_temperature, expected_temperature_unit, temperature_required, has_damage, has_temperature_alert, cancelled_at, cancelled_by, cancellation_reason, no_show_at, no_show_by, no_show_reason, added_after_confirmation",
     )
     .ilike("trailer_number", normalizedTrailerNumber)
     .order("updated_at", { ascending: false })
@@ -161,6 +179,470 @@ const getTrailerById = async (supabase: RouteSupabase, trailerId: string) => {
   }
 
   return (data ?? null) as Database["public"]["Tables"]["trailers"]["Row"] | null;
+};
+
+type VesselOperationRow = {
+  id: string;
+  vessel_name: string | null;
+  status: string | null;
+  list_status: string | null;
+  final_locked_at: string | null;
+};
+
+const getVesselOperation = async (supabase: RouteSupabase, operationId: string) => {
+  const { data, error } = await supabase
+    .from("vessel_operations")
+    .select("id, vessel_name, status, list_status, final_locked_at")
+    .eq("id", operationId)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(error.message || "Unable to load vessel operation.");
+  }
+
+  return (data ?? null) as VesselOperationRow | null;
+};
+
+const getVesselOperationForTrailer = async (supabase: RouteSupabase, trailer: VesselOperationTrailerRecord) => {
+  return getVesselOperation(supabase, trailer.vessel_operation_id);
+};
+
+const isOperationLocked = (operation: VesselOperationRow | null) => {
+  if (!operation) {
+    return false;
+  }
+
+  return operation.status === "completed" || Boolean(operation.final_locked_at);
+};
+
+const resolveTrailerSourceFromOwnership = (ownershipType: "company" | "outsourcing" | "unknown", trailerSource?: string | null) => {
+  const normalizedSource = (trailerSource ?? "").trim().toLowerCase();
+
+  if (normalizedSource === "company" || normalizedSource === "outsourced" || normalizedSource === "unknown") {
+    return normalizedSource;
+  }
+
+  if (ownershipType === "company") {
+    return "company";
+  }
+
+  if (ownershipType === "outsourcing") {
+    return "outsourced";
+  }
+
+  return "unknown";
+};
+
+const runAddVesselTrailer = async (
+  supabase: RouteSupabase,
+  payload: Extract<MobileActionRequest, { actionType: "ADD_VESSEL_TRAILER" }>["payload"],
+  operatorName: string,
+): Promise<MobileActionResult> => {
+  const normalizedTrailerNumber = normalizeTrailerNumber(payload.trailerNumber);
+  if (!normalizedTrailerNumber) {
+    return {
+      ok: false,
+      status: "failed",
+      message: "Trailer number is required.",
+      retryable: false,
+    };
+  }
+
+  if (payload.ownershipType === "outsourcing" && !payload.externalCompany?.trim()) {
+    return {
+      ok: false,
+      status: "failed",
+      message: "Outsourcing trailers require external company.",
+      retryable: false,
+    };
+  }
+
+  const operation = await getVesselOperation(supabase, payload.operationId);
+  if (!operation) {
+    return buildConflict({ code: "operation_missing", message: "Vessel operation was not found." });
+  }
+
+  if (isOperationLocked(operation)) {
+    return buildConflict({ code: "operation_locked", message: "Vessel operation is final locked and cannot be edited." });
+  }
+
+  const { data: existingRows, error: existingError } = await supabase
+    .from("vessel_operation_trailers")
+    .select(
+      "id, vessel_operation_id, trailer_id, trailer_number, customer, load_status, status, arrival_status, arrival_record_id, inspection_started_at, inspection_completed_at, expected_front_temperature, expected_rear_temperature, expected_temperature_unit, temperature_required, has_damage, has_temperature_alert, cancelled_at, cancelled_by, cancellation_reason, no_show_at, no_show_by, no_show_reason, added_after_confirmation",
+    )
+    .eq("vessel_operation_id", payload.operationId)
+    .ilike("trailer_number", normalizedTrailerNumber)
+    .limit(10);
+
+  if (existingError) {
+    return {
+      ok: false,
+      status: "failed",
+      message: buildVesselSupabaseErrorMessage(existingError, "Unable to validate trailer before insert."),
+      retryable: true,
+    };
+  }
+
+  const existing = ((existingRows ?? []) as VesselOperationTrailerRecord[]).find(
+    (row) => normalizeTrailerNumber(row.trailer_number) === normalizedTrailerNumber,
+  ) ?? null;
+
+  if (existing) {
+    return {
+      ok: true,
+      status: "success",
+      message: `${normalizedTrailerNumber} is already in this vessel operation.`,
+      retryable: false,
+      updatedVesselTrailer: asVesselTrailerState(existing),
+    };
+  }
+
+  const nowIso = new Date().toISOString();
+  const isPostConfirmation = (operation.list_status ?? "draft") === "confirmed";
+  const trailerSource = resolveTrailerSourceFromOwnership(payload.ownershipType, payload.trailerSource);
+  const manifestChangeReason = payload.manifestChangeReason?.trim() || (isPostConfirmation ? "Added after confirmation from mobile" : null);
+
+  const insertPayload = {
+    vessel_operation_id: operation.id,
+    trailer_number: normalizedTrailerNumber,
+    ownership_type: payload.ownershipType,
+    trailer_source: trailerSource,
+    external_company: payload.externalCompany?.trim() || null,
+    planned_destination: payload.plannedDestination.trim(),
+    priority_reason: payload.priorityReason?.trim() || null,
+    manifest_change_reason: manifestChangeReason,
+    added_after_confirmation: isPostConfirmation,
+    added_after_confirmation_at: isPostConfirmation ? nowIso : null,
+    added_after_confirmation_by: isPostConfirmation ? operatorName : null,
+    customer: payload.customer?.trim() || null,
+    booking_reference: payload.bookingReference?.trim() || null,
+    load_status: payload.loadStatus?.trim() || null,
+    expected_front_temperature: payload.expectedFrontTemperature ?? null,
+    expected_rear_temperature: payload.expectedRearTemperature ?? null,
+    expected_temperature_unit: normalizeExpectedTemperatureUnit(payload.expectedTemperatureUnit ?? "C"),
+    temperature_required: payload.expectedFrontTemperature !== null && payload.expectedFrontTemperature !== undefined
+      ? String(payload.expectedFrontTemperature)
+      : null,
+    priority_level: payload.priorityLevel ?? "normal",
+    planning_notes: payload.notes?.trim() || null,
+    status: "expected",
+    arrival_status: isPostConfirmation ? "available_for_arrival" : "expected",
+    created_at: nowIso,
+    updated_at: nowIso,
+  };
+
+  const { data: inserted, error: insertError } = await supabase
+    .from("vessel_operation_trailers")
+    .insert(insertPayload as never)
+    .select(
+      "id, vessel_operation_id, trailer_id, trailer_number, customer, load_status, status, arrival_status, arrival_record_id, inspection_started_at, inspection_completed_at, expected_front_temperature, expected_rear_temperature, expected_temperature_unit, temperature_required, has_damage, has_temperature_alert, cancelled_at, cancelled_by, cancellation_reason, no_show_at, no_show_by, no_show_reason, added_after_confirmation",
+    )
+    .maybeSingle();
+
+  if (insertError || !inserted) {
+    return {
+      ok: false,
+      status: "failed",
+      message: buildVesselSupabaseErrorMessage(insertError, "Unable to add trailer to vessel operation."),
+      retryable: true,
+    };
+  }
+
+  await supabase.from("trailer_events").insert({
+    trailer_id: null,
+    trailer_number: normalizedTrailerNumber,
+    event_type: "vessel_trailer_planned",
+    event_description: `Trailer added to vessel ${operation.vessel_name ?? "operation"} from Master Mobile.`,
+    old_value: null,
+    new_value: {
+      vessel_trailer_id: inserted.id,
+      vessel_operation_id: operation.id,
+      arrival_status: insertPayload.arrival_status,
+      added_after_confirmation: isPostConfirmation,
+    },
+  });
+
+  await createTrailerActivity({
+    supabaseClient: supabase,
+    trailerId: inserted.trailer_id ?? null,
+    trailerNumber: inserted.trailer_number ?? normalizedTrailerNumber,
+    eventType: "operational_status_changed",
+    eventTitle: "Trailer added to vessel manifest",
+    eventDescription: "Added from Master Mobile discharge flow.",
+    sourceModule: "vessel",
+    sourceRecordId: inserted.id,
+    previousStatus: null,
+    newStatus: inserted.arrival_status ?? inserted.status,
+    metadata: {
+      vessel_operation_id: operation.id,
+      vessel_trailer_id: inserted.id,
+      added_after_confirmation: isPostConfirmation,
+      manifest_change_reason: manifestChangeReason,
+    },
+    performedBy: operatorName,
+    createdAt: nowIso,
+  });
+
+  return {
+    ok: true,
+    status: "success",
+    message: `${normalizedTrailerNumber} added to vessel operation.`,
+    retryable: false,
+    updatedVesselTrailer: asVesselTrailerState(inserted as VesselOperationTrailerRecord),
+  };
+};
+
+const runSetPreArrivalOutcome = async (
+  supabase: RouteSupabase,
+  payload: Extract<MobileActionRequest, { actionType: "MARK_CANCELLED" | "MARK_NO_SHOW" }> ["payload"],
+  operatorName: string,
+  outcome: "cancelled" | "no_show",
+): Promise<MobileActionResult> => {
+  const trailer = await getVesselTrailer(supabase, payload.vesselTrailerId);
+  if (!trailer) {
+    return buildConflict({ code: "vessel_trailer_missing", message: "Trailer is no longer available." });
+  }
+
+  const operation = await getVesselOperationForTrailer(supabase, trailer);
+  if (isOperationLocked(operation)) {
+    return buildConflict({ code: "operation_locked", message: "Vessel operation is final locked and cannot be edited." });
+  }
+
+  if (trailer.arrival_status === "arrived" || trailer.arrival_record_id || trailer.inspection_started_at || trailer.inspection_completed_at) {
+    return buildConflict({
+      code: "arrival_already_started",
+      message: "Arrival or inspection history already exists for this trailer.",
+      serverState: {
+        arrivalStatus: trailer.arrival_status,
+        inspectionStartedAt: trailer.inspection_started_at,
+        inspectionCompletedAt: trailer.inspection_completed_at,
+      },
+    });
+  }
+
+  if (trailer.arrival_status === outcome) {
+    return {
+      ok: true,
+      status: "success",
+      message: `${trailer.trailer_number ?? "Trailer"} is already marked ${outcome === "cancelled" ? "Cancelled" : "No Show"}.`,
+      retryable: false,
+      updatedVesselTrailer: asVesselTrailerState(trailer),
+    };
+  }
+
+  const nowIso = new Date().toISOString();
+  const reason = payload.reason?.trim() || null;
+  const updatePayload = outcome === "cancelled"
+    ? {
+        status: "not_arrived",
+        arrival_status: "cancelled",
+        cancelled_at: nowIso,
+        cancelled_by: operatorName,
+        cancellation_reason: reason,
+        no_show_at: null,
+        no_show_by: null,
+        no_show_reason: null,
+        manifest_change_reason: reason ?? trailer.manifest_change_reason ?? "Cancelled from mobile",
+        updated_at: nowIso,
+      }
+    : {
+        status: "not_arrived",
+        arrival_status: "no_show",
+        no_show_at: nowIso,
+        no_show_by: operatorName,
+        no_show_reason: reason,
+        cancelled_at: null,
+        cancelled_by: null,
+        cancellation_reason: null,
+        manifest_change_reason: reason ?? trailer.manifest_change_reason ?? "No show from mobile",
+        updated_at: nowIso,
+      };
+
+  const { data: updated, error: updateError } = await supabase
+    .from("vessel_operation_trailers")
+    .update(updatePayload as never)
+    .eq("id", trailer.id)
+    .in("arrival_status", ["expected", "available_for_arrival", "cancelled", "no_show"])
+    .select(
+      "id, vessel_operation_id, trailer_id, trailer_number, customer, load_status, status, arrival_status, arrival_record_id, inspection_started_at, inspection_completed_at, expected_front_temperature, expected_rear_temperature, expected_temperature_unit, temperature_required, has_damage, has_temperature_alert, cancelled_at, cancelled_by, cancellation_reason, no_show_at, no_show_by, no_show_reason, added_after_confirmation",
+    )
+    .maybeSingle();
+
+  if (updateError || !updated) {
+    return buildConflict({
+      code: "stale_arrival_state",
+      message: "Trailer outcome changed on another device before this update.",
+      serverState: {
+        arrivalStatus: trailer.arrival_status,
+      },
+    });
+  }
+
+  const eventType = outcome === "cancelled" ? "vessel_trailer_cancelled" : "vessel_trailer_no_show";
+  const eventLabel = outcome === "cancelled" ? "Cancelled" : "No Show";
+
+  await supabase.from("trailer_events").insert({
+    trailer_id: trailer.trailer_id ?? null,
+    trailer_number: trailer.trailer_number ?? null,
+    event_type: eventType,
+    event_description: `Trailer marked ${eventLabel.toLowerCase()} from Master Mobile.`,
+    old_value: {
+      vessel_trailer_id: trailer.id,
+      arrival_status: trailer.arrival_status,
+      status: trailer.status,
+    },
+    new_value: {
+      vessel_trailer_id: updated.id,
+      arrival_status: updated.arrival_status,
+      status: updated.status,
+      reason,
+    },
+  });
+
+  await createTrailerActivity({
+    supabaseClient: supabase,
+    trailerId: updated.trailer_id ?? null,
+    trailerNumber: updated.trailer_number ?? trailer.trailer_number ?? "UNKNOWN",
+    eventType: "operational_status_changed",
+    eventTitle: `Trailer marked ${eventLabel}`,
+    eventDescription: reason ? `Marked ${eventLabel.toLowerCase()}: ${reason}` : `Marked ${eventLabel.toLowerCase()} from Master Mobile.`,
+    sourceModule: "vessel",
+    sourceRecordId: updated.id,
+    previousStatus: trailer.arrival_status ?? trailer.status,
+    newStatus: updated.arrival_status ?? updated.status,
+    metadata: {
+      vessel_operation_id: updated.vessel_operation_id,
+      vessel_trailer_id: updated.id,
+      reason,
+    },
+    performedBy: operatorName,
+    createdAt: nowIso,
+  });
+
+  return {
+    ok: true,
+    status: "success",
+    message: `${updated.trailer_number ?? "Trailer"} marked ${eventLabel}.`,
+    retryable: false,
+    updatedVesselTrailer: asVesselTrailerState(updated as VesselOperationTrailerRecord),
+  };
+};
+
+const runUndoPreArrivalOutcome = async (
+  supabase: RouteSupabase,
+  payload: Extract<MobileActionRequest, { actionType: "UNDO_CANCELLED" | "UNDO_NO_SHOW" }> ["payload"],
+  operatorName: string,
+  outcome: "cancelled" | "no_show",
+): Promise<MobileActionResult> => {
+  const trailer = await getVesselTrailer(supabase, payload.vesselTrailerId);
+  if (!trailer) {
+    return buildConflict({ code: "vessel_trailer_missing", message: "Trailer is no longer available." });
+  }
+
+  const operation = await getVesselOperationForTrailer(supabase, trailer);
+  if (isOperationLocked(operation)) {
+    return buildConflict({ code: "operation_locked", message: "Vessel operation is final locked and cannot be edited." });
+  }
+
+  if (trailer.arrival_status !== outcome) {
+    return {
+      ok: true,
+      status: "success",
+      message: `${trailer.trailer_number ?? "Trailer"} is no longer marked ${outcome === "cancelled" ? "Cancelled" : "No Show"}.`,
+      retryable: false,
+      updatedVesselTrailer: asVesselTrailerState(trailer),
+    };
+  }
+
+  if (trailer.arrival_record_id || trailer.inspection_started_at || trailer.inspection_completed_at) {
+    return buildConflict({
+      code: "arrival_already_started",
+      message: "Arrival or inspection history already exists for this trailer.",
+      serverState: {
+        arrivalStatus: trailer.arrival_status,
+        inspectionStartedAt: trailer.inspection_started_at,
+        inspectionCompletedAt: trailer.inspection_completed_at,
+      },
+    });
+  }
+
+  const nowIso = new Date().toISOString();
+  const nextArrivalStatus = (operation?.list_status ?? "draft") === "confirmed" ? "available_for_arrival" : "expected";
+
+  const { data: updated, error: updateError } = await supabase
+    .from("vessel_operation_trailers")
+    .update({
+      status: "expected",
+      arrival_status: nextArrivalStatus,
+      cancelled_at: null,
+      cancelled_by: null,
+      cancellation_reason: null,
+      no_show_at: null,
+      no_show_by: null,
+      no_show_reason: null,
+      updated_at: nowIso,
+    } as never)
+    .eq("id", trailer.id)
+    .eq("arrival_status", outcome)
+    .select(
+      "id, vessel_operation_id, trailer_id, trailer_number, customer, load_status, status, arrival_status, arrival_record_id, inspection_started_at, inspection_completed_at, expected_front_temperature, expected_rear_temperature, expected_temperature_unit, temperature_required, has_damage, has_temperature_alert, cancelled_at, cancelled_by, cancellation_reason, no_show_at, no_show_by, no_show_reason, added_after_confirmation",
+    )
+    .maybeSingle();
+
+  if (updateError || !updated) {
+    return buildConflict({
+      code: "stale_arrival_state",
+      message: "Trailer outcome changed on another device before this update.",
+      serverState: {
+        arrivalStatus: trailer.arrival_status,
+      },
+    });
+  }
+
+  await supabase.from("trailer_events").insert({
+    trailer_id: trailer.trailer_id ?? null,
+    trailer_number: trailer.trailer_number ?? null,
+    event_type: outcome === "cancelled" ? "vessel_trailer_cancelled_undo" : "vessel_trailer_no_show_undo",
+    event_description: `Trailer ${outcome === "cancelled" ? "cancelled" : "no show"} status reverted from Master Mobile.`,
+    old_value: {
+      vessel_trailer_id: trailer.id,
+      arrival_status: trailer.arrival_status,
+      status: trailer.status,
+    },
+    new_value: {
+      vessel_trailer_id: updated.id,
+      arrival_status: updated.arrival_status,
+      status: updated.status,
+    },
+  });
+
+  await createTrailerActivity({
+    supabaseClient: supabase,
+    trailerId: updated.trailer_id ?? null,
+    trailerNumber: updated.trailer_number ?? trailer.trailer_number ?? "UNKNOWN",
+    eventType: "operational_status_changed",
+    eventTitle: outcome === "cancelled" ? "Cancelled undone" : "No Show undone",
+    eventDescription: "Trailer returned to pending arrival from Master Mobile.",
+    sourceModule: "vessel",
+    sourceRecordId: updated.id,
+    previousStatus: trailer.arrival_status ?? trailer.status,
+    newStatus: updated.arrival_status ?? updated.status,
+    metadata: {
+      vessel_operation_id: updated.vessel_operation_id,
+      vessel_trailer_id: updated.id,
+    },
+    performedBy: operatorName,
+    createdAt: nowIso,
+  });
+
+  return {
+    ok: true,
+    status: "success",
+    message: `${updated.trailer_number ?? "Trailer"} restored to pending arrival.`,
+    retryable: false,
+    updatedVesselTrailer: asVesselTrailerState(updated as VesselOperationTrailerRecord),
+  };
 };
 
 const runMarkArrived = async (
@@ -848,8 +1330,28 @@ export async function executeMobileAction(
 ): Promise<MobileActionResult> {
   const operatorName = resolveOperatorName(user);
 
+  if (action.actionType === "ADD_VESSEL_TRAILER") {
+    return runAddVesselTrailer(supabase, action.payload, operatorName);
+  }
+
   if (action.actionType === "MARK_ARRIVED") {
     return runMarkArrived(supabase, action.payload, operatorName);
+  }
+
+  if (action.actionType === "MARK_CANCELLED") {
+    return runSetPreArrivalOutcome(supabase, action.payload, operatorName, "cancelled");
+  }
+
+  if (action.actionType === "MARK_NO_SHOW") {
+    return runSetPreArrivalOutcome(supabase, action.payload, operatorName, "no_show");
+  }
+
+  if (action.actionType === "UNDO_CANCELLED") {
+    return runUndoPreArrivalOutcome(supabase, action.payload, operatorName, "cancelled");
+  }
+
+  if (action.actionType === "UNDO_NO_SHOW") {
+    return runUndoPreArrivalOutcome(supabase, action.payload, operatorName, "no_show");
   }
 
   if (action.actionType === "MOVE_COMPOUND_POSITION") {

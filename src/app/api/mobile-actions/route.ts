@@ -17,7 +17,12 @@ const requestSchema = z.object({
 });
 
 const permissionByActionType: Record<MobileActionRequest["actionType"], { moduleKey: "arrivals" | "compound" | "vessel_operations"; action: "create" | "edit" | "complete" }> = {
+  ADD_VESSEL_TRAILER: { moduleKey: "vessel_operations", action: "edit" },
   MARK_ARRIVED: { moduleKey: "arrivals", action: "create" },
+  MARK_CANCELLED: { moduleKey: "vessel_operations", action: "edit" },
+  MARK_NO_SHOW: { moduleKey: "vessel_operations", action: "edit" },
+  UNDO_CANCELLED: { moduleKey: "vessel_operations", action: "edit" },
+  UNDO_NO_SHOW: { moduleKey: "vessel_operations", action: "edit" },
   MOVE_COMPOUND_POSITION: { moduleKey: "compound", action: "edit" },
   CHANGE_LOAD_STATUS: { moduleKey: "compound", action: "edit" },
   START_INSPECTION: { moduleKey: "vessel_operations", action: "edit" },
