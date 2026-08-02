@@ -13,6 +13,7 @@ type DashboardAuthGuardProps = {
 
 const AUTH_GUARD_TIMEOUT_MS = 10_000;
 const isDev = process.env.NODE_ENV !== "production";
+const shouldLogDashboardTiming = isDev || process.env.NEXT_PUBLIC_DASHBOARD_TIMING === "1";
 
 const withTimeout = async <T,>(promise: PromiseLike<T>, timeoutMs: number, label: string): Promise<T> => {
   return await Promise.race([
@@ -51,8 +52,17 @@ export function DashboardAuthGuard({ children }: DashboardAuthGuardProps) {
     }
 
     const validateSession = async () => {
+      const authPhaseStart = typeof performance !== "undefined" ? performance.now() : Date.now();
       try {
         const { data, error } = await withTimeout(supabase.auth.getSession(), AUTH_GUARD_TIMEOUT_MS, "Supabase auth.getSession");
+        if (shouldLogDashboardTiming) {
+          const authPhaseEnd = typeof performance !== "undefined" ? performance.now() : Date.now();
+          console.info("[dashboard-timing] phase=auth duration_ms=" + Math.round(authPhaseEnd - authPhaseStart), {
+            hasSession: Boolean(data.session?.access_token),
+            hasError: Boolean(error),
+          });
+        }
+
         if (!active) {
           return;
         }
@@ -74,6 +84,14 @@ export function DashboardAuthGuard({ children }: DashboardAuthGuardProps) {
 
         setIsChecking(false);
       } catch (error) {
+        if (shouldLogDashboardTiming) {
+          const authPhaseEnd = typeof performance !== "undefined" ? performance.now() : Date.now();
+          console.info("[dashboard-timing] phase=auth duration_ms=" + Math.round(authPhaseEnd - authPhaseStart), {
+            hasSession: false,
+            hasError: true,
+          });
+        }
+
         if (!active) {
           return;
         }

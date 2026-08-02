@@ -15,7 +15,6 @@ export const metadata: Metadata = {
   description: PWA_DESCRIPTION,
   applicationName: PWA_APP_NAME,
   manifest: "/manifest.webmanifest",
-  themeColor: PWA_THEME_COLOR,
   appleWebApp: {
     capable: true,
     statusBarStyle: PWA_APPLE_STATUS_BAR_STYLE,

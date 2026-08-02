@@ -173,6 +173,7 @@ const defaultOperationalAlertSummary: OperationalAlertSummary = {
 
 const COMPOUND_POSITIONS = 50;
 const isDev = process.env.NODE_ENV !== "production";
+const shouldLogDashboardTiming = isDev || process.env.NEXT_PUBLIC_DASHBOARD_TIMING === "1";
 
 type SupabaseErrorShape = {
   message?: string | null;
@@ -255,6 +256,8 @@ export function TrailerDashboard() {
   const [error, setError] = useState<string | null>(null);
   const activeAlertsPromiseRef = useRef<Promise<void> | null>(null);
   const resolvedAlertsPromiseRef = useRef<Promise<void> | null>(null);
+  const dashboardMountStartRef = useRef<number>(typeof performance !== "undefined" ? performance.now() : Date.now());
+  const finalRenderLoggedRef = useRef(false);
 
   const saved = searchParams.get("saved");
   const notice = saved === "1" ? "Operation saved successfully. Dashboard refreshed." : null;
@@ -265,6 +268,7 @@ export function TrailerDashboard() {
     }
 
     const requestPromise = (async () => {
+      const alertsPhaseStart = typeof performance !== "undefined" ? performance.now() : Date.now();
       if (mode === "initial") {
         setAlertsInitialLoading(true);
       } else {
@@ -286,6 +290,14 @@ export function TrailerDashboard() {
           getOperationalAlerts({ includeResolved: false, limit: 1000 }, supabase),
           getOperationalAlertSummary(supabase),
         ]);
+
+        if (shouldLogDashboardTiming) {
+          const alertsPhaseEnd = typeof performance !== "undefined" ? performance.now() : Date.now();
+          console.info("[dashboard-timing] phase=alert_loading duration_ms=" + Math.round(alertsPhaseEnd - alertsPhaseStart), {
+            mode,
+            rows: activeAlertsResult.ok ? activeAlertsResult.data.length : 0,
+          });
+        }
 
         if (!activeAlertsResult.ok) {
           throw new Error(activeAlertsResult.error);
@@ -321,6 +333,13 @@ export function TrailerDashboard() {
       } catch (err) {
         const message = err instanceof Error ? err.message : "Unable to load operational alerts.";
         setAlertsError(message);
+        if (shouldLogDashboardTiming) {
+          const alertsPhaseEnd = typeof performance !== "undefined" ? performance.now() : Date.now();
+          console.info("[dashboard-timing] phase=alert_loading duration_ms=" + Math.round(alertsPhaseEnd - alertsPhaseStart), {
+            mode,
+            failed: true,
+          });
+        }
         if (isDev) {
           const errorObject = err as {
             message?: string;
@@ -404,6 +423,8 @@ export function TrailerDashboard() {
   }, []);
 
   const loadStats = useCallback(async () => {
+      const statsPhaseStart = typeof performance !== "undefined" ? performance.now() : Date.now();
+      const supabaseReadStart = statsPhaseStart;
       setIsLoading(true);
       setError(null);
 
@@ -458,6 +479,11 @@ export function TrailerDashboard() {
               .limit(1),
           ]);
 
+        if (shouldLogDashboardTiming) {
+          const supabaseReadEnd = typeof performance !== "undefined" ? performance.now() : Date.now();
+          console.info("[dashboard-timing] phase=supabase_reads duration_ms=" + Math.round(supabaseReadEnd - supabaseReadStart));
+        }
+
         if (supabaseError) throw new Error(buildSectionError("trailers", supabaseError));
         if (eventsError) throw new Error(buildSectionError("trailer_events", eventsError));
         if (deliveriesError) throw new Error(buildSectionError("delivery_bookings", deliveriesError));
@@ -465,6 +491,8 @@ export function TrailerDashboard() {
         if (vesselError) throw new Error(buildSectionError("vessel_operations", vesselError));
         if (vesselTrailerError) throw new Error(buildSectionError("vessel_operation_trailers", vesselTrailerError));
         if (latestStockCheckError) throw new Error(buildSectionError("compound_stock_checks", latestStockCheckError));
+
+        const kpiAggregationStart = typeof performance !== "undefined" ? performance.now() : Date.now();
 
         const trailers = (data ?? []) as TrailerRecord[];
         setArrivalsTodayCount(
@@ -639,6 +667,11 @@ export function TrailerDashboard() {
 
         setMissingTrailersCount(latestMissing);
         setUnexpectedTrailersCount(latestUnexpected);
+
+        if (shouldLogDashboardTiming) {
+          const kpiAggregationEnd = typeof performance !== "undefined" ? performance.now() : Date.now();
+          console.info("[dashboard-timing] phase=kpi_aggregation duration_ms=" + Math.round(kpiAggregationEnd - kpiAggregationStart));
+        }
       } catch (err) {
         const message =
           err instanceof Error
@@ -666,6 +699,10 @@ export function TrailerDashboard() {
         setTemperatureAlertsCount(0);
         setDamagePendingReviewCount(0);
       } finally {
+        if (shouldLogDashboardTiming) {
+          const statsPhaseEnd = typeof performance !== "undefined" ? performance.now() : Date.now();
+          console.info("[dashboard-timing] phase=load_stats_total duration_ms=" + Math.round(statsPhaseEnd - statsPhaseStart));
+        }
         setIsLoading(false);
       }
     }, []);
@@ -719,6 +756,23 @@ export function TrailerDashboard() {
       void loadResolvedAlerts();
     }
   }, { debounceMs: 900 });
+
+  useEffect(() => {
+    if (finalRenderLoggedRef.current) {
+      return;
+    }
+
+    if (isLoading || alertsInitialLoading) {
+      return;
+    }
+
+    finalRenderLoggedRef.current = true;
+
+    if (shouldLogDashboardTiming) {
+      const renderPhaseEnd = typeof performance !== "undefined" ? performance.now() : Date.now();
+      console.info("[dashboard-timing] phase=final_render duration_ms=" + Math.round(renderPhaseEnd - dashboardMountStartRef.current));
+    }
+  }, [alertsInitialLoading, isLoading]);
 
   useEffect(() => {
     const handleStorage = (event: StorageEvent) => {
