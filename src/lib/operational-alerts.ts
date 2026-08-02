@@ -22,6 +22,10 @@ type SupabaseErrorLike = {
   hint?: string | null;
 };
 
+type InsertPayloadVariant = "modern" | "compat_no_alert_key";
+
+type InsertSelectVariant = "modern_all" | "compat_core" | "compat_core_no_alert_key";
+
 export type OperationalAlertSettings = {
   enabled: boolean;
   compoundDwellWarningDays: number;
@@ -187,6 +191,9 @@ type TrailerMovementActivityRow = {
 const ACTIVE_ALERT_STATUSES: OperationalAlertStatus[] = ["active"];
 const OPERATIONAL_ALERTS_ACTIVE_DEDUPE_INDEX = "operational_alerts_active_dedupe_idx";
 const isDev = process.env.NODE_ENV === "development";
+const MODERN_OPERATIONAL_ALERT_INSERT_SELECT = "*";
+const COMPAT_OPERATIONAL_ALERT_INSERT_SELECT = "id,alert_key,alert_type,severity,status,title,description,trailer_id,trailer_number,source_module,source_record_id,metadata,created_at,updated_at";
+const COMPAT_OPERATIONAL_ALERT_INSERT_SELECT_NO_ALERT_KEY = "id,alert_type,severity,status,title,description,trailer_id,trailer_number,source_module,source_record_id,metadata,created_at,updated_at";
 const SETTINGS_CACHE_MS = 15_000;
 const DETECTION_COOLDOWN_MS = 10_000;
 const COMPOUND_AGE_WARNING_HOURS = 48;
@@ -721,6 +728,116 @@ const isActiveAlertDedupeConstraintError = (error: unknown) => {
   return code === "23505" && message.includes(OPERATIONAL_ALERTS_ACTIVE_DEDUPE_INDEX);
 };
 
+const normalizeSupabaseErrorLike = (error: unknown): SupabaseErrorLike => {
+  if (!error || typeof error !== "object") {
+    return {};
+  }
+
+  const candidate = error as SupabaseErrorLike;
+  return {
+    code: candidate.code ?? null,
+    message: candidate.message ?? null,
+    details: candidate.details ?? null,
+    hint: candidate.hint ?? null,
+  };
+};
+
+const isSchemaCacheCompatibilityError = (error: SupabaseErrorLike) => {
+  const code = normalizeText(error.code);
+  const message = normalizeText(error.message).toLowerCase();
+  const details = normalizeText(error.details).toLowerCase();
+  return code === "PGRST204" || details.includes("schema cache") || message.includes("schema cache");
+};
+
+const extractSchemaCacheFieldName = (error: SupabaseErrorLike) => {
+  const combined = `${normalizeText(error.message)} ${normalizeText(error.details)}`;
+  const quotedMatch = combined.match(/'([a-zA-Z0-9_]+)'/);
+  if (quotedMatch && quotedMatch[1]) {
+    return quotedMatch[1];
+  }
+
+  const quotedDoubleMatch = combined.match(/"([a-zA-Z0-9_]+)"/);
+  if (quotedDoubleMatch && quotedDoubleMatch[1]) {
+    return quotedDoubleMatch[1];
+  }
+
+  return null;
+};
+
+const extractNotNullFieldName = (error: SupabaseErrorLike) => {
+  const details = normalizeText(error.details);
+  const quotedMatch = details.match(/column\s+"([a-zA-Z0-9_]+)"/i);
+  if (quotedMatch && quotedMatch[1]) {
+    return quotedMatch[1];
+  }
+
+  return null;
+};
+
+const isLegacyRequiredFieldError = (error: SupabaseErrorLike) => normalizeText(error.code) === "23502";
+
+const isRecognizedStatusConstraintError = (error: SupabaseErrorLike) => {
+  if (normalizeText(error.code) !== "23514") {
+    return false;
+  }
+
+  const message = normalizeText(error.message).toLowerCase();
+  const details = normalizeText(error.details).toLowerCase();
+  return (
+    message.includes("operational_alerts_status_valid")
+    || details.includes("operational_alerts_status_valid")
+    || (message.includes("status") && details.includes("check constraint"))
+  );
+};
+
+const isRecognizedInsertCompatibilityFailure = (error: SupabaseErrorLike) => {
+  return (
+    isSchemaCacheCompatibilityError(error)
+    || isLegacyRequiredFieldError(error)
+    || isRecognizedStatusConstraintError(error)
+  );
+};
+
+const getInsertStatusCandidates = (statusValue: unknown): string[] => {
+  const normalized = normalizeText(typeof statusValue === "string" ? statusValue : "").toLowerCase();
+  if (!normalized || normalized === "active" || normalized === "open") {
+    return ["open", "active"];
+  }
+
+  return [normalized];
+};
+
+const buildInsertPayloadVariant = (
+  basePayload: Database["public"]["Tables"]["operational_alerts"]["Insert"],
+  statusCandidate: string,
+  payloadVariant: InsertPayloadVariant,
+) => {
+  const candidatePayload: Database["public"]["Tables"]["operational_alerts"]["Insert"] = {
+    ...basePayload,
+    status: statusCandidate,
+    // Keep alert_type explicit for legacy NOT NULL schemas.
+    alert_type: normalizeText(basePayload.alert_type) || "general",
+  };
+
+  if (payloadVariant === "compat_no_alert_key") {
+    delete candidatePayload.alert_key;
+  }
+
+  return candidatePayload;
+};
+
+const getInsertSelectClause = (selectVariant: InsertSelectVariant) => {
+  if (selectVariant === "compat_core") {
+    return COMPAT_OPERATIONAL_ALERT_INSERT_SELECT;
+  }
+
+  if (selectVariant === "compat_core_no_alert_key") {
+    return COMPAT_OPERATIONAL_ALERT_INSERT_SELECT_NO_ALERT_KEY;
+  }
+
+  return MODERN_OPERATIONAL_ALERT_INSERT_SELECT;
+};
+
 const updateAlertRow = async (
   supabaseClient: SupabaseClient<Database>,
   alertId: string,
@@ -744,43 +861,104 @@ const insertAlertRow = async (
   supabaseClient: SupabaseClient<Database>,
   payload: Database["public"]["Tables"]["operational_alerts"]["Insert"],
 ) => {
-  const { data, error } = await supabaseClient
-    .from("operational_alerts")
-    .insert(payload)
-    .select("*")
-    .single();
+  const statusCandidates = getInsertStatusCandidates(payload.status);
+  let attempt = 0;
+  let statusIndex = 0;
+  let payloadVariant: InsertPayloadVariant = "modern";
+  let selectVariant: InsertSelectVariant = "modern_all";
+  const triedStates = new Set<string>();
 
-  if (error || !data) {
-    if (error && isDev) {
-      const baseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "<missing NEXT_PUBLIC_SUPABASE_URL>";
-      console.error("[alerts] operational_alerts insert failed", {
-        requestUrl: `${baseUrl}/rest/v1/operational_alerts?select=*`,
-        requestMethod: "POST",
-        selectClause: "*",
-        filters: [],
-        order: [],
-        requestBody: payload,
-        supabaseError: {
-          code: error.code ?? null,
-          message: error.message ?? null,
-          details: error.details ?? null,
-          hint: error.hint ?? null,
-        },
+  while (statusIndex < statusCandidates.length) {
+    const statusCandidate = statusCandidates[statusIndex] ?? "open";
+    const attemptPayload = buildInsertPayloadVariant(payload, statusCandidate, payloadVariant);
+    const attemptSelect = getInsertSelectClause(selectVariant);
+    const stateKey = `${statusCandidate}|${payloadVariant}|${selectVariant}`;
+
+    if (triedStates.has(stateKey)) {
+      break;
+    }
+
+    triedStates.add(stateKey);
+    attempt += 1;
+
+    const { data, error } = await supabaseClient
+      .from("operational_alerts")
+      .insert(attemptPayload)
+      .select(attemptSelect)
+      .single();
+
+    if (!error && data) {
+      if (isDev) {
+        console.info("[alerts] operational_alerts insert attempt", {
+          attempt,
+          payloadVariant,
+          statusCandidate,
+          selectVariant,
+          errorCode: null,
+          willRetry: false,
+        });
+      }
+
+      return normalizeAlertRow(data as unknown as OperationalAlertRow);
+    }
+
+    const normalizedError = normalizeSupabaseErrorLike(error);
+    const recognizedCompatibilityFailure = isRecognizedInsertCompatibilityFailure(normalizedError);
+    let willRetry = false;
+
+    if (recognizedCompatibilityFailure) {
+      if (isRecognizedStatusConstraintError(normalizedError) && statusIndex < statusCandidates.length - 1) {
+        statusIndex += 1;
+        willRetry = true;
+      } else if (isSchemaCacheCompatibilityError(normalizedError)) {
+        const schemaField = extractSchemaCacheFieldName(normalizedError);
+        if (schemaField === "alert_key" && payloadVariant !== "compat_no_alert_key") {
+          payloadVariant = "compat_no_alert_key";
+          selectVariant = "compat_core_no_alert_key";
+          willRetry = true;
+        } else if (selectVariant === "modern_all") {
+          selectVariant = payloadVariant === "compat_no_alert_key" ? "compat_core_no_alert_key" : "compat_core";
+          willRetry = true;
+        }
+      } else if (isLegacyRequiredFieldError(normalizedError)) {
+        const missingField = extractNotNullFieldName(normalizedError);
+        const hasAlertType = normalizeText(attemptPayload.alert_type) !== "";
+        if (missingField === "alert_type" && !hasAlertType) {
+          willRetry = true;
+        }
+      }
+    }
+
+    if (isDev) {
+      const schemaField = extractSchemaCacheFieldName(normalizedError);
+      const missingRequiredField = extractNotNullFieldName(normalizedError);
+      console.warn("[alerts] operational_alerts insert attempt failed", {
+        attempt,
+        payloadVariant,
+        statusCandidate,
+        selectVariant,
+        errorCode: normalizedError.code ?? null,
+        schemaField,
+        missingRequiredField,
+        recognizedCompatibilityFailure,
+        willRetry,
       });
     }
 
-    if (error) {
+    if (!error) {
+      break;
+    }
+
+    if (!willRetry) {
       const insertError = new Error(error.message || "Unable to create operational alert.") as Error & SupabaseErrorLike;
       insertError.code = error.code ?? null;
       insertError.details = error.details ?? null;
       insertError.hint = error.hint ?? null;
       throw insertError;
     }
-
-    throw new Error("Unable to create operational alert.");
   }
 
-  return normalizeAlertRow(data as OperationalAlertRow);
+  throw new Error("Unable to create operational alert.");
 };
 
 export async function getOperationalAlertSettings(

@@ -16,7 +16,13 @@ Set these server-side variables for the AI Assistant and dashboard runtime:
 - `GMAIL_FROM_EMAIL`
 - `GMAIL_FROM_NAME`
 
+Set these additional private server-side variables for automation scheduler execution:
+
+- `SUPABASE_SERVICE_ROLE_KEY`
+- `AUTOMATION_SCHEDULER_TOKEN`
+
 On Cloudflare, define the OpenAI variables in the Worker environment or secrets for the deployed app. Keep `OPENAI_API_KEY` private and do not expose it to the browser.
+Define `SUPABASE_SERVICE_ROLE_KEY` and `AUTOMATION_SCHEDULER_TOKEN` as private Worker secrets/variables only. Do not prefix them with `NEXT_PUBLIC_`.
 
 ## Deployment
 
