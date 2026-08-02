@@ -20,7 +20,12 @@ import {
   type SchedulerJobKey,
 } from "@/lib/automation/types";
 import { isExportAllocationOverdue, type ExportAllocationStatus } from "@/lib/export-allocation";
-import { createOperationalAlert, runOperationalAlertDetection } from "@/lib/operational-alerts";
+import {
+  type OperationalAlertDetectionResult,
+  type OperationalAlertRow,
+  createOperationalAlert,
+  runOperationalAlertDetection,
+} from "@/lib/operational-alerts";
 import { createTrailerActivity } from "@/lib/trailer-activity";
 
 type AutomationClient = SupabaseClient<Database>;
@@ -35,6 +40,11 @@ type ParsedRule = {
   row: AutomationRuleRow;
   conditions: AutomationConditions;
   actions: AutomationAction[];
+};
+
+type ExecutionRuntime = {
+  schedulerExistingAlertsByKey?: Map<string, OperationalAlertRow | null>;
+  operationalAlertDetectionPromise?: Promise<{ ok: boolean; data?: OperationalAlertDetectionResult; error?: string }>;
 };
 
 const normalizeText = (value?: string | null) => value?.trim().toLowerCase() ?? "";
@@ -259,15 +269,63 @@ const resolveAlertDescription = (action: AutomationAction, payload: AutomationEv
   return `Automation engine executed on trigger ${payload.triggerEvent}.`;
 };
 
-const executeAction = async (client: AutomationClient, rule: ParsedRule, action: AutomationAction, context: AutomationEventContext) => {
+const buildAutomationAlertKey = (
+  ruleId: string,
+  triggerEvent: AutomationTriggerEvent,
+  sourceRecordId: string | null,
+) => `automation:${ruleId}:${triggerEvent}:${sourceRecordId ?? "none"}`;
+
+const loadSchedulerExistingAlerts = async (client: AutomationClient, rules: ParsedRule[]) => {
+  const alertKeys = rules
+    .filter((rule) => rule.actions.some((action) => action.type === "create_alert" || action.type === "add_exception"))
+    .map((rule) => buildAutomationAlertKey(rule.row.id, "scheduler_job", null));
+
+  const uniqueAlertKeys = [...new Set(alertKeys)];
+  if (uniqueAlertKeys.length === 0) {
+    return new Map<string, OperationalAlertRow | null>();
+  }
+
+  const { data, error } = await client
+    .from("operational_alerts")
+    .select("*")
+    .eq("status", "active")
+    .in("alert_key", uniqueAlertKeys);
+
+  if (error) {
+    throw new Error(error.message || "Unable to preload scheduler operational alerts.");
+  }
+
+  const existingByKey = new Map<string, OperationalAlertRow | null>();
+  uniqueAlertKeys.forEach((key) => existingByKey.set(key, null));
+  ((data ?? []) as OperationalAlertRow[]).forEach((row) => {
+    if (existingByKey.has(row.alert_key)) {
+      existingByKey.set(row.alert_key, row);
+    }
+  });
+
+  return existingByKey;
+};
+
+const executeAction = async (
+  client: AutomationClient,
+  rule: ParsedRule,
+  action: AutomationAction,
+  context: AutomationEventContext,
+  runtime?: ExecutionRuntime,
+) => {
   const trailerId = context.trailer?.id ?? context.vesselTrailer?.trailer_id ?? context.payload.trailerId ?? null;
   const trailerNumber = context.trailer?.trailer_number ?? context.vesselTrailer?.trailer_number ?? context.payload.trailerNumber ?? null;
   const sourceRecordId = context.payload.sourceRecordId ?? context.vesselTrailer?.id ?? context.exportAllocation?.id ?? null;
 
   if (action.type === "create_alert" || action.type === "add_exception") {
+    const alertKey = buildAutomationAlertKey(rule.row.id, context.payload.triggerEvent, sourceRecordId);
+    const existingAlert = runtime?.schedulerExistingAlertsByKey
+      ? (runtime.schedulerExistingAlertsByKey.get(alertKey) ?? null)
+      : undefined;
+
     const result = await createOperationalAlert(
       {
-        alertKey: `automation:${rule.row.id}:${context.payload.triggerEvent}:${sourceRecordId ?? "none"}`,
+        alertKey,
         severity: action.severity ?? (action.type === "add_exception" ? "warning" : "info"),
         title: resolveAlertTitle(action, context.payload),
         description: resolveAlertDescription(action, context.payload),
@@ -275,6 +333,7 @@ const executeAction = async (client: AutomationClient, rule: ParsedRule, action:
         trailerNumber,
         sourceModule: action.sourceModule ?? "operations",
         sourceRecordId,
+        existingAlert,
         metadata: {
           automation_rule_id: rule.row.id,
           trigger_event: context.payload.triggerEvent,
@@ -288,6 +347,10 @@ const executeAction = async (client: AutomationClient, rule: ParsedRule, action:
 
     if (!result.ok) {
       throw new Error(result.error);
+    }
+
+    if (runtime?.schedulerExistingAlertsByKey && result.data.status === "active") {
+      runtime.schedulerExistingAlertsByKey.set(alertKey, result.data);
     }
 
     return;
@@ -318,7 +381,16 @@ const executeAction = async (client: AutomationClient, rule: ParsedRule, action:
   }
 
   if (action.type === "refresh_kpi") {
-    const result = await runOperationalAlertDetection(client);
+    if (!runtime?.operationalAlertDetectionPromise) {
+      const detectionPromise = runOperationalAlertDetection(client);
+      if (runtime) {
+        runtime.operationalAlertDetectionPromise = detectionPromise;
+      }
+    }
+
+    const result = runtime?.operationalAlertDetectionPromise
+      ? await runtime.operationalAlertDetectionPromise
+      : await runOperationalAlertDetection(client);
     if (!result.ok) {
       throw new Error(result.error);
     }
@@ -530,7 +602,12 @@ const loadEventContext = async (client: AutomationClient, payload: AutomationEve
   };
 };
 
-const executeRuleForPayload = async (client: AutomationClient, rule: ParsedRule, payload: AutomationEventPayload) => {
+const executeRuleForPayload = async (
+  client: AutomationClient,
+  rule: ParsedRule,
+  payload: AutomationEventPayload,
+  runtime?: ExecutionRuntime,
+) => {
   const context = await loadEventContext(client, payload);
   const affectedEntityType = context.trailer ? "trailer" : context.vesselTrailer ? "vessel_trailer" : null;
   const affectedEntityId = context.trailer?.id ?? context.vesselTrailer?.id ?? null;
@@ -551,7 +628,7 @@ const executeRuleForPayload = async (client: AutomationClient, rule: ParsedRule,
 
   try {
     for (const action of rule.actions) {
-      await executeAction(client, rule, action, context);
+      await executeAction(client, rule, action, context, runtime);
     }
 
     await insertExecutionLog(
@@ -657,12 +734,22 @@ export async function updateAutomationRule(client: AutomationClient, input: Auto
 export async function runAutomationEvent(client: AutomationClient, payload: AutomationEventPayload): Promise<AutomationExecutionSummary> {
   const rules = await loadEnabledRules(client, payload.triggerEvent);
 
+  return runAutomationEventWithRules(client, payload, rules);
+}
+
+const runAutomationEventWithRules = async (
+  client: AutomationClient,
+  payload: AutomationEventPayload,
+  rules: ParsedRule[],
+  runtime?: ExecutionRuntime,
+): Promise<AutomationExecutionSummary> => {
+
   let successCount = 0;
   let skippedCount = 0;
   let failedCount = 0;
 
   for (const rule of rules) {
-    const result = await executeRuleForPayload(client, rule, payload);
+    const result = await executeRuleForPayload(client, rule, payload, runtime);
     if (result === "success") successCount += 1;
     if (result === "skipped") skippedCount += 1;
     if (result === "failed") failedCount += 1;
@@ -675,7 +762,7 @@ export async function runAutomationEvent(client: AutomationClient, payload: Auto
     skippedCount,
     failedCount,
   };
-}
+};
 
 export async function runAutomationForRecentActivityEvents(client: AutomationClient, limit = 120) {
   const { data, error } = await client
@@ -716,16 +803,20 @@ export async function runAutomationForRecentActivityEvents(client: AutomationCli
 export async function runScheduledAutomationJobs(client: AutomationClient) {
   const jobs = [...schedulerJobKeys] as SchedulerJobKey[];
   const summaries: AutomationExecutionSummary[] = [];
+  const rules = await loadEnabledRules(client, "scheduler_job");
+  const runtime: ExecutionRuntime = {
+    schedulerExistingAlertsByKey: await loadSchedulerExistingAlerts(client, rules),
+  };
 
   for (const job of jobs) {
-    const summary = await runAutomationEvent(client, {
+    const summary = await runAutomationEventWithRules(client, {
       triggerEvent: "scheduler_job",
       schedulerJob: job,
       metadata: {
         scheduler_job: job,
         executed_at: new Date().toISOString(),
       },
-    });
+    }, rules, runtime);
 
     summaries.push(summary);
   }

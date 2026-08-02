@@ -155,6 +155,22 @@ const buildClient = () => {
         };
       }
 
+      if (table === "operational_alerts") {
+        return {
+          select() {
+            return {
+              eq() {
+                return {
+                  in() {
+                    return Promise.resolve({ data: [], error: null });
+                  },
+                };
+              },
+            };
+          },
+        };
+      }
+
       throw new Error(`Unexpected table ${table}`);
     },
   };

@@ -1709,7 +1709,7 @@ export async function runOperationalAlertDetection(
         const activeRow = activeMap.get(key);
         const result = await createOperationalAlert({
           ...candidate,
-          existingAlert: activeRow,
+          existingAlert: activeRow ?? null,
         }, client);
         if (!result.ok) {
           if (isMissingColumnError(result.error)) {
