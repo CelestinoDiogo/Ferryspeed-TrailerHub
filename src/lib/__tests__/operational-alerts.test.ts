@@ -511,7 +511,66 @@ describe("createOperationalAlert insert and race recovery", () => {
     expect(update).toHaveBeenCalledTimes(1);
   });
 
-  it("retries insert status from open to active on recognized status constraint failure", async () => {
+  it("retries insert status from open to active when constraint is operational_alerts_status_check", async () => {
+    const inserted = makeAlert({ id: "inserted-status-check-fallback", status: "active" });
+    const initialLookup = makeSelectChain({ data: [], error: null });
+
+    const insertSingle = vi
+      .fn()
+      .mockResolvedValueOnce({
+        data: null,
+        error: {
+          code: "23514",
+          message: "new row for relation \"operational_alerts\" violates check constraint \"operational_alerts_status_check\"",
+          details: "Failing row contains status open.",
+          hint: null,
+        },
+      })
+      .mockResolvedValueOnce({ data: inserted, error: null });
+    const insertSelect = vi.fn().mockReturnValue({ single: insertSingle });
+    const insert = vi.fn().mockReturnValue({ select: insertSelect });
+
+    const updateSingle = vi.fn().mockResolvedValue({ data: null, error: { message: "update should not be called" } });
+    const updateSelect = vi.fn().mockReturnValue({ single: updateSingle });
+    const updateEq = vi.fn().mockReturnValue({ select: updateSelect });
+    const update = vi.fn().mockReturnValue({ eq: updateEq });
+
+    const select = vi.fn().mockReturnValue(initialLookup);
+    const client = {
+      from: vi.fn().mockReturnValue({
+        select,
+        update,
+        insert,
+      }),
+      auth: {
+        getUser: vi.fn(),
+      },
+    } as never;
+
+    const result = await createOperationalAlert(
+      {
+        severity: "warning",
+        title: "Inspection missing photos",
+        description: "Completed inspection has no linked photos.",
+        sourceModule: "inspection",
+        sourceRecordId: inserted.source_record_id,
+        trailerId: inserted.trailer_id,
+        trailerNumber: inserted.trailer_number,
+        metadata: { vessel_trailer_id: inserted.source_record_id },
+        performedBy: "tester",
+      },
+      client,
+    );
+
+    expect(result.ok).toBe(true);
+    expect(insertSingle).toHaveBeenCalledTimes(2);
+    expect(insert).toHaveBeenCalledTimes(2);
+    expect(update).not.toHaveBeenCalled();
+    expect(insert.mock.calls[0]?.[0]?.status).toBe("open");
+    expect(insert.mock.calls[1]?.[0]?.status).toBe("active");
+  });
+
+  it("retries insert status from open to active when constraint is operational_alerts_status_valid", async () => {
     const inserted = makeAlert({ id: "inserted-status-fallback", status: "active" });
     const initialLookup = makeSelectChain({ data: [], error: null });
 
@@ -563,10 +622,65 @@ describe("createOperationalAlert insert and race recovery", () => {
     );
 
     expect(result.ok).toBe(true);
+    expect(insertSingle).toHaveBeenCalledTimes(2);
     expect(insert).toHaveBeenCalledTimes(2);
     expect(update).not.toHaveBeenCalled();
     expect(insert.mock.calls[0]?.[0]?.status).toBe("open");
     expect(insert.mock.calls[1]?.[0]?.status).toBe("active");
+  });
+
+  it("does not retry status when 23514 is for a non-status constraint", async () => {
+    const initialLookup = makeSelectChain({ data: [], error: null });
+
+    const insertSingle = vi.fn().mockResolvedValue({
+      data: null,
+      error: {
+        code: "23514",
+        message: "new row for relation \"operational_alerts\" violates check constraint \"operational_alerts_severity_check\"",
+        details: "Failing row contains invalid severity.",
+        hint: null,
+      },
+    });
+    const insertSelect = vi.fn().mockReturnValue({ single: insertSingle });
+    const insert = vi.fn().mockReturnValue({ select: insertSelect });
+
+    const updateSingle = vi.fn().mockResolvedValue({ data: null, error: { message: "update should not be called" } });
+    const updateSelect = vi.fn().mockReturnValue({ single: updateSingle });
+    const updateEq = vi.fn().mockReturnValue({ select: updateSelect });
+    const update = vi.fn().mockReturnValue({ eq: updateEq });
+
+    const select = vi.fn().mockReturnValue(initialLookup);
+    const client = {
+      from: vi.fn().mockReturnValue({
+        select,
+        update,
+        insert,
+      }),
+      auth: {
+        getUser: vi.fn(),
+      },
+    } as never;
+
+    const result = await createOperationalAlert(
+      {
+        severity: "warning",
+        title: "Inspection missing photos",
+        description: "Completed inspection has no linked photos.",
+        sourceModule: "inspection",
+        sourceRecordId: "00000000-0000-4000-8000-000000000222",
+        trailerId: "00000000-0000-4000-8000-000000000111",
+        trailerNumber: "FS100",
+        metadata: { vessel_trailer_id: "00000000-0000-4000-8000-000000000222" },
+        performedBy: "tester",
+      },
+      client,
+    );
+
+    expect(result.ok).toBe(false);
+    expect(insertSingle).toHaveBeenCalledTimes(1);
+    expect(insert).toHaveBeenCalledTimes(1);
+    expect(update).not.toHaveBeenCalled();
+    expect(insert.mock.calls[0]?.[0]?.status).toBe("open");
   });
 
   it("retries insert with compatibility payload when alert_key is missing from schema cache", async () => {

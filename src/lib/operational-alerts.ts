@@ -190,6 +190,10 @@ type TrailerMovementActivityRow = {
 
 const ACTIVE_ALERT_STATUSES: OperationalAlertStatus[] = ["active"];
 const OPERATIONAL_ALERTS_ACTIVE_DEDUPE_INDEX = "operational_alerts_active_dedupe_idx";
+const OPERATIONAL_ALERTS_STATUS_CONSTRAINT_NAMES = new Set([
+  "operational_alerts_status_valid",
+  "operational_alerts_status_check",
+]);
 const isDev = process.env.NODE_ENV === "development";
 const MODERN_OPERATIONAL_ALERT_INSERT_SELECT = "*";
 const COMPAT_OPERATIONAL_ALERT_INSERT_SELECT = "id,alert_key,alert_type,severity,status,title,description,trailer_id,trailer_number,source_module,source_record_id,metadata,created_at,updated_at";
@@ -774,6 +778,21 @@ const extractNotNullFieldName = (error: SupabaseErrorLike) => {
   return null;
 };
 
+const extractConstraintName = (error: SupabaseErrorLike) => {
+  const combined = `${normalizeText(error.message)} ${normalizeText(error.details)} ${normalizeText(error.hint)}`;
+  const doubleQuotedMatch = combined.match(/constraint\s+"([a-zA-Z0-9_]+)"/i);
+  if (doubleQuotedMatch && doubleQuotedMatch[1]) {
+    return doubleQuotedMatch[1].toLowerCase();
+  }
+
+  const singleQuotedMatch = combined.match(/constraint\s+'([a-zA-Z0-9_]+)'/i);
+  if (singleQuotedMatch && singleQuotedMatch[1]) {
+    return singleQuotedMatch[1].toLowerCase();
+  }
+
+  return null;
+};
+
 const isLegacyRequiredFieldError = (error: SupabaseErrorLike) => normalizeText(error.code) === "23502";
 
 const isRecognizedStatusConstraintError = (error: SupabaseErrorLike) => {
@@ -781,13 +800,18 @@ const isRecognizedStatusConstraintError = (error: SupabaseErrorLike) => {
     return false;
   }
 
+  const constraintName = extractConstraintName(error);
+  if (constraintName && OPERATIONAL_ALERTS_STATUS_CONSTRAINT_NAMES.has(constraintName)) {
+    return true;
+  }
+
   const message = normalizeText(error.message).toLowerCase();
   const details = normalizeText(error.details).toLowerCase();
-  return (
-    message.includes("operational_alerts_status_valid")
-    || details.includes("operational_alerts_status_valid")
-    || (message.includes("status") && details.includes("check constraint"))
-  );
+  const hint = normalizeText(error.hint).toLowerCase();
+  const combined = `${message} ${details} ${hint}`;
+  return combined.includes("operational_alerts")
+    && combined.includes("check constraint")
+    && /\bstatus\b/.test(combined);
 };
 
 const isRecognizedInsertCompatibilityFailure = (error: SupabaseErrorLike) => {
