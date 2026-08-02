@@ -327,6 +327,16 @@ const executeAction = async (client: AutomationClient, rule: ParsedRule, action:
   }
 
   if (action.type === "send_notification") {
+    const hasTrailerContext = Boolean(trailerId || trailerNumber);
+    if (!hasTrailerContext) {
+      // System-level automation runs have no trailer identity; execution logs remain the canonical record.
+      return;
+    }
+
+    if (!trailerNumber) {
+      throw new Error("Trailer notification audit requires trailer_number for trailer-scoped events.");
+    }
+
     const { error } = await client.from("trailer_audit_log").insert({
       trailer_id: trailerId,
       trailer_number: trailerNumber,
