@@ -1,7 +1,13 @@
 import { createClient } from "@supabase/supabase-js";
-import { listEnabledSchedulerRules } from "@/lib/automation/engine";
-import { dispatchSchedulerRules } from "@/lib/automation/scheduler-dispatch";
+import { z } from "zod";
+import { runScheduledAutomationRule } from "@/lib/automation/engine";
+import { schedulerJobKeys } from "@/lib/automation/types";
 import type { Database } from "@/lib/database.types";
+
+const payloadSchema = z.object({
+  ruleId: z.string().uuid(),
+  schedulerJob: z.enum(schedulerJobKeys).nullable().optional(),
+}).strict();
 
 const getServiceSupabase = () => {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -31,11 +37,7 @@ const requireSchedulerToken = (request: Request) => {
   }
 
   const provided = request.headers.get("x-automation-token") ?? "";
-  if (provided !== expected) {
-    return false;
-  }
-
-  return true;
+  return provided === expected;
 };
 
 export async function POST(request: Request) {
@@ -44,12 +46,20 @@ export async function POST(request: Request) {
       return Response.json({ error: "Unauthorized scheduler call." }, { status: 401 });
     }
 
+    const payload = payloadSchema.parse(await request.json().catch(() => ({})));
     const supabase = getServiceSupabase();
-    const rules = await listEnabledSchedulerRules(supabase);
-    const summaries = await dispatchSchedulerRules(request, rules);
-    return Response.json({ ok: true, summaries });
+    const summary = await runScheduledAutomationRule(supabase, {
+      ruleId: payload.ruleId,
+      schedulerJob: payload.schedulerJob ?? null,
+    });
+
+    return Response.json({ ok: true, summary });
   } catch (error) {
-    return Response.json({ error: error instanceof Error ? error.message : "Unable to run scheduler." }, { status: 500 });
+    if (error instanceof z.ZodError) {
+      return Response.json({ error: "Invalid scheduler rule payload." }, { status: 400 });
+    }
+
+    return Response.json({ error: error instanceof Error ? error.message : "Unable to run scheduler rule." }, { status: 500 });
   }
 }
 

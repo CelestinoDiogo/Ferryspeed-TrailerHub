@@ -6,7 +6,6 @@ import {
   automationConditionsSchema,
   automationRuleInputSchema,
   automationRulePatchSchema,
-  schedulerJobKeys,
   type AutomationAction,
   type AutomationConditions,
   type AutomationEventContext,
@@ -40,6 +39,11 @@ type ParsedRule = {
   row: AutomationRuleRow;
   conditions: AutomationConditions;
   actions: AutomationAction[];
+};
+
+export type SchedulerRuleDescriptor = {
+  ruleId: string;
+  schedulerJob: SchedulerJobKey | null;
 };
 
 type ExecutionRuntime = {
@@ -665,6 +669,27 @@ const loadEnabledRules = async (client: AutomationClient, triggerEvent: Automati
     .filter((rule): rule is ParsedRule => Boolean(rule));
 };
 
+const loadEnabledSchedulerRuleById = async (client: AutomationClient, ruleId: string) => {
+  const { data, error } = await client
+    .from("automation_rules")
+    .select("*")
+    .eq("id", ruleId)
+    .eq("enabled", true)
+    .eq("trigger_event", "scheduler_job")
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(error.message || "Unable to load scheduler automation rule.");
+  }
+
+  if (!data) {
+    return null;
+  }
+
+  return parseRule(data as AutomationRuleRow);
+};
+
 export async function listAutomationRules(client: AutomationClient) {
   const { data, error } = await client.from("automation_rules").select("*").order("created_at", { ascending: true });
   if (error) {
@@ -764,6 +789,43 @@ const runAutomationEventWithRules = async (
   };
 };
 
+export async function listEnabledSchedulerRules(client: AutomationClient): Promise<SchedulerRuleDescriptor[]> {
+  const rules = await loadEnabledRules(client, "scheduler_job");
+  return rules.map((rule) => ({
+    ruleId: rule.row.id,
+    schedulerJob: rule.conditions.schedulerJob ?? null,
+  }));
+}
+
+export async function runScheduledAutomationRule(
+  client: AutomationClient,
+  input: SchedulerRuleDescriptor,
+): Promise<AutomationExecutionSummary> {
+  const rule = await loadEnabledSchedulerRuleById(client, input.ruleId);
+  if (!rule) {
+    return {
+      triggerEvent: "scheduler_job",
+      processedRules: 1,
+      successCount: 0,
+      skippedCount: 1,
+      failedCount: 0,
+    };
+  }
+
+  const schedulerJob = input.schedulerJob ?? rule.conditions.schedulerJob ?? undefined;
+  const payload: AutomationEventPayload = {
+    triggerEvent: "scheduler_job",
+    schedulerJob,
+    metadata: {
+      scheduler_job: schedulerJob ?? null,
+      executed_at: new Date().toISOString(),
+      scheduler_rule_id: rule.row.id,
+    },
+  };
+
+  return runAutomationEventWithRules(client, payload, [rule]);
+}
+
 export async function runAutomationForRecentActivityEvents(client: AutomationClient, limit = 120) {
   const { data, error } = await client
     .from("trailer_activity_log")
@@ -801,22 +863,10 @@ export async function runAutomationForRecentActivityEvents(client: AutomationCli
 }
 
 export async function runScheduledAutomationJobs(client: AutomationClient) {
-  const jobs = [...schedulerJobKeys] as SchedulerJobKey[];
+  const rules = await listEnabledSchedulerRules(client);
   const summaries: AutomationExecutionSummary[] = [];
-  const rules = await loadEnabledRules(client, "scheduler_job");
-  const runtime: ExecutionRuntime = {
-    schedulerExistingAlertsByKey: await loadSchedulerExistingAlerts(client, rules),
-  };
-
-  for (const job of jobs) {
-    const summary = await runAutomationEventWithRules(client, {
-      triggerEvent: "scheduler_job",
-      schedulerJob: job,
-      metadata: {
-        scheduler_job: job,
-        executed_at: new Date().toISOString(),
-      },
-    }, rules, runtime);
+  for (const rule of rules) {
+    const summary = await runScheduledAutomationRule(client, rule);
 
     summaries.push(summary);
   }

@@ -1,8 +1,9 @@
 import { z } from "zod";
 import {
+  listEnabledSchedulerRules,
   runAutomationForRecentActivityEvents,
-  runScheduledAutomationJobs,
 } from "@/lib/automation/engine";
+import { dispatchSchedulerRules } from "@/lib/automation/scheduler-dispatch";
 import { bootstrapCurrentUserRole, RbacPermissionError, requireRbacPermission } from "@/lib/rbac/route";
 import {
   createAuthenticatedRouteSupabaseClient,
@@ -34,7 +35,8 @@ export async function POST(request: Request) {
       return Response.json({ mode: payload.mode, summaries });
     }
 
-    const summaries = await runScheduledAutomationJobs(supabase);
+    const rules = await listEnabledSchedulerRules(supabase);
+    const summaries = await dispatchSchedulerRules(request, rules);
     return Response.json({ mode: payload.mode, summaries });
   } catch (error) {
     if (error instanceof z.ZodError) {

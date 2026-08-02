@@ -110,21 +110,60 @@ const buildClient = () => {
   const client = {
     from(table: string) {
       if (table === "automation_rules") {
-        return {
-          select() {
+        const filters: Record<string, unknown> = {};
+
+        const query = {
+          eq(column: string, value: unknown) {
+            filters[column] = value;
+            return query;
+          },
+          order() {
+            const rows = seededRules.filter((row) => {
+              if (filters.enabled !== undefined && row.enabled !== filters.enabled) {
+                return false;
+              }
+
+              if (filters.trigger_event !== undefined && row.trigger_event !== filters.trigger_event) {
+                return false;
+              }
+
+              if (filters.id !== undefined && row.id !== filters.id) {
+                return false;
+              }
+
+              return true;
+            });
+
+            return Promise.resolve({ data: rows, error: null });
+          },
+          limit(count: number) {
+            const rows = seededRules.filter((row) => {
+              if (filters.enabled !== undefined && row.enabled !== filters.enabled) {
+                return false;
+              }
+
+              if (filters.trigger_event !== undefined && row.trigger_event !== filters.trigger_event) {
+                return false;
+              }
+
+              if (filters.id !== undefined && row.id !== filters.id) {
+                return false;
+              }
+
+              return true;
+            });
+
             return {
-              eq(_columnA: string, _valueA: unknown) {
-                return {
-                  eq(_columnB: string, _valueB: unknown) {
-                    return {
-                      order() {
-                        return Promise.resolve({ data: seededRules, error: null });
-                      },
-                    };
-                  },
-                };
+              maybeSingle() {
+                return Promise.resolve({ data: rows.slice(0, count)[0] ?? null, error: null });
               },
             };
+          },
+        };
+
+        return {
+          select() {
+            return query;
           },
           update(payload: Record<string, unknown>) {
             ruleUpdates.push(payload);
@@ -211,7 +250,7 @@ describe("runScheduledAutomationJobs", () => {
     });
 
     const dailySummaryLogs = executionInserts.filter((row) => row.rule_id === "rule-summary");
-    expect(dailySummaryLogs).toHaveLength(5);
+    expect(dailySummaryLogs).toHaveLength(1);
     expect(dailySummaryLogs.filter((row) => row.outcome === "success")).toHaveLength(1);
     expect(dailySummaryLogs.filter((row) => row.outcome === "failed")).toHaveLength(0);
     expect(dailySummaryLogs.find((row) => row.outcome === "success")).toMatchObject({
