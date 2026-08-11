@@ -159,29 +159,6 @@ const getDateKey = (value?: string | null) => {
   return null;
 };
 
-const formatDateKey = (value?: string | null) => {
-  if (!value) return "-";
-
-  try {
-    const [year, month, day] = value.slice(0, 10).split("-").map(Number);
-    if (!year || !month || !day) {
-      return new Date(value).toLocaleDateString("en-GB", {
-        day: "2-digit",
-        month: "long",
-        year: "numeric",
-      });
-    }
-
-    return new Date(year, month - 1, day).toLocaleDateString("en-GB", {
-      day: "2-digit",
-      month: "long",
-      year: "numeric",
-    });
-  } catch {
-    return "-";
-  }
-};
-
 const formatPrintedDateTime = () =>
   new Date().toLocaleString("en-GB", {
     day: "2-digit",
@@ -332,7 +309,7 @@ function ExportOperationsPageContent() {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
-  const [actioningId, setActioningId] = useState<string | null>(null);
+  const [actioningIds, setActioningIds] = useState<string[]>([]);
   const [undoCandidateAllocationId, setUndoCandidateAllocationId] = useState<string | null>(null);
   const [historyTrailer, setHistoryTrailer] = useState<{ trailerId: string | null; trailerNumber: string | null } | null>(null);
   const [selectedAllocationIds, setSelectedAllocationIds] = useState<string[]>([]);
@@ -441,8 +418,11 @@ function ExportOperationsPageContent() {
     });
   };
 
-  const loadAllocations = async () => {
-    setIsLoading(true);
+  const loadAllocations = async (options?: { showLoading?: boolean }) => {
+    const showLoading = options?.showLoading ?? true;
+    if (showLoading) {
+      setIsLoading(true);
+    }
     setError(null);
     setWarning(null);
 
@@ -495,14 +475,27 @@ function ExportOperationsPageContent() {
     } catch (loadErr) {
       setError(loadErr instanceof Error ? loadErr.message : "Unable to load export allocations.");
     } finally {
-      setIsLoading(false);
+      if (showLoading) {
+        setIsLoading(false);
+      }
     }
   };
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    void loadAllocations();
+    void loadAllocations({ showLoading: true });
   }, []);
+
+  const isActioning = (allocationId: string) => actioningIds.includes(allocationId);
+  const hasAnyActionInProgress = actioningIds.length > 0;
+
+  const startAction = (allocationId: string) => {
+    setActioningIds((current) => (current.includes(allocationId) ? current : [...current, allocationId]));
+  };
+
+  const finishAction = (allocationId: string) => {
+    setActioningIds((current) => current.filter((id) => id !== allocationId));
+  };
 
   useEffect(() => {
     if (!success) {
@@ -644,6 +637,11 @@ function ExportOperationsPageContent() {
   const panelAllocation = useMemo(
     () => filteredAllocations.find((item) => item.id === panelAllocationId) ?? null,
     [filteredAllocations, panelAllocationId],
+  );
+
+  const visibleSelectedAllocationIds = useMemo(
+    () => selectedAllocationIds.filter((id) => filteredAllocations.some((item) => item.id === id)),
+    [filteredAllocations, selectedAllocationIds],
   );
 
   const printAllocations = useMemo(() => [...filteredAllocations].sort(comparePrintAllocations), [filteredAllocations]);
@@ -868,7 +866,7 @@ function ExportOperationsPageContent() {
   };
 
   const handleAdvanceStatus = async (allocation: ExportAllocationRecord) => {
-    if (actioningId) {
+    if (isActioning(allocation.id)) {
       return;
     }
 
@@ -877,7 +875,7 @@ function ExportOperationsPageContent() {
       return;
     }
 
-    setActioningId(allocation.id);
+    startAction(allocation.id);
     setError(null);
     setSuccess(null);
     setWarning(null);
@@ -895,7 +893,7 @@ function ExportOperationsPageContent() {
       if (advanceResult.nextStatus === "delivered_empty") {
         setUndoCandidateAllocationId(allocation.id);
         setSuccess("Status updated to Delivered Empty. Trailer removed from compound inventory.");
-        await loadAllocations();
+        await loadAllocations({ showLoading: false });
         if (typeof window !== "undefined") {
           window.localStorage.setItem(COMPOUND_REFRESH_STORAGE_KEY, Date.now().toString());
         }
@@ -912,16 +910,16 @@ function ExportOperationsPageContent() {
         setUndoCandidateAllocationId(null);
       }
       setSuccess(`Status updated to ${getExportAllocationStatusLabel(advanceResult.nextStatus)}.`);
-      await loadAllocations();
+      await loadAllocations({ showLoading: false });
     } catch (advanceErr) {
       setError(advanceErr instanceof Error ? advanceErr.message : "Unable to advance status.");
     } finally {
-      setActioningId(null);
+      finishAction(allocation.id);
     }
   };
 
   const handleCancel = async (allocation: ExportAllocationRecord) => {
-    if (actioningId) {
+    if (isActioning(allocation.id)) {
       return;
     }
 
@@ -929,7 +927,7 @@ function ExportOperationsPageContent() {
       return;
     }
 
-    setActioningId(allocation.id);
+    startAction(allocation.id);
     setError(null);
     setSuccess(null);
 
@@ -947,16 +945,16 @@ function ExportOperationsPageContent() {
           ? "Allocation cancelled. Trailer remains outside compound until explicitly returned."
           : "Allocation cancelled.",
       );
-      await loadAllocations();
+      await loadAllocations({ showLoading: false });
     } catch (cancelErr) {
       setError(cancelErr instanceof Error ? cancelErr.message : "Unable to cancel allocation.");
     } finally {
-      setActioningId(null);
+      finishAction(allocation.id);
     }
   };
 
   const handleUndoLastMovement = async (allocation: ExportAllocationRecord) => {
-    if (actioningId) {
+    if (isActioning(allocation.id)) {
       return;
     }
 
@@ -966,7 +964,7 @@ function ExportOperationsPageContent() {
       return;
     }
 
-    setActioningId(allocation.id);
+    startAction(allocation.id);
     setError(null);
     setSuccess(null);
 
@@ -1038,11 +1036,11 @@ function ExportOperationsPageContent() {
       setSuccess(
         `Last movement undone. Status is now ${getExportAllocationStatusLabel(previousStatus)}.${fallbackRestoreMessage ?? ""}`,
       );
-      await loadAllocations();
+      await loadAllocations({ showLoading: false });
     } catch (undoErr) {
       setError(undoErr instanceof Error ? undoErr.message : "Unable to undo last movement.");
     } finally {
-      setActioningId(null);
+      finishAction(allocation.id);
     }
   };
 
@@ -1063,10 +1061,6 @@ function ExportOperationsPageContent() {
 
     await handleUndoLastMovement(candidate);
   };
-
-  useEffect(() => {
-    setSelectedAllocationIds((current) => current.filter((id) => filteredAllocations.some((item) => item.id === id)));
-  }, [filteredAllocations]);
 
   const toggleAllocationSelection = (allocationId: string) => {
     setSelectedAllocationIds((current) => {
@@ -1097,11 +1091,11 @@ function ExportOperationsPageContent() {
   };
 
   const handleBatchQuickAction = async () => {
-    if (selectedAllocationIds.length === 0 || actioningId) {
+    if (visibleSelectedAllocationIds.length === 0 || hasAnyActionInProgress) {
       return;
     }
 
-    const selectedRows = filteredAllocations.filter((item) => selectedAllocationIds.includes(item.id));
+    const selectedRows = filteredAllocations.filter((item) => visibleSelectedAllocationIds.includes(item.id));
     for (const allocation of selectedRows) {
       const next = getNextExportAllocationStatus(allocation.status);
       if (!next) {
@@ -1198,7 +1192,7 @@ function ExportOperationsPageContent() {
             onClose={() => setSuccess(null)}
             actionLabel={undoCandidateAllocationId ? "Undo" : undefined}
             onAction={undoCandidateAllocationId ? () => void handleUndoFromToast() : undefined}
-            actionDisabled={Boolean(actioningId)}
+            actionDisabled={hasAnyActionInProgress}
           />
         ) : null}
 
@@ -1246,7 +1240,7 @@ function ExportOperationsPageContent() {
             ]}
             sortValue={sortBy}
             onSortChange={(value) => setSortBy(value as "collection_date" | "trailer_asc" | "trailer_desc")}
-            selectedCount={selectedAllocationIds.length}
+            selectedCount={visibleSelectedAllocationIds.length}
             primaryActions={
               <>
                 <button
@@ -1269,7 +1263,7 @@ function ExportOperationsPageContent() {
                 <button
                   type="button"
                   onClick={() => void handleBatchQuickAction()}
-                  disabled={selectedAllocationIds.length === 0 || Boolean(actioningId)}
+                  disabled={selectedAllocationIds.length === 0 || hasAnyActionInProgress}
                   className="rounded-xl bg-cyan-500 px-3 py-2 text-xs font-semibold text-slate-950 hover:bg-cyan-400 disabled:opacity-60"
                 >
                   Run Quick Action
@@ -1343,7 +1337,7 @@ function ExportOperationsPageContent() {
               const nextActionLabel = canQuickAdvance ? getAdvanceStatusActionLabel(allocation.status) : null;
               const canCancel = allocation.status !== "completed" && allocation.status !== "cancelled";
               const canUndo = allocation.status === "delivered_empty" || allocation.status === "waiting_loading" || allocation.status === "collected_loaded";
-              const isActioning = actioningId === allocation.id;
+              const isActioningRow = isActioning(allocation.id);
               const overdue = isExportAllocationOverdue(allocation);
 
               return (
@@ -1427,10 +1421,10 @@ function ExportOperationsPageContent() {
                       <button
                         type="button"
                         onClick={() => void handleAdvanceStatus(allocation)}
-                        disabled={isActioning}
+                        disabled={isActioningRow}
                         className="rounded-xl bg-cyan-500 px-4 py-2 text-xs font-semibold text-slate-950 hover:bg-cyan-400 disabled:opacity-60"
                       >
-                        {isActioning ? "Updating..." : nextActionLabel}
+                        {isActioningRow ? "Updating..." : nextActionLabel}
                       </button>
                     ) : (
                       <Link href={`/dashboard/export-operations/${allocation.id}`} className="rounded-xl border border-white/10 bg-slate-800 px-4 py-2 text-xs font-semibold text-white hover:bg-slate-700">
@@ -1463,20 +1457,20 @@ function ExportOperationsPageContent() {
                           <button
                             type="button"
                             onClick={() => void handleCancel(allocation)}
-                            disabled={isActioning}
+                            disabled={isActioningRow}
                             className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-left text-xs font-semibold text-rose-200 hover:bg-rose-500/20 disabled:opacity-60"
                           >
-                            {isActioning ? "Cancelling..." : "Cancel Allocation"}
+                            {isActioningRow ? "Cancelling..." : "Cancel Allocation"}
                           </button>
                         ) : null}
                         {canUndo ? (
                           <button
                             type="button"
                             onClick={() => void handleUndoLastMovement(allocation)}
-                            disabled={isActioning}
+                            disabled={isActioningRow}
                             className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-left text-xs font-semibold text-amber-200 hover:bg-amber-500/20 disabled:opacity-60"
                           >
-                            {isActioning ? "Undoing..." : "Undo Last Movement"}
+                            {isActioningRow ? "Undoing..." : "Undo Last Movement"}
                           </button>
                         ) : null}
                       </div>
@@ -1540,7 +1534,7 @@ function ExportOperationsPageContent() {
           }
           onMove={panelAllocation ? (nextPosition) => handleQuickMove(panelAllocation, nextPosition) : undefined}
           moveLabel="Move Trailer"
-          isBusy={Boolean(actioningId)}
+          isBusy={hasAnyActionInProgress}
         />
       </div>
     </main>
