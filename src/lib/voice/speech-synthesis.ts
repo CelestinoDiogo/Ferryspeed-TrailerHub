@@ -7,7 +7,12 @@ export const getVoiceResponsesEnabled = () => {
     return false;
   }
 
-  return window.localStorage.getItem(VOICE_RESPONSES_KEY) === "1";
+  const stored = window.localStorage.getItem(VOICE_RESPONSES_KEY);
+  if (stored === null) {
+    return true;
+  }
+
+  return stored === "1";
 };
 
 export const setVoiceResponsesEnabled = (enabled: boolean) => {
@@ -23,7 +28,7 @@ export const isSpeechSynthesisSupported = () => {
     return false;
   }
 
-  return "speechSynthesis" in window;
+  return Boolean(window.speechSynthesis && typeof window.SpeechSynthesisUtterance === "function");
 };
 
 export const speakVoiceResponse = (text: string, options?: { lang?: string }) => {
@@ -32,9 +37,29 @@ export const speakVoiceResponse = (text: string, options?: { lang?: string }) =>
   }
 
   window.speechSynthesis.cancel();
+
+  if (typeof window.speechSynthesis.resume === "function") {
+    window.speechSynthesis.resume();
+  }
+
   const utterance = new SpeechSynthesisUtterance(text.trim());
-  utterance.lang = options?.lang?.trim() || "en-GB";
+  const language = options?.lang?.trim() || "en-GB";
+  utterance.lang = language;
   utterance.rate = 1;
   utterance.pitch = 1;
+
+  if (typeof window.speechSynthesis.getVoices === "function") {
+    const voices = window.speechSynthesis.getVoices();
+    const normalizedLanguage = language.toLowerCase();
+    const preferredVoice = voices.find((voice) => {
+      const voiceLanguage = voice.lang?.toLowerCase() ?? "";
+      return voiceLanguage === normalizedLanguage || voiceLanguage.startsWith(normalizedLanguage.slice(0, 2));
+    });
+
+    if (preferredVoice) {
+      utterance.voice = preferredVoice;
+    }
+  }
+
   window.speechSynthesis.speak(utterance);
 };

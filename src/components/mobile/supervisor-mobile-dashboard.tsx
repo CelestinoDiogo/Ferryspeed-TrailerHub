@@ -872,6 +872,7 @@ export function SupervisorMobileDashboard() {
       trailerMetaByNumber,
       canMarkArrived: canArrive,
       isTrailerBusy: (trailerRowId) => hasAnyActionForTrailer(trailerRowId),
+      language: voiceLanguage,
       onMarkArrived: async (trailer) => {
         const target = vesselTrailers.find((row) => row.id === trailer.id);
         if (!target) {

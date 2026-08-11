@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   buildQuayTrailerVoiceSummary,
+  buildQuayArrivedVoiceText,
   executeQuayVoiceCommand,
   parseQuayVoiceCommand,
   resolveQuayVoiceTrailer,
@@ -12,23 +13,23 @@ const makeRow = (overrides: Partial<QuayVoiceTrailerRecord> = {}): QuayVoiceTrai
   id: overrides.id ?? "vt-1",
   vesselOperationId: overrides.vesselOperationId ?? "op-1",
   trailerNumber: overrides.trailerNumber ?? "PFC12",
-  customer: overrides.customer ?? "Client One",
-  arrivalStatus: overrides.arrivalStatus ?? "expected",
-  priorityLevel: overrides.priorityLevel ?? null,
-  temperatureRequired: overrides.temperatureRequired ?? null,
-  expectedFrontTemperature: overrides.expectedFrontTemperature ?? null,
-  expectedRearTemperature: overrides.expectedRearTemperature ?? null,
-  expectedTemperatureUnit: overrides.expectedTemperatureUnit ?? "C",
-  inspectionCompletedAt: overrides.inspectionCompletedAt ?? null,
-  hasTemperatureAlert: overrides.hasTemperatureAlert ?? false,
-  hasDamage: overrides.hasDamage ?? false,
+  customer: overrides.customer !== undefined ? overrides.customer : "Client One",
+  arrivalStatus: overrides.arrivalStatus !== undefined ? overrides.arrivalStatus : "expected",
+  priorityLevel: overrides.priorityLevel !== undefined ? overrides.priorityLevel : null,
+  temperatureRequired: overrides.temperatureRequired !== undefined ? overrides.temperatureRequired : null,
+  expectedFrontTemperature: overrides.expectedFrontTemperature !== undefined ? overrides.expectedFrontTemperature : null,
+  expectedRearTemperature: overrides.expectedRearTemperature !== undefined ? overrides.expectedRearTemperature : null,
+  expectedTemperatureUnit: overrides.expectedTemperatureUnit !== undefined ? overrides.expectedTemperatureUnit : "C",
+  inspectionCompletedAt: overrides.inspectionCompletedAt !== undefined ? overrides.inspectionCompletedAt : null,
+  hasTemperatureAlert: overrides.hasTemperatureAlert !== undefined ? overrides.hasTemperatureAlert : false,
+  hasDamage: overrides.hasDamage !== undefined ? overrides.hasDamage : false,
 });
 
 const makeMeta = (overrides: Partial<QuayVoiceTrailerMeta> = {}): QuayVoiceTrailerMeta => ({
   trailerNumber: overrides.trailerNumber ?? "PFC12",
-  customer: overrides.customer ?? "Client One",
-  compoundPosition: overrides.compoundPosition ?? "P12",
-  operationalStatus: overrides.operationalStatus ?? "Ready",
+  customer: overrides.customer !== undefined ? overrides.customer : "Client One",
+  compoundPosition: overrides.compoundPosition !== undefined ? overrides.compoundPosition : "P12",
+  operationalStatus: overrides.operationalStatus !== undefined ? overrides.operationalStatus : "Ready",
 });
 
 describe("quay voice parser", () => {
@@ -79,10 +80,33 @@ describe("quay voice resolution and response", () => {
     });
 
     expect(summary.spoken).toContain("PRO21");
-    expect(summary.spoken).toContain("Ocean Cargo");
-    expect(summary.spoken).toContain("temperature required");
-    expect(summary.spoken).toContain("priority");
-    expect(summary.spoken).toContain("arrived");
+    expect(summary.spoken).toContain("Customer Ocean Cargo");
+    expect(summary.spoken).toContain("Temperature required");
+    expect(summary.spoken).toContain("Priority");
+    expect(summary.spoken).toContain("Arrived, inspection pending");
+  });
+
+  it("formats lookup speech in Portuguese and omits missing fields cleanly", () => {
+    const summary = buildQuayTrailerVoiceSummary({
+      trailer: makeRow({
+        trailerNumber: "FS1002",
+        arrivalStatus: "arrived",
+        customer: null,
+        expectedFrontTemperature: null,
+        expectedRearTemperature: null,
+        priorityLevel: null,
+      }),
+      trailerMeta: makeMeta({ customer: null, compoundPosition: null }),
+      notOnSelectedVessel: false,
+      language: "pt-PT",
+    });
+
+    expect(summary.spoken).toBe("FS1002. Chegou, inspeção pendente.");
+  });
+
+  it("builds arrived success speech per language", () => {
+    expect(buildQuayArrivedVoiceText("PFC12", "en-GB")).toBe("PFC12 marked arrived.");
+    expect(buildQuayArrivedVoiceText("PFC12", "pt-PT")).toBe("PFC12 marcada como chegada.");
   });
 
   it("handles unknown trailer cleanly", async () => {

@@ -8,6 +8,34 @@ import { SupervisorMobileDashboard } from "@/components/mobile/supervisor-mobile
 
 type QueryRow = Record<string, unknown>;
 
+const speechRecognitionState = vi.hoisted(() => ({
+  supported: false,
+  isListening: false,
+  transcript: "",
+  interimTranscript: "",
+  error: null as string | null,
+}));
+
+const speechSynthesisMock = vi.hoisted(() => ({
+  cancel: vi.fn(),
+  resume: vi.fn(),
+  speak: vi.fn(),
+  getVoices: vi.fn(),
+}));
+
+vi.mock("@/lib/voice/speech-recognition", () => ({
+  useSpeechRecognition: () => ({
+    isSupported: speechRecognitionState.supported,
+    isListening: speechRecognitionState.isListening,
+    transcript: speechRecognitionState.transcript,
+    interimTranscript: speechRecognitionState.interimTranscript,
+    error: speechRecognitionState.error,
+    startListening: vi.fn(),
+    stopListening: vi.fn(),
+    resetTranscript: vi.fn(),
+  }),
+}));
+
 let tableData: Record<string, QueryRow[]> = {};
 
 const { getTrailerActivityMock, fetchMock, supabaseMock } = vi.hoisted(() => ({
@@ -340,6 +368,16 @@ describe("SupervisorMobileDashboard", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     tableData = buildBaseData();
+    speechRecognitionState.supported = false;
+    speechRecognitionState.isListening = false;
+    speechRecognitionState.transcript = "";
+    speechRecognitionState.interimTranscript = "";
+    speechRecognitionState.error = null;
+    speechSynthesisMock.cancel.mockReset();
+    speechSynthesisMock.resume.mockReset();
+    speechSynthesisMock.speak.mockReset();
+    speechSynthesisMock.getVoices.mockReset();
+    speechSynthesisMock.getVoices.mockReturnValue([]);
     window.localStorage.clear();
     window.sessionStorage.clear();
     setOnlineState(true);
@@ -363,6 +401,30 @@ describe("SupervisorMobileDashboard", () => {
       json: async () => ({ status: "success", message: "Action completed." }),
     });
     vi.stubGlobal("fetch", fetchMock);
+    Object.defineProperty(window, "speechSynthesis", {
+      configurable: true,
+      value: speechSynthesisMock,
+    });
+    class MockSpeechSynthesisUtterance {
+      text: string;
+
+      lang = "";
+
+      rate = 1;
+
+      pitch = 1;
+
+      voice: SpeechSynthesisVoice | null = null;
+
+      constructor(text: string) {
+        this.text = text;
+      }
+    }
+
+    Object.defineProperty(globalThis, "SpeechSynthesisUtterance", {
+      configurable: true,
+      value: MockSpeechSynthesisUtterance,
+    });
     Object.defineProperty(window, "scrollTo", { configurable: true, value: vi.fn() });
     Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 });
   });
@@ -389,6 +451,32 @@ describe("SupervisorMobileDashboard", () => {
         payload: Record<string, unknown>;
       };
     };
+  };
+
+  const triggerVoiceCommand = async (
+    user: ReturnType<typeof userEvent.setup>,
+    rerender: (ui: unknown) => void,
+    recognizedText: string,
+    expectSpeech = true,
+  ) => {
+    speechRecognitionState.supported = true;
+    speechRecognitionState.transcript = recognizedText;
+    speechRecognitionState.interimTranscript = "";
+    rerender(<SupervisorMobileDashboard />);
+    await user.click(screen.getByRole("button", { name: "Start push to talk" }));
+
+    speechRecognitionState.isListening = true;
+    rerender(<SupervisorMobileDashboard />);
+
+    speechRecognitionState.isListening = false;
+    rerender(<SupervisorMobileDashboard />);
+
+    if (expectSpeech) {
+      await waitFor(() => {
+        expect(speechSynthesisMock.speak).toHaveBeenCalled();
+      });
+    }
+
   };
 
   it("renders vessel workspace queue, counts, and vessel selection", async () => {
@@ -628,5 +716,85 @@ describe("SupervisorMobileDashboard", () => {
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledTimes(1);
     });
+  });
+
+  it("speaks successful lookup results in English by default", async () => {
+    const view = render(<SupervisorMobileDashboard />);
+    const user = await openVesselWorkspace();
+
+    await triggerVoiceCommand(user, view.rerender, "FS1001");
+
+    expect(speechSynthesisMock.cancel).toHaveBeenCalled();
+    expect(speechSynthesisMock.resume).toHaveBeenCalled();
+    const utterance = speechSynthesisMock.speak.mock.calls[0][0] as SpeechSynthesisUtterance;
+    expect((utterance as { text: string }).text).toContain("FS1001. Customer Alpha Logistics.");
+    expect((utterance as { text: string }).text).toContain("Pending arrival.");
+    expect((utterance as { lang: string }).lang).toBe("en-GB");
+  });
+
+  it("speaks successful lookup results in Portuguese when selected", async () => {
+    const view = render(<SupervisorMobileDashboard />);
+    const user = await openVesselWorkspace();
+    await user.selectOptions(screen.getByLabelText("Voice recognition language"), "pt-PT");
+
+    await triggerVoiceCommand(user, view.rerender, "FS1002");
+
+    const utterance = speechSynthesisMock.speak.mock.calls[0][0] as SpeechSynthesisUtterance;
+    expect((utterance as { text: string }).text).toContain("FS1002. Cliente Bravo Freight.");
+    expect((utterance as { text: string }).text).toContain("Temperatura requerida.");
+    expect((utterance as { text: string }).text).toContain("Prioridade.");
+    expect((utterance as { text: string }).text).toContain("Chegou, inspeção pendente.");
+    expect((utterance as { lang: string }).lang).toBe("pt-PT");
+  });
+
+  it("respects the mute toggle while still allowing recognition", async () => {
+    window.localStorage.setItem("trailerhub.voice.responses.enabled", "0");
+    const view = render(<SupervisorMobileDashboard />);
+    const user = await openVesselWorkspace();
+
+    await triggerVoiceCommand(user, view.rerender, "FS1001", false);
+
+    expect(speechSynthesisMock.speak).not.toHaveBeenCalled();
+  });
+
+  it("speaks arrived only after successful confirmation and stays silent on failure", async () => {
+    const view = render(<SupervisorMobileDashboard />);
+    const user = await openVesselWorkspace();
+
+    await triggerVoiceCommand(user, view.rerender, "Mark FS1001 arrived");
+
+    const successUtterance = speechSynthesisMock.speak.mock.calls[0][0] as SpeechSynthesisUtterance;
+    expect((successUtterance as { text: string }).text).toBe("FS1001 marked arrived.");
+
+    speechSynthesisMock.speak.mockReset();
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      json: async () => ({ error: "Arrival failed." }),
+    });
+
+    speechRecognitionState.transcript = "Mark FS1004 arrived";
+    speechRecognitionState.isListening = true;
+    await user.click(screen.getByRole("button", { name: "Start push to talk" }));
+    view.rerender(<SupervisorMobileDashboard />);
+    speechRecognitionState.isListening = false;
+    view.rerender(<SupervisorMobileDashboard />);
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalled();
+    });
+
+    expect(speechSynthesisMock.speak).not.toHaveBeenCalled();
+  });
+
+  it("does not break when speech synthesis is unsupported", async () => {
+    Object.defineProperty(window, "speechSynthesis", {
+      configurable: true,
+      value: undefined,
+    });
+
+    const view = render(<SupervisorMobileDashboard />);
+    const user = await openVesselWorkspace();
+
+    await triggerVoiceCommand(user, view.rerender, "FS1001", false);
   });
 });

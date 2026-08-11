@@ -2,6 +2,7 @@ import { normalizeTrailerNumber, normalizeVoiceText } from "@/lib/voice/normaliz
 
 export type QuayVoiceIntent = "lookup" | "mark_arrived" | "unknown";
 export type QuayVoiceConfidence = "high" | "medium" | "low";
+export type QuayVoiceLanguage = "en-GB" | "pt-PT";
 
 export type QuayVoiceParsedCommand = {
   recognizedText: string;
@@ -114,6 +115,63 @@ const includesAnyTerm = (source: string, terms: readonly string[]) => {
   return terms.some((term) => source.includes(term));
 };
 
+const buildCustomerSegment = (customer: string, language: QuayVoiceLanguage) => {
+  return language === "pt-PT" ? `Cliente ${customer}` : `Customer ${customer}`;
+};
+
+const buildTemperatureSegment = (trailer: QuayVoiceTrailerRecord, language: QuayVoiceLanguage) => {
+  const hasExpected = trailer.expectedFrontTemperature !== null || trailer.expectedRearTemperature !== null;
+  const hasRequired = (trailer.temperatureRequired ?? "").trim().length > 0;
+
+  if (!hasExpected && !hasRequired) {
+    return null;
+  }
+
+  if (trailer.hasTemperatureAlert) {
+    return language === "pt-PT" ? "Alerta de temperatura" : "Temperature alert";
+  }
+
+  return language === "pt-PT" ? "Temperatura requerida" : "Temperature required";
+};
+
+const buildPrioritySegment = (value: string | null, language: QuayVoiceLanguage) => {
+  if (normalizePriorityLabel(value) !== "priority") {
+    return null;
+  }
+
+  return language === "pt-PT" ? "Prioridade" : "Priority";
+};
+
+const buildStateSegment = (trailer: QuayVoiceTrailerRecord, fallbackOperationalStatus: string | null, language: QuayVoiceLanguage) => {
+  const arrivalState = normalizeArrivalState(trailer.arrivalStatus);
+  if (arrivalState === "arrived") {
+    if (trailer.inspectionCompletedAt) {
+      return language === "pt-PT" ? "Chegou, inspeção concluída" : "Arrived, inspection complete";
+    }
+
+    return language === "pt-PT" ? "Chegou, inspeção pendente" : "Arrived, inspection pending";
+  }
+
+  if (arrivalState === "expected" || arrivalState === "available_for_arrival") {
+    return language === "pt-PT" ? "Pendente de chegada" : "Pending arrival";
+  }
+
+  const fallback = fallbackOperationalStatus?.trim();
+  if (fallback) {
+    return fallback;
+  }
+
+  return language === "pt-PT" ? "Estado indisponível" : "State unavailable";
+};
+
+const buildNotOnSelectedVesselPrefix = (language: QuayVoiceLanguage) => {
+  return language === "pt-PT" ? "Não está na embarcação selecionada." : "Not on selected vessel.";
+};
+
+const buildArrivedSuccessText = (trailerNumber: string, language: QuayVoiceLanguage) => {
+  return language === "pt-PT" ? `${trailerNumber} marcada como chegada.` : `${trailerNumber} marked arrived.`;
+};
+
 export const parseQuayVoiceCommand = (recognizedText: string): QuayVoiceParsedCommand => {
   const normalizedText = normalizeVoiceText(recognizedText);
   if (!normalizedText) {
@@ -179,39 +237,6 @@ const normalizeArrivalState = (value?: string | null) => value?.trim().toLowerCa
 const isEligibleForArrived = (trailer: QuayVoiceTrailerRecord) => {
   const state = normalizeArrivalState(trailer.arrivalStatus);
   return state === "expected" || state === "available_for_arrival";
-};
-
-const normalizeStateLabel = (trailer: QuayVoiceTrailerRecord, fallbackOperationalStatus: string | null) => {
-  const arrivalState = normalizeArrivalState(trailer.arrivalStatus);
-  if (arrivalState === "arrived") {
-    if (trailer.inspectionCompletedAt) {
-      return "arrived, inspection complete";
-    }
-
-    return "arrived, inspection pending";
-  }
-
-  if (arrivalState === "expected" || arrivalState === "available_for_arrival") {
-    return "pending arrival";
-  }
-
-  const fallback = fallbackOperationalStatus?.trim().toLowerCase();
-  return fallback && fallback.length > 0 ? fallback : "state unavailable";
-};
-
-const normalizeTemperatureLabel = (trailer: QuayVoiceTrailerRecord) => {
-  const hasExpected = trailer.expectedFrontTemperature !== null || trailer.expectedRearTemperature !== null;
-  const hasRequired = (trailer.temperatureRequired ?? "").trim().length > 0;
-
-  if (!hasExpected && !hasRequired) {
-    return "ambient";
-  }
-
-  if (trailer.hasTemperatureAlert) {
-    return "temperature alert";
-  }
-
-  return "temperature required";
 };
 
 const normalizePriorityLabel = (value?: string | null) => {
@@ -281,18 +306,29 @@ export const buildQuayTrailerVoiceSummary = (input: {
   trailer: QuayVoiceTrailerRecord;
   trailerMeta: QuayVoiceTrailerMeta | null;
   notOnSelectedVessel: boolean;
+  language?: QuayVoiceLanguage;
 }) => {
-  const customer = input.trailerMeta?.customer ?? input.trailer.customer ?? "Unknown customer";
-  const temperature = normalizeTemperatureLabel(input.trailer);
-  const priority = normalizePriorityLabel(input.trailer.priorityLevel);
-  const state = normalizeStateLabel(input.trailer, input.trailerMeta?.operationalStatus ?? null);
+  const language = input.language ?? "en-GB";
+  const customer = input.trailerMeta?.customer ?? input.trailer.customer ?? null;
+  const customerSegment = customer ? buildCustomerSegment(customer, language) : null;
+  const temperature = buildTemperatureSegment(input.trailer, language);
+  const priority = buildPrioritySegment(input.trailer.priorityLevel, language);
+  const state = buildStateSegment(input.trailer, input.trailerMeta?.operationalStatus ?? null, language);
   const compoundPosition = input.trailerMeta?.compoundPosition;
 
-  const spokenBase = `${input.trailer.trailerNumber} - ${customer}, ${temperature}, ${priority}, ${state}`;
-  const spoken = compoundPosition ? `${spokenBase}, position ${compoundPosition}.` : `${spokenBase}.`;
+  const spokenSegments = [
+    input.trailer.trailerNumber,
+    customerSegment,
+    temperature,
+    priority,
+    state,
+    compoundPosition ? (language === "pt-PT" ? `Posição ${compoundPosition}` : `Position ${compoundPosition}`) : null,
+  ].filter((item): item is string => Boolean(item));
+
+  const spoken = spokenSegments.join(". ") + ".";
 
   const details = [
-    `Customer: ${customer}`,
+    customer ? `Customer: ${customer}` : null,
     `Temperature: ${temperature}`,
     `Priority: ${priority}`,
     `State: ${state}`,
@@ -308,6 +344,10 @@ export const buildQuayTrailerVoiceSummary = (input: {
   };
 };
 
+export const buildQuayArrivedVoiceText = (trailerNumber: string, language: QuayVoiceLanguage) => {
+  return buildArrivedSuccessText(trailerNumber, language);
+};
+
 export const executeQuayVoiceCommand = async (input: {
   recognizedText: string;
   selectedVesselId: string | null;
@@ -317,7 +357,9 @@ export const executeQuayVoiceCommand = async (input: {
   canMarkArrived: boolean;
   isTrailerBusy: (trailerRowId: string) => boolean;
   onMarkArrived: (trailer: QuayVoiceTrailerRecord) => Promise<boolean>;
+  language?: QuayVoiceLanguage;
 }): Promise<QuayVoiceCommandResult> => {
+  const language = input.language ?? "en-GB";
   const parsed = parseQuayVoiceCommand(input.recognizedText);
 
   if (parsed.clarification) {
@@ -366,7 +408,9 @@ export const executeQuayVoiceCommand = async (input: {
   }
 
   if (resolution.status === "not_found") {
-    const message = `Trailer ${resolution.normalizedTrailerNumber} not found.`;
+    const message = language === "pt-PT"
+      ? `Trela ${resolution.normalizedTrailerNumber} não encontrada.`
+      : `Trailer ${resolution.normalizedTrailerNumber} not found.`;
     return {
       status: "error",
       recognizedText: parsed.recognizedText,
@@ -388,10 +432,11 @@ export const executeQuayVoiceCommand = async (input: {
       trailer,
       trailerMeta,
       notOnSelectedVessel,
+      language,
     });
 
     const responseText = notOnSelectedVessel
-      ? `Not on selected vessel. ${summary.spoken}`
+      ? `${buildNotOnSelectedVesselPrefix(language)} ${summary.spoken}`
       : summary.spoken;
 
     return {
@@ -458,7 +503,7 @@ export const executeQuayVoiceCommand = async (input: {
     };
   }
 
-  const success = `${trailer.trailerNumber} marked arrived.`;
+  const success = buildArrivedSuccessText(trailer.trailerNumber, language);
   return {
     status: "success",
     recognizedText: parsed.recognizedText,
