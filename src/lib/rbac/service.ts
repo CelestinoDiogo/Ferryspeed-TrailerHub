@@ -14,6 +14,7 @@ const roleRank: Record<RoleKey, number> = {
 
 const moduleLabels: Record<PermissionModuleKey, string> = {
   dashboard: "Dashboard",
+  driver_mobile: "Driver Mobile",
   arrivals: "Arrivals",
   compound: "Compound",
   stock_check: "Stock Check",

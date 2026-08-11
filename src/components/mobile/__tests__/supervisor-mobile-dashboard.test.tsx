@@ -3,6 +3,7 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ReactElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SupervisorMobileDashboard } from "@/components/mobile/supervisor-mobile-dashboard";
 
@@ -455,7 +456,7 @@ describe("SupervisorMobileDashboard", () => {
 
   const triggerVoiceCommand = async (
     user: ReturnType<typeof userEvent.setup>,
-    rerender: (ui: unknown) => void,
+    rerender: (ui: ReactElement) => void,
     recognizedText: string,
     expectSpeech = true,
   ) => {
@@ -476,7 +477,6 @@ describe("SupervisorMobileDashboard", () => {
         expect(speechSynthesisMock.speak).toHaveBeenCalled();
       });
     }
-
   };
 
   it("renders vessel workspace queue, counts, and vessel selection", async () => {
@@ -733,8 +733,8 @@ describe("SupervisorMobileDashboard", () => {
 
   it("shows voice output lifecycle status when synthesis reports start and end", async () => {
     speechSynthesisMock.speak.mockImplementationOnce((utterance: SpeechSynthesisUtterance) => {
-      utterance.onstart?.();
-      utterance.onend?.();
+      utterance.onstart?.(new Event("start") as unknown as SpeechSynthesisEvent);
+      utterance.onend?.(new Event("end") as unknown as SpeechSynthesisEvent);
     });
 
     render(<SupervisorMobileDashboard />);

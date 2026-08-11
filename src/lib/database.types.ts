@@ -100,6 +100,20 @@ export type Database = {
         Update: Partial<Database["public"]["Tables"]["app_user_role_audit_log"]["Row"]>;
         Relationships: [];
       };
+      drivers: {
+        Row: {
+          id: string;
+          user_id: string | null;
+          display_name: string;
+          phone: string | null;
+          active: boolean;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: Partial<Database["public"]["Tables"]["drivers"]["Row"]>;
+        Update: Partial<Database["public"]["Tables"]["drivers"]["Row"]>;
+        Relationships: [];
+      };
       company_trailers: {
         Row: {
           id: string;
@@ -263,6 +277,7 @@ export type Database = {
         Row: {
           id: string;
           trailer_id: string;
+          driver_id: string | null;
           delivery_date: string;
           delivery_time: string | null;
           customer: string | null;

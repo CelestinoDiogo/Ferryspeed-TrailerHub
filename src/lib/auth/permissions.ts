@@ -2,6 +2,7 @@ import type { RoleKey } from "@/lib/auth/roles";
 
 export const moduleKeys = [
   "dashboard",
+  "driver_mobile",
   "arrivals",
   "compound",
   "stock_check",
@@ -53,6 +54,7 @@ const operationalModules: PermissionModuleKey[] = [
 function createEmptyMap(): RolePermissionMap {
   return {
     dashboard: new Set<PermissionAction>(),
+    driver_mobile: new Set<PermissionAction>(),
     arrivals: new Set<PermissionAction>(),
     compound: new Set<PermissionAction>(),
     stock_check: new Set<PermissionAction>(),
@@ -93,6 +95,7 @@ operatorPermissions.timeline = new Set(["view"]);
 operatorPermissions.ai_assistant = new Set(["view"]);
 
 const driverPermissions = createEmptyMap();
+driverPermissions.driver_mobile = new Set(["view"]);
 
 const rolePermissionMatrix: Record<RoleKey, RolePermissionMap> = {
   administrator: administratorPermissions,
@@ -116,6 +119,7 @@ export function canPerformAction(roleKey: RoleKey, moduleKey: PermissionModuleKe
 
 type LegacyPermissionModuleKey =
   | "dashboard"
+  | "driver_mobile"
   | "operations"
   | "yard"
   | "deliveries"
@@ -129,6 +133,7 @@ export type LegacyPermissionColumn = "can_view" | "can_create" | "can_edit" | "c
 
 const moduleToLegacyMap: Record<PermissionModuleKey, LegacyPermissionModuleKey> = {
   dashboard: "dashboard",
+  driver_mobile: "driver_mobile",
   arrivals: "operations",
   compound: "yard",
   stock_check: "yard",
