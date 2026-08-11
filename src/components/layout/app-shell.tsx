@@ -2,6 +2,7 @@
 
 import { Suspense, useState } from "react";
 import type { ReactNode } from "react";
+import { usePathname } from "next/navigation";
 import { Sidebar } from "@/components/layout/sidebar";
 import { TopHeader } from "@/components/layout/top-header";
 
@@ -11,6 +12,12 @@ type AppShellProps = {
 
 export function AppShell({ children }: AppShellProps) {
   const [mobileOpen, setMobileOpen] = useState(false);
+  const pathname = usePathname();
+  const isMobileDashboardRoute = pathname === "/dashboard/mobile" || pathname.startsWith("/dashboard/mobile/");
+
+  if (isMobileDashboardRoute) {
+    return <div className="min-h-screen">{children}</div>;
+  }
 
   return (
     <div className="relative min-h-screen bg-[linear-gradient(180deg,#ffffff_0%,#f5f7fb_100%)] text-slate-900 print:bg-white print:text-black">
