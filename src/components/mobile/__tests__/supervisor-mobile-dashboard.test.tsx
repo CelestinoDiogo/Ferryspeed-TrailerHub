@@ -397,9 +397,9 @@ describe("SupervisorMobileDashboard", () => {
 
     const workspace = screen.getByText("Active Vessel Workspace").closest("section") as HTMLElement;
     expect(workspace).toBeInTheDocument();
-    expect(within(workspace).getByText("Expected", { selector: "p" }).closest("div")).toHaveTextContent("3");
+    expect(within(workspace).getByText("Total", { selector: "p" }).closest("div")).toHaveTextContent("5");
     expect(within(workspace).getByText("Arrived", { selector: "p" }).closest("div")).toHaveTextContent("2");
-    expect(within(workspace).getByText("Pending", { selector: "p" }).closest("div")).toHaveTextContent("3");
+    expect(within(workspace).getByText("Remaining", { selector: "p" }).closest("div")).toHaveTextContent("3");
     expect(within(workspace).getByText("Insp. Pending", { selector: "p" }).closest("div")).toHaveTextContent("1");
     const priorityCountLabel = within(workspace)
       .getAllByText("Priority", { selector: "p" })
@@ -413,6 +413,49 @@ describe("SupervisorMobileDashboard", () => {
     await user.click(screen.getByRole("button", { name: /MV Hebrides/i }));
     expect(await screen.findByText("FS2001")).toBeInTheDocument();
     expect(screen.queryByText("FS1001")).not.toBeInTheDocument();
+  });
+
+  it("keeps vessel counts scoped to the selected operation when vessel names repeat", async () => {
+    tableData = {
+      ...buildBaseData(),
+      vessel_operations: [
+        {
+          id: "op-1",
+          vessel_name: "MV ISLANDER",
+          sailing_reference: "ISL-100",
+          status: "confirmed",
+          list_status: "confirmed",
+          final_locked_at: null,
+          updated_at: "2026-08-01T09:00:00.000Z",
+        },
+        {
+          id: "op-2",
+          vessel_name: "MV ISLANDER",
+          sailing_reference: "ISL-200",
+          status: "confirmed",
+          list_status: "confirmed",
+          final_locked_at: null,
+          updated_at: "2026-08-01T08:00:00.000Z",
+        },
+      ],
+    };
+
+    render(<SupervisorMobileDashboard />);
+    const user = await openVesselWorkspace();
+
+    expect(screen.getByRole("button", { name: /ISL-100/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /ISL-200/i })).toBeInTheDocument();
+    expect(screen.getByText("FS1001")).toBeInTheDocument();
+    expect(screen.queryByText("FS2001")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /ISL-200/i }));
+    expect(await screen.findByText("FS2001")).toBeInTheDocument();
+    expect(screen.queryByText("FS1001")).not.toBeInTheDocument();
+
+    const workspace = screen.getByText("Active Vessel Workspace").closest("section") as HTMLElement;
+    expect(within(workspace).getByText("Total", { selector: "p" }).closest("div")).toHaveTextContent("2");
+    expect(within(workspace).getByText("Arrived", { selector: "p" }).closest("div")).toHaveTextContent("1");
+    expect(within(workspace).getByText("Remaining", { selector: "p" }).closest("div")).toHaveTextContent("1");
   });
 
   it("applies vessel quick filters for all workflow buckets", async () => {

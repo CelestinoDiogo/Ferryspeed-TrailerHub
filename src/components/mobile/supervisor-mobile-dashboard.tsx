@@ -93,9 +93,9 @@ type MobileSummary = {
 };
 
 type VesselQuickCounts = {
-  expected: number;
+  total: number;
   arrived: number;
-  pending: number;
+  remaining: number;
   inspectionPending: number;
   priority: number;
 };
@@ -385,15 +385,15 @@ export function SupervisorMobileDashboard() {
   }, [selectedVessel, vesselTrailers]);
 
   const vesselQuickCounts = useMemo<VesselQuickCounts>(() => {
-    const expected = selectedVesselRows.filter((row) => isPendingArrivalState(row.arrival_status)).length;
+    const total = selectedVesselRows.length;
     const arrived = selectedVesselRows.filter((row) => isArrivedState(row.arrival_status)).length;
     const inspectionPending = selectedVesselRows.filter((row) => isArrivedState(row.arrival_status) && !row.inspection_completed_at).length;
     const priority = selectedVesselRows.filter((row) => normalizeText(row.priority_level) === "priority").length;
 
     return {
-      expected,
+      total,
       arrived,
-      pending: expected,
+      remaining: total - arrived,
       inspectionPending,
       priority,
     };
@@ -1121,9 +1121,9 @@ export function SupervisorMobileDashboard() {
                   </div>
 
                   <div className="mt-2 grid grid-cols-5 gap-1.5 text-center">
-                    <CountChip label="Expected" value={vesselQuickCounts.expected} />
+                    <CountChip label="Total" value={vesselQuickCounts.total} />
                     <CountChip label="Arrived" value={vesselQuickCounts.arrived} />
-                    <CountChip label="Pending" value={vesselQuickCounts.pending} />
+                    <CountChip label="Remaining" value={vesselQuickCounts.remaining} />
                     <CountChip label="Insp. Pending" value={vesselQuickCounts.inspectionPending} />
                     <CountChip label="Priority" value={vesselQuickCounts.priority} />
                   </div>

@@ -54,24 +54,46 @@ export type SpeechRecognitionState = {
   resetTranscript: () => void;
 };
 
-const toErrorMessage = (code: string) => {
-  if (code === "not-allowed" || code === "service-not-allowed") {
-    return "Microphone access was denied.";
+export const describeSpeechRecognitionError = (code?: string | null) => {
+  const normalizedCode = code?.trim().toLowerCase() ?? "";
+
+  if (!normalizedCode) {
+    return "Voice recognition failed. Please try again.";
   }
 
-  if (code === "audio-capture") {
+  if (normalizedCode === "not-allowed" || normalizedCode === "service-not-allowed") {
+    return "Microphone access was denied. On iPhone, allow Safari microphone access and retry.";
+  }
+
+  if (normalizedCode === "audio-capture") {
     return "No microphone was found on this device.";
   }
 
-  if (code === "no-speech") {
+  if (normalizedCode === "no-speech") {
     return "No speech was detected.";
   }
 
-  if (code === "network") {
+  if (normalizedCode === "network") {
     return "Speech recognition network error.";
   }
 
-  return "Voice recognition failed. Please try again.";
+  if (normalizedCode === "aborted") {
+    return "Voice recognition was stopped before it finished. Try again.";
+  }
+
+  if (normalizedCode === "language-not-supported") {
+    return "This recognition language is not supported on this device.";
+  }
+
+  if (normalizedCode === "invalidstateerror") {
+    return "Speech recognition could not start on this device. Reload Safari and retry.";
+  }
+
+  if (normalizedCode === "bad-grammar") {
+    return "The speech request could not be understood. Try a shorter command.";
+  }
+
+  return `Voice recognition failed (${normalizedCode}). Please try again.`;
 };
 
 export const useSpeechRecognition = (options?: UseSpeechRecognitionOptions): SpeechRecognitionState => {
@@ -138,7 +160,7 @@ export const useSpeechRecognition = (options?: UseSpeechRecognitionOptions): Spe
     };
 
     recognition.onerror = (event) => {
-      setError(toErrorMessage(event.error));
+      setError(describeSpeechRecognitionError(event.error));
       setIsListening(false);
     };
 
@@ -165,7 +187,13 @@ export const useSpeechRecognition = (options?: UseSpeechRecognitionOptions): Spe
     }
 
     setError(null);
-    recognitionRef.current.start();
+
+    try {
+      recognitionRef.current.start();
+    } catch (startError) {
+      setIsListening(false);
+      setError(describeSpeechRecognitionError(startError instanceof Error ? startError.name : null));
+    }
   }, [isListening]);
 
   const stopListening = useCallback(() => {
@@ -173,7 +201,12 @@ export const useSpeechRecognition = (options?: UseSpeechRecognitionOptions): Spe
       return;
     }
 
-    recognitionRef.current.stop();
+    try {
+      recognitionRef.current.stop();
+    } catch (stopError) {
+      setIsListening(false);
+      setError(describeSpeechRecognitionError(stopError instanceof Error ? stopError.name : null));
+    }
   }, [isListening]);
 
   const resetTranscript = useCallback(() => {
