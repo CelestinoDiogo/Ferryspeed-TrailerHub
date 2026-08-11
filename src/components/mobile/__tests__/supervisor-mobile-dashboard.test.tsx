@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SupervisorMobileDashboard } from "@/components/mobile/supervisor-mobile-dashboard";
@@ -116,7 +116,7 @@ const buildBaseData = () => ({
   trailers: [
     {
       id: "trailer-1",
-      trailer_number: "FS1234",
+      trailer_number: "FS1001",
       customer: "Alpha Logistics",
       load_status: "Empty",
       operational_status: "Ready",
@@ -127,11 +127,66 @@ const buildBaseData = () => ({
     },
     {
       id: "trailer-2",
-      trailer_number: "FS2000",
+      trailer_number: "FS1002",
       customer: "Bravo Freight",
       load_status: "Loaded",
       operational_status: "Arrived",
       compound_position: "P02",
+      is_local: false,
+      arrival_date: null,
+      departure_date: null,
+    },
+    {
+      id: "trailer-3",
+      trailer_number: "FS1003",
+      customer: "Delta Haulage",
+      load_status: "Loaded",
+      operational_status: "Arrived",
+      compound_position: "P03",
+      is_local: false,
+      arrival_date: null,
+      departure_date: null,
+    },
+    {
+      id: "trailer-4",
+      trailer_number: "FS1004",
+      customer: "Echo Cargo",
+      load_status: "Empty",
+      operational_status: "Ready",
+      compound_position: "P04",
+      is_local: false,
+      arrival_date: null,
+      departure_date: null,
+    },
+    {
+      id: "trailer-5",
+      trailer_number: "FS1005",
+      customer: "Foxtrot Movers",
+      load_status: "Loaded",
+      operational_status: "Ready",
+      compound_position: "P05",
+      is_local: false,
+      arrival_date: null,
+      departure_date: null,
+    },
+    {
+      id: "trailer-6",
+      trailer_number: "FS2001",
+      customer: "Harbor Trans",
+      load_status: "Empty",
+      operational_status: "Ready",
+      compound_position: "P06",
+      is_local: false,
+      arrival_date: null,
+      departure_date: null,
+    },
+    {
+      id: "trailer-7",
+      trailer_number: "FS2002",
+      customer: "Harbor Trans",
+      load_status: "Loaded",
+      operational_status: "Arrived",
+      compound_position: "P07",
       is_local: false,
       arrival_date: null,
       departure_date: null,
@@ -149,15 +204,40 @@ const buildBaseData = () => ({
       final_locked_at: null,
       updated_at: "2026-08-01T09:00:00.000Z",
     },
+    {
+      id: "op-2",
+      vessel_name: "MV Hebrides",
+      sailing_reference: "SAIL-200",
+      status: "confirmed",
+      list_status: "confirmed",
+      final_locked_at: null,
+      updated_at: "2026-08-01T08:00:00.000Z",
+    },
   ],
   vessel_operation_trailers: [
     {
       id: "vt-1",
       vessel_operation_id: "op-1",
       trailer_id: "trailer-1",
-      trailer_number: "FS1234",
+      trailer_number: "FS1001",
       arrival_status: "expected",
       status: "expected",
+      inspection_started_at: null,
+      inspection_completed_at: null,
+      expected_front_temperature: null,
+      expected_rear_temperature: null,
+      expected_temperature_unit: "C",
+      has_temperature_alert: false,
+      has_damage: false,
+    },
+    {
+      id: "vt-2",
+      vessel_operation_id: "op-1",
+      trailer_id: "trailer-2",
+      trailer_number: "FS1002",
+      arrival_status: "arrived",
+      status: "arrived",
+      priority_level: "priority",
       inspection_started_at: null,
       inspection_completed_at: null,
       expected_front_temperature: 2,
@@ -167,16 +247,77 @@ const buildBaseData = () => ({
       has_damage: false,
     },
     {
-      id: "vt-2",
+      id: "vt-3",
+      vessel_operation_id: "op-1",
+      trailer_id: "trailer-3",
+      trailer_number: "FS1003",
+      arrival_status: "arrived",
+      status: "arrived",
+      inspection_started_at: "2026-08-01T07:00:00.000Z",
+      inspection_completed_at: "2026-08-01T07:30:00.000Z",
+      expected_front_temperature: null,
+      expected_rear_temperature: null,
+      expected_temperature_unit: "C",
+      has_temperature_alert: false,
+      has_damage: true,
+    },
+    {
+      id: "vt-4",
+      vessel_operation_id: "op-1",
+      trailer_id: "trailer-4",
+      trailer_number: "FS1004",
+      arrival_status: "expected",
+      status: "expected",
+      inspection_started_at: null,
+      inspection_completed_at: null,
+      expected_front_temperature: null,
+      expected_rear_temperature: null,
+      expected_temperature_unit: "C",
+      temperature_required: "required",
+      has_temperature_alert: false,
+      has_damage: false,
+    },
+    {
+      id: "vt-5",
+      vessel_operation_id: "op-1",
+      trailer_id: "trailer-5",
+      trailer_number: "FS1005",
+      arrival_status: "expected",
+      status: "expected",
+      inspection_started_at: null,
+      inspection_completed_at: null,
+      expected_front_temperature: 5,
+      expected_rear_temperature: null,
+      expected_temperature_unit: "C",
+      has_temperature_alert: true,
+      has_damage: false,
+    },
+    {
+      id: "vt-6",
       vessel_operation_id: "op-2",
-      trailer_id: "trailer-2",
-      trailer_number: "FS2000",
+      trailer_id: "trailer-6",
+      trailer_number: "FS2001",
+      arrival_status: "expected",
+      status: "expected",
+      inspection_started_at: null,
+      inspection_completed_at: null,
+      expected_front_temperature: null,
+      expected_rear_temperature: null,
+      expected_temperature_unit: "C",
+      has_temperature_alert: false,
+      has_damage: false,
+    },
+    {
+      id: "vt-7",
+      vessel_operation_id: "op-2",
+      trailer_id: "trailer-7",
+      trailer_number: "FS2002",
       arrival_status: "arrived",
       status: "arrived",
       inspection_started_at: null,
       inspection_completed_at: null,
-      expected_front_temperature: 2,
-      expected_rear_temperature: 3,
+      expected_front_temperature: null,
+      expected_rear_temperature: null,
       expected_temperature_unit: "C",
       has_temperature_alert: false,
       has_damage: false,
@@ -209,62 +350,224 @@ describe("SupervisorMobileDashboard", () => {
       upload: vi.fn(),
       remove: vi.fn(),
     });
-    supabaseMock.auth.getSession.mockResolvedValue({ data: { session: { user: { email: "supervisor@example.com", id: "user-1" } } } });
+    supabaseMock.auth.getSession.mockResolvedValue({
+      data: {
+        session: {
+          access_token: "token-123",
+          user: { email: "supervisor@example.com", id: "user-1" },
+        },
+      },
+    });
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ status: "success", message: "Action completed." }),
+    });
     vi.stubGlobal("fetch", fetchMock);
     Object.defineProperty(window, "scrollTo", { configurable: true, value: vi.fn() });
     Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 });
   });
 
-  it("loads correctly at a phone-sized viewport", async () => {
-    render(<SupervisorMobileDashboard />);
+  const openVesselWorkspace = async () => {
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Vessel Operations" }));
+    await screen.findByText("Active Vessel Workspace");
+    return user;
+  };
 
-    await waitFor(() => {
-      expect(screen.getByText("Core Operations")).toBeInTheDocument();
-    });
-    expect(screen.getByText("Master Mobile v1")).toBeInTheDocument();
+  const getTrailerCard = (trailerNumber: string) => {
+    const title = screen.getByText(trailerNumber);
+    const card = title.closest("article");
+    expect(card).not.toBeNull();
+    return card as HTMLElement;
+  };
+
+  const getActionBody = (callIndex: number) => {
+    const [, requestInit] = fetchMock.mock.calls[callIndex] as [string, RequestInit];
+    return JSON.parse(String(requestInit.body)) as {
+      action: {
+        actionType: string;
+        payload: Record<string, unknown>;
+      };
+    };
+  };
+
+  it("renders vessel workspace queue, counts, and vessel selection", async () => {
+    render(<SupervisorMobileDashboard />);
+    const user = await openVesselWorkspace();
+
+    const workspace = screen.getByText("Active Vessel Workspace").closest("section") as HTMLElement;
+    expect(workspace).toBeInTheDocument();
+    expect(within(workspace).getByText("Expected", { selector: "p" }).closest("div")).toHaveTextContent("3");
+    expect(within(workspace).getByText("Arrived", { selector: "p" }).closest("div")).toHaveTextContent("2");
+    expect(within(workspace).getByText("Pending", { selector: "p" }).closest("div")).toHaveTextContent("3");
+    expect(within(workspace).getByText("Insp. Pending", { selector: "p" }).closest("div")).toHaveTextContent("1");
+    const priorityCountLabel = within(workspace)
+      .getAllByText("Priority", { selector: "p" })
+      .find((node) => node.className.includes("tracking-[0.08em]"));
+    expect(priorityCountLabel).toBeDefined();
+    expect(priorityCountLabel?.closest("div")).toHaveTextContent("1");
+
+    expect(screen.getByText("FS1001")).toBeInTheDocument();
+    expect(screen.queryByText("FS2001")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /MV Hebrides/i }));
+    expect(await screen.findByText("FS2001")).toBeInTheDocument();
+    expect(screen.queryByText("FS1001")).not.toBeInTheDocument();
   });
 
-  it("restores tab, search, filter and sort state from session storage", async () => {
-    window.sessionStorage.setItem(
-      "trailerhub.mobile.ui-state.v1",
-      JSON.stringify({
-        activeTab: "compound",
-        searchQuery: "FS1234",
-        selectedTrailerId: "trailer-1",
-        compoundFilter: "Alpha",
-        compoundSort: "customer",
-        scrollByTab: { compound: 120 },
+  it("applies vessel quick filters for all workflow buckets", async () => {
+    render(<SupervisorMobileDashboard />);
+    const user = await openVesselWorkspace();
+
+    expect(screen.getByText("FS1001")).toBeInTheDocument();
+    expect(screen.getByText("FS1005")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Pending Arrival" }));
+    expect(screen.getByText("FS1001")).toBeInTheDocument();
+    expect(screen.getByText("FS1004")).toBeInTheDocument();
+    expect(screen.getByText("FS1005")).toBeInTheDocument();
+    expect(screen.queryByText("FS1002")).not.toBeInTheDocument();
+    expect(screen.queryByText("FS1003")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Inspection Pending" }));
+    expect(screen.getByText("FS1002")).toBeInTheDocument();
+    expect(screen.queryByText("FS1001")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Priority" }));
+    expect(screen.getByText("FS1002")).toBeInTheDocument();
+    expect(screen.queryByText("FS1004")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Temperature Required" }));
+    expect(screen.getByText("FS1002")).toBeInTheDocument();
+    expect(screen.getByText("FS1004")).toBeInTheDocument();
+    expect(screen.getByText("FS1005")).toBeInTheDocument();
+    expect(screen.queryByText("FS1001")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Alerts" }));
+    expect(screen.getByText("FS1003")).toBeInTheDocument();
+    expect(screen.getByText("FS1005")).toBeInTheDocument();
+    expect(screen.queryByText("FS1001")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "All" }));
+    expect(screen.getByText("FS1001")).toBeInTheDocument();
+    expect(screen.getByText("FS1005")).toBeInTheDocument();
+  });
+
+  it("submits ARRIVED using the mobile action contract and enforces per-trailer busy scope", async () => {
+    render(<SupervisorMobileDashboard />);
+    const user = await openVesselWorkspace();
+
+    let resolveFetch: ((value: { ok: boolean; json: () => Promise<{ status: string; message: string }> }) => void) | null = null;
+    fetchMock.mockImplementationOnce(
+      () => new Promise((resolve) => {
+        resolveFetch = resolve;
       }),
     );
 
-    render(<SupervisorMobileDashboard />);
+    const expectedCard = getTrailerCard("FS1001");
+    const expectedArrivedButton = within(expectedCard).getByRole("button", { name: "Arrived" });
+    const alreadyArrivedCard = getTrailerCard("FS1002");
+    const ineligibleArrivedButton = within(alreadyArrivedCard).getByRole("button", { name: "Arrived" });
+    const secondExpectedCard = getTrailerCard("FS1004");
+    const secondExpectedArrivedButton = within(secondExpectedCard).getByRole("button", { name: "Arrived" });
 
-    expect(await screen.findByText("Compound tools")).toBeInTheDocument();
-    expect(screen.getByPlaceholderText("Filter by trailer, position or customer")).toHaveValue("Alpha");
-    expect(screen.getAllByRole("combobox")[1]).toHaveValue("customer");
+    expect(expectedArrivedButton).toBeEnabled();
+    expect(ineligibleArrivedButton).toBeDisabled();
+    expect(secondExpectedArrivedButton).toBeEnabled();
+
+    await user.click(expectedArrivedButton);
+    expect(await within(expectedCard).findByRole("button", { name: "Updating..." })).toBeDisabled();
+    await user.click(within(expectedCard).getByRole("button", { name: "Updating..." }));
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const requestBody = getActionBody(0);
+    expect(requestBody.action.actionType).toBe("MARK_ARRIVED");
+    expect(requestBody.action.payload).toMatchObject({
+      vesselTrailerId: "vt-1",
+      trailerNumber: "FS1001",
+      operationId: "op-1",
+    });
+
+    expect(secondExpectedArrivedButton).toBeEnabled();
+
+    resolveFetch?.({
+      ok: true,
+      json: async () => ({ status: "success", message: "Arrival confirmed." }),
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Arrival confirmed.")).toBeInTheDocument();
+    });
   });
 
-  it("allows inspection progress save while blocking completion until required data is present", async () => {
+  it("opens inline inspection panel, saves progress, and closes without leaving vessel workspace", async () => {
     render(<SupervisorMobileDashboard />);
-    const user = userEvent.setup();
+    const user = await openVesselWorkspace();
 
-    await user.click((await screen.findAllByRole("button", { name: "Ops" }))[0]);
-    await user.click(screen.getAllByRole("button", { name: /FS2000/i })[0]);
-    await user.click(screen.getByRole("button", { name: "Open Mobile Inspection Panel" }));
+    const inspectionCard = getTrailerCard("FS1002");
+    await user.click(within(inspectionCard).getByRole("button", { name: "Inspect" }));
 
-    expect(await screen.findByText("Completion checklist")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Save Progress" })).toBeEnabled();
-    expect(screen.getByRole("button", { name: "Complete" })).toBeDisabled();
+    expect(await screen.findByRole("dialog", { name: "Inspection panel" })).toBeInTheDocument();
+    expect(screen.getByText("Photo capture / upload")).toBeInTheDocument();
+    expect(screen.getByText("Expected front: 2 C")).toBeInTheDocument();
+    expect(screen.getByText("Expected rear: 3 C")).toBeInTheDocument();
+
+    await user.type(screen.getByLabelText(/Actual front/i), "1.5");
+    await user.type(screen.getByLabelText(/Actual rear/i), "2.5");
+    await user.selectOptions(screen.getByLabelText("Damage"), "yes");
+    await user.type(screen.getByLabelText("Damage details"), "Minor panel dent");
+    await user.type(screen.getByLabelText("Notes"), "Checked at berth 2");
+    await user.click(screen.getByRole("button", { name: "Save Progress" }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    const requestBody = getActionBody(0);
+    expect(requestBody.action.actionType).toBe("SAVE_INSPECTION_PROGRESS");
+    expect(requestBody.action.payload).toMatchObject({
+      vesselTrailerId: "vt-2",
+      trailerNumber: "FS1002",
+      frontTemperature: 1.5,
+      rearTemperature: 2.5,
+      unit: "C",
+      notes: "Checked at berth 2",
+      damage: {
+        hasDamage: true,
+        damageDescription: "Minor panel dent",
+      },
+    });
+
+    await user.click(screen.getByRole("button", { name: "Close" }));
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog", { name: "Inspection panel" })).not.toBeInTheDocument();
+    });
+
+    expect(screen.getByText("Active Vessel Workspace")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /MV Caledonia/i })).toBeInTheDocument();
+    expect(screen.getByText("FS1001")).toBeInTheDocument();
   });
 
-  it("opens mobile add trailer sheet from operations tab", async () => {
+  it("preserves selected vessel and queue filter after row action refetch", async () => {
     render(<SupervisorMobileDashboard />);
-    const user = userEvent.setup();
+    const user = await openVesselWorkspace();
 
-    await user.click((await screen.findAllByRole("button", { name: "Ops" }))[0]);
-    await user.click(screen.getByRole("button", { name: "Add Trailer (Mobile)" }));
+    await user.click(screen.getByRole("button", { name: /MV Hebrides/i }));
+    expect(await screen.findByText("FS2001")).toBeInTheDocument();
 
-    expect(await screen.findByText("Mobile Add Trailer")).toBeInTheDocument();
-    expect(screen.getByPlaceholderText("Trailer number")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Pending Arrival" }));
+    expect(screen.getByText("FS2001")).toBeInTheDocument();
+    expect(screen.queryByText("FS2002")).not.toBeInTheDocument();
+
+    const op2ExpectedCard = getTrailerCard("FS2001");
+    await user.click(within(op2ExpectedCard).getByRole("button", { name: "Arrived" }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    expect(screen.getByText("FS2001")).toBeInTheDocument();
+    expect(screen.queryByText("FS2002")).not.toBeInTheDocument();
+    expect(screen.queryByText("FS1001")).not.toBeInTheDocument();
   });
 });

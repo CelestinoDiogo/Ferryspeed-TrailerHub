@@ -1,10 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Home, Ship, Layers3, Truck, SquareStack, AlertTriangle, ThermometerSnowflake, Search } from "lucide-react";
 import { PermissionGuard } from "@/components/auth/permission-guard";
+import { MobileInspectionPanel, type MobileInspectionProgress, type MobileInspectionTrailer } from "@/components/mobile/mobile-inspection-panel";
 import { canAccessModule, canPerformAction } from "@/lib/auth/permissions";
 import { toRoleLabel, type RoleKey } from "@/lib/auth/roles";
 import { useCurrentUser } from "@/lib/auth/use-current-user";
@@ -19,8 +20,11 @@ import {
 import { advanceExportAllocationStatus } from "@/lib/operations/export-lifecycle";
 import { useOperationalRealtime } from "@/lib/realtime/operational-realtime";
 import { supabase } from "@/lib/supabase";
+import { getTrailerActivity, type TrailerActivityRow } from "@/lib/trailer-activity";
+import { saveVesselInspectionPhoto } from "@/lib/vessel-inspection-photos";
 
 type MobileTabKey = "home" | "vessel" | "compound" | "departures" | "exports";
+type VesselQuickFilter = "all" | "pending_arrival" | "inspection_pending" | "priority" | "temperature_required" | "alerts";
 
 type TrailerRow = Pick<
   Database["public"]["Tables"]["trailers"]["Row"],
@@ -36,6 +40,7 @@ type VesselTrailerRow = Pick<
   Database["public"]["Tables"]["vessel_operation_trailers"]["Row"],
   | "id"
   | "vessel_operation_id"
+  | "trailer_id"
   | "trailer_number"
   | "customer"
   | "arrival_status"
@@ -44,8 +49,10 @@ type VesselTrailerRow = Pick<
   | "expected_front_temperature"
   | "expected_rear_temperature"
   | "expected_temperature_unit"
+  | "inspection_started_at"
   | "inspection_completed_at"
   | "has_temperature_alert"
+  | "has_damage"
 >;
 
 type OperationalAlertRow = Pick<
@@ -71,6 +78,14 @@ type MobileSummary = {
   operationalAlerts: number;
 };
 
+type VesselQuickCounts = {
+  expected: number;
+  arrived: number;
+  pending: number;
+  inspectionPending: number;
+  priority: number;
+};
+
 const EMPTY_SUMMARY: MobileSummary = {
   inCompound: 0,
   pendingArrivals: 0,
@@ -80,6 +95,16 @@ const EMPTY_SUMMARY: MobileSummary = {
   operationalAlerts: 0,
 };
 
+const INITIAL_INSPECTION_PROGRESS: MobileInspectionProgress = {
+  frontTemperature: "",
+  rearTemperature: "",
+  damage: "no",
+  damageType: "",
+  damageLocation: "",
+  damageDescription: "",
+  notes: "",
+};
+
 const normalizeText = (value?: string | null) => value?.trim().toLowerCase() ?? "";
 
 const formatDateTime = (value?: string | null) => {
@@ -87,6 +112,31 @@ const formatDateTime = (value?: string | null) => {
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return "-";
   return parsed.toLocaleString("en-GB", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
+};
+
+const parseNumericInput = (value: string) => {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const isArrivedState = (arrivalStatus?: string | null) => normalizeText(arrivalStatus) === "arrived";
+
+const isPendingArrivalState = (arrivalStatus?: string | null) => {
+  const normalized = normalizeText(arrivalStatus);
+  return normalized === "expected" || normalized === "available_for_arrival";
+};
+
+const isTemperatureRequired = (row: VesselTrailerRow) => {
+  if (row.expected_front_temperature !== null || row.expected_rear_temperature !== null) {
+    return true;
+  }
+
+  return normalizeText(row.temperature_required).length > 0;
 };
 
 const tabConfig: Array<{ key: MobileTabKey; label: string; icon: ReactNode }> = [
@@ -105,6 +155,8 @@ export function SupervisorMobileDashboard() {
   const isSupervisorMobileRole = mobileRoleKey === "supervisor" || mobileRoleKey === "administrator";
 
   const canArrive = mobileRoleKey ? canPerformAction(mobileRoleKey, "arrivals", "create") : false;
+  const canInspect = mobileRoleKey ? canPerformAction(mobileRoleKey, "vessel_operations", "edit") : false;
+  const canCompleteInspection = mobileRoleKey ? canPerformAction(mobileRoleKey, "vessel_operations", "complete") : false;
   const canViewDepartures = mobileRoleKey ? canAccessModule(mobileRoleKey, "departures") : false;
   const canViewExports = mobileRoleKey ? canAccessModule(mobileRoleKey, "export_operations") : false;
 
@@ -121,13 +173,21 @@ export function SupervisorMobileDashboard() {
   const [exports, setExports] = useState<ExportRow[]>([]);
 
   const [vesselFilter, setVesselFilter] = useState("");
+  const [vesselQuickFilter, setVesselQuickFilter] = useState<VesselQuickFilter>("all");
   const [compoundFilter, setCompoundFilter] = useState("");
   const [departuresFilter, setDeparturesFilter] = useState("");
   const [exportsFilter, setExportsFilter] = useState("");
 
   const [selectedVesselId, setSelectedVesselId] = useState<string | null>(null);
-  const [arrivingIds, setArrivingIds] = useState<string[]>([]);
-  const [exportActioningIds, setExportActioningIds] = useState<string[]>([]);
+  const [actioningKeys, setActioningKeys] = useState<string[]>([]);
+
+  const [inspectionPanelOpen, setInspectionPanelOpen] = useState(false);
+  const [inspectionTrailerId, setInspectionTrailerId] = useState<string | null>(null);
+  const [inspectionProgressByTrailerId, setInspectionProgressByTrailerId] = useState<Record<string, MobileInspectionProgress>>({});
+  const [inspectionActivityRows, setInspectionActivityRows] = useState<TrailerActivityRow[]>([]);
+  const [inspectionActivityLoading, setInspectionActivityLoading] = useState(false);
+
+  const scrollByTabRef = useRef<Partial<Record<MobileTabKey, number>>>({});
 
   const loadData = useCallback(async (options?: { showLoading?: boolean }) => {
     const showLoading = options?.showLoading ?? true;
@@ -152,7 +212,7 @@ export function SupervisorMobileDashboard() {
           .limit(30),
         supabase
           .from("vessel_operation_trailers")
-          .select("id, vessel_operation_id, trailer_number, customer, arrival_status, priority_level, temperature_required, expected_front_temperature, expected_rear_temperature, expected_temperature_unit, inspection_completed_at, has_temperature_alert")
+          .select("id, vessel_operation_id, trailer_id, trailer_number, customer, arrival_status, priority_level, temperature_required, expected_front_temperature, expected_rear_temperature, expected_temperature_unit, inspection_started_at, inspection_completed_at, has_temperature_alert, has_damage")
           .limit(800),
         supabase
           .from("operational_alerts")
@@ -180,12 +240,8 @@ export function SupervisorMobileDashboard() {
       const nextAlerts = (alertsResult.data ?? []) as OperationalAlertRow[];
       const nextExports = ((exportResult.data ?? []) as ExportRow[]).map((row) => normalizeExportAllocationRecord(row));
 
-      const pendingArrivals = nextVesselTrailers.filter((row) => {
-        const status = normalizeText(row.arrival_status);
-        return status === "expected" || status === "available_for_arrival";
-      }).length;
-
-      const arrivedCount = nextVesselTrailers.filter((row) => normalizeText(row.arrival_status) === "arrived").length;
+      const pendingArrivals = nextVesselTrailers.filter((row) => isPendingArrivalState(row.arrival_status)).length;
+      const arrivedCount = nextVesselTrailers.filter((row) => isArrivedState(row.arrival_status)).length;
       const priorityTrailers = nextVesselTrailers.filter((row) => normalizeText(row.priority_level) === "priority").length;
       const temperatureAlerts = nextVesselTrailers.filter((row) => row.has_temperature_alert === true).length;
       const inCompound = nextTrailers.filter((row) => row.is_local !== true && (row.compound_position ?? "").trim().length > 0).length;
@@ -241,30 +297,96 @@ export function SupervisorMobileDashboard() {
     return () => window.clearTimeout(timeout);
   }, [success]);
 
+  useEffect(() => {
+    const restore = window.requestAnimationFrame(() => {
+      window.scrollTo({ top: scrollByTabRef.current[activeTab] ?? 0, behavior: "auto" });
+    });
+
+    const onScroll = () => {
+      scrollByTabRef.current[activeTab] = window.scrollY;
+    };
+
+    window.addEventListener("scroll", onScroll, { passive: true });
+
+    return () => {
+      window.cancelAnimationFrame(restore);
+      window.removeEventListener("scroll", onScroll);
+    };
+  }, [activeTab]);
+
+  const handleTabChange = useCallback((nextTab: MobileTabKey) => {
+    scrollByTabRef.current[activeTab] = window.scrollY;
+    setActiveTab(nextTab);
+  }, [activeTab]);
+
   const activeVessels = useMemo(
     () => vesselOperations.filter((row) => row.status !== "completed" && !row.final_locked_at),
     [vesselOperations],
   );
 
-  const vesselRows = useMemo(() => {
+  const selectedVessel = activeVessels.find((row) => row.id === selectedVesselId) ?? activeVessels[0] ?? null;
+
+  const selectedVesselRows = useMemo(() => {
+    if (!selectedVessel) {
+      return [];
+    }
+
+    return vesselTrailers.filter((row) => row.vessel_operation_id === selectedVessel.id);
+  }, [selectedVessel, vesselTrailers]);
+
+  const vesselQuickCounts = useMemo<VesselQuickCounts>(() => {
+    const expected = selectedVesselRows.filter((row) => isPendingArrivalState(row.arrival_status)).length;
+    const arrived = selectedVesselRows.filter((row) => isArrivedState(row.arrival_status)).length;
+    const inspectionPending = selectedVesselRows.filter((row) => isArrivedState(row.arrival_status) && !row.inspection_completed_at).length;
+    const priority = selectedVesselRows.filter((row) => normalizeText(row.priority_level) === "priority").length;
+
+    return {
+      expected,
+      arrived,
+      pending: expected,
+      inspectionPending,
+      priority,
+    };
+  }, [selectedVesselRows]);
+
+  const filteredVesselRows = useMemo(() => {
     const normalized = vesselFilter.trim().toLowerCase();
-    const selected = selectedVesselId ?? activeVessels[0]?.id ?? null;
 
-    return vesselTrailers.filter((row) => {
-      if (!selected || row.vessel_operation_id !== selected) {
-        return false;
+    const quickFiltered = selectedVesselRows.filter((row) => {
+      if (vesselQuickFilter === "pending_arrival") {
+        return isPendingArrivalState(row.arrival_status);
       }
 
-      if (!normalized) {
-        return true;
+      if (vesselQuickFilter === "inspection_pending") {
+        return isArrivedState(row.arrival_status) && !row.inspection_completed_at;
       }
 
+      if (vesselQuickFilter === "priority") {
+        return normalizeText(row.priority_level) === "priority";
+      }
+
+      if (vesselQuickFilter === "temperature_required") {
+        return isTemperatureRequired(row);
+      }
+
+      if (vesselQuickFilter === "alerts") {
+        return row.has_temperature_alert === true || row.has_damage === true;
+      }
+
+      return true;
+    });
+
+    if (!normalized) {
+      return quickFiltered;
+    }
+
+    return quickFiltered.filter((row) => {
       return (
         (row.trailer_number ?? "").toLowerCase().includes(normalized) ||
         (row.customer ?? "").toLowerCase().includes(normalized)
       );
     });
-  }, [activeVessels, selectedVesselId, vesselFilter, vesselTrailers]);
+  }, [selectedVesselRows, vesselQuickFilter, vesselFilter]);
 
   const compoundRows = useMemo(() => {
     const normalized = compoundFilter.trim().toLowerCase();
@@ -319,12 +441,32 @@ export function SupervisorMobileDashboard() {
     }).slice(0, 100);
   }, [exports, exportsFilter]);
 
-  const markArrived = useCallback(async (row: VesselTrailerRow) => {
-    if (arrivingIds.includes(row.id)) {
-      return;
-    }
+  const startAction = useCallback((actionType: string, trailerRowId: string) => {
+    const key = `${actionType}:${trailerRowId}`;
+    setActioningKeys((current) => (current.includes(key) ? current : [...current, key]));
+    return key;
+  }, []);
 
-    setArrivingIds((current) => [...current, row.id]);
+  const finishAction = useCallback((actionKey: string) => {
+    setActioningKeys((current) => current.filter((key) => key !== actionKey));
+  }, []);
+
+  const hasAction = useCallback((actionType: string, trailerRowId: string) => {
+    return actioningKeys.includes(`${actionType}:${trailerRowId}`);
+  }, [actioningKeys]);
+
+  const hasAnyActionForTrailer = useCallback((trailerRowId: string) => {
+    return actioningKeys.some((key) => key.endsWith(`:${trailerRowId}`));
+  }, [actioningKeys]);
+
+  const executeMobileAction = useCallback(async (input: {
+    actionType: "MARK_ARRIVED" | "START_INSPECTION" | "SAVE_INSPECTION_PROGRESS" | "COMPLETE_INSPECTION";
+    trailerRowId: string;
+    payload: Record<string, unknown>;
+    fallbackError: string;
+    successMessage?: string;
+  }) => {
+    const actionKey = startAction(input.actionType, input.trailerRowId);
     setError(null);
 
     try {
@@ -342,36 +484,52 @@ export function SupervisorMobileDashboard() {
         },
         body: JSON.stringify({
           action: {
-            actionType: "MARK_ARRIVED",
-            payload: {
-              vesselTrailerId: row.id,
-              trailerNumber: row.trailer_number ?? undefined,
-              operationId: row.vessel_operation_id,
-            },
+            actionType: input.actionType,
+            payload: input.payload,
           },
         }),
       });
 
       const payload = (await response.json()) as { error?: string; message?: string; status?: string };
       if (!response.ok || payload.status === "failed") {
-        throw new Error(payload.error ?? payload.message ?? "Unable to confirm arrival.");
+        throw new Error(payload.error ?? payload.message ?? input.fallbackError);
       }
 
-      setSuccess(payload.message ?? "Arrival confirmed.");
+      setSuccess(input.successMessage ?? payload.message ?? "Action completed.");
       await loadData({ showLoading: false });
+      return true;
     } catch (actionErr) {
-      setError(actionErr instanceof Error ? actionErr.message : "Unable to confirm arrival.");
+      setError(actionErr instanceof Error ? actionErr.message : input.fallbackError);
+      return false;
     } finally {
-      setArrivingIds((current) => current.filter((id) => id !== row.id));
+      finishAction(actionKey);
     }
-  }, [arrivingIds, loadData]);
+  }, [finishAction, loadData, startAction]);
 
-  const advanceExport = useCallback(async (row: ExportRow) => {
-    if (exportActioningIds.includes(row.id)) {
+  const markArrived = useCallback(async (row: VesselTrailerRow) => {
+    if (hasAction("MARK_ARRIVED", row.id)) {
       return;
     }
 
-    setExportActioningIds((current) => [...current, row.id]);
+    await executeMobileAction({
+      actionType: "MARK_ARRIVED",
+      trailerRowId: row.id,
+      payload: {
+        vesselTrailerId: row.id,
+        trailerNumber: row.trailer_number ?? undefined,
+        operationId: row.vessel_operation_id,
+      },
+      fallbackError: "Unable to confirm arrival.",
+      successMessage: "Arrival confirmed.",
+    });
+  }, [executeMobileAction, hasAction]);
+
+  const advanceExport = useCallback(async (row: ExportRow) => {
+    if (hasAction("EXPORT_ADVANCE", row.id)) {
+      return;
+    }
+
+    const actionKey = startAction("EXPORT_ADVANCE", row.id);
     setError(null);
 
     try {
@@ -385,14 +543,204 @@ export function SupervisorMobileDashboard() {
     } catch (actionErr) {
       setError(actionErr instanceof Error ? actionErr.message : "Unable to update export status.");
     } finally {
-      setExportActioningIds((current) => current.filter((id) => id !== row.id));
+      finishAction(actionKey);
     }
-  }, [exportActioningIds, loadData]);
+  }, [finishAction, hasAction, loadData, startAction]);
 
-  const hasPendingVesselAction = (id: string) => arrivingIds.includes(id);
-  const hasPendingExportAction = (id: string) => exportActioningIds.includes(id);
+  const selectedInspectionTrailer = useMemo<MobileInspectionTrailer | null>(() => {
+    if (!inspectionTrailerId) {
+      return null;
+    }
 
-  const selectedVessel = activeVessels.find((row) => row.id === selectedVesselId) ?? activeVessels[0] ?? null;
+    const row = vesselTrailers.find((item) => item.id === inspectionTrailerId);
+    if (!row) {
+      return null;
+    }
+
+    return {
+      vesselTrailerId: row.id,
+      trailerId: row.trailer_id ?? null,
+      trailerNumber: row.trailer_number ?? "Unknown",
+      operationId: row.vessel_operation_id,
+      status: row.arrival_status,
+      arrivalStatus: row.arrival_status,
+      inspectionStartedAt: row.inspection_started_at,
+      inspectionCompletedAt: row.inspection_completed_at,
+      expectedFrontTemperature: row.expected_front_temperature,
+      expectedRearTemperature: row.expected_rear_temperature,
+      expectedTemperatureUnit: row.expected_temperature_unit,
+      hasDamage: row.has_damage,
+      hasTemperatureAlert: row.has_temperature_alert,
+    };
+  }, [inspectionTrailerId, vesselTrailers]);
+
+  const selectedInspectionProgress = useMemo(() => {
+    if (!selectedInspectionTrailer) {
+      return INITIAL_INSPECTION_PROGRESS;
+    }
+
+    return inspectionProgressByTrailerId[selectedInspectionTrailer.vesselTrailerId] ?? INITIAL_INSPECTION_PROGRESS;
+  }, [inspectionProgressByTrailerId, selectedInspectionTrailer]);
+
+  const loadInspectionActivity = useCallback(async (target: MobileInspectionTrailer) => {
+    setInspectionActivityLoading(true);
+
+    try {
+      const rows = await getTrailerActivity({
+        trailerId: target.trailerId,
+        trailerNumber: target.trailerNumber,
+        limit: 40,
+      });
+
+      setInspectionActivityRows(rows);
+    } catch (activityErr) {
+      setInspectionActivityRows([]);
+      setError(activityErr instanceof Error ? activityErr.message : "Unable to load inspection activity.");
+    } finally {
+      setInspectionActivityLoading(false);
+    }
+  }, []);
+
+  const openInspectionPanel = useCallback(async (row: VesselTrailerRow) => {
+    setInspectionTrailerId(row.id);
+    setInspectionPanelOpen(true);
+
+    if (!inspectionProgressByTrailerId[row.id]) {
+      setInspectionProgressByTrailerId((current) => ({
+        ...current,
+        [row.id]: INITIAL_INSPECTION_PROGRESS,
+      }));
+    }
+
+    const trailerForPanel: MobileInspectionTrailer = {
+      vesselTrailerId: row.id,
+      trailerId: row.trailer_id ?? null,
+      trailerNumber: row.trailer_number ?? "Unknown",
+      operationId: row.vessel_operation_id,
+      status: row.arrival_status,
+      arrivalStatus: row.arrival_status,
+      inspectionStartedAt: row.inspection_started_at,
+      inspectionCompletedAt: row.inspection_completed_at,
+      expectedFrontTemperature: row.expected_front_temperature,
+      expectedRearTemperature: row.expected_rear_temperature,
+      expectedTemperatureUnit: row.expected_temperature_unit,
+      hasDamage: row.has_damage,
+      hasTemperatureAlert: row.has_temperature_alert,
+    };
+
+    await loadInspectionActivity(trailerForPanel);
+  }, [inspectionProgressByTrailerId, loadInspectionActivity]);
+
+  const updateInspectionProgress = useCallback((patch: Partial<MobileInspectionProgress>) => {
+    if (!inspectionTrailerId) {
+      return;
+    }
+
+    setInspectionProgressByTrailerId((current) => ({
+      ...current,
+      [inspectionTrailerId]: {
+        ...(current[inspectionTrailerId] ?? INITIAL_INSPECTION_PROGRESS),
+        ...patch,
+      },
+    }));
+  }, [inspectionTrailerId]);
+
+  const buildInspectionPayload = useCallback((trailer: MobileInspectionTrailer, progress: MobileInspectionProgress) => {
+    return {
+      vesselTrailerId: trailer.vesselTrailerId,
+      trailerNumber: trailer.trailerNumber,
+      frontTemperature: parseNumericInput(progress.frontTemperature),
+      rearTemperature: parseNumericInput(progress.rearTemperature),
+      unit: trailer.expectedTemperatureUnit ?? "C",
+      notes: progress.notes,
+      damage: {
+        hasDamage: progress.damage === "yes",
+        damageType: progress.damage === "yes" ? progress.damageType || null : null,
+        damageLocation: progress.damage === "yes" ? progress.damageLocation || null : null,
+        damageDescription: progress.damage === "yes" ? progress.damageDescription || null : null,
+      },
+    };
+  }, []);
+
+  const handleStartInspection = useCallback(async () => {
+    if (!selectedInspectionTrailer || !canInspect) {
+      return;
+    }
+
+    await executeMobileAction({
+      actionType: "START_INSPECTION",
+      trailerRowId: selectedInspectionTrailer.vesselTrailerId,
+      payload: {
+        vesselTrailerId: selectedInspectionTrailer.vesselTrailerId,
+        trailerNumber: selectedInspectionTrailer.trailerNumber,
+      },
+      fallbackError: "Unable to start inspection.",
+      successMessage: "Inspection started.",
+    });
+  }, [canInspect, executeMobileAction, selectedInspectionTrailer]);
+
+  const handleSaveInspectionProgress = useCallback(async () => {
+    if (!selectedInspectionTrailer || !canInspect) {
+      return;
+    }
+
+    await executeMobileAction({
+      actionType: "SAVE_INSPECTION_PROGRESS",
+      trailerRowId: selectedInspectionTrailer.vesselTrailerId,
+      payload: buildInspectionPayload(selectedInspectionTrailer, selectedInspectionProgress),
+      fallbackError: "Unable to save inspection progress.",
+      successMessage: "Inspection progress saved.",
+    });
+  }, [buildInspectionPayload, canInspect, executeMobileAction, selectedInspectionProgress, selectedInspectionTrailer]);
+
+  const handleCompleteInspection = useCallback(async () => {
+    if (!selectedInspectionTrailer || !canCompleteInspection) {
+      return;
+    }
+
+    const succeeded = await executeMobileAction({
+      actionType: "COMPLETE_INSPECTION",
+      trailerRowId: selectedInspectionTrailer.vesselTrailerId,
+      payload: buildInspectionPayload(selectedInspectionTrailer, selectedInspectionProgress),
+      fallbackError: "Unable to complete inspection.",
+      successMessage: "Inspection completed.",
+    });
+
+    if (succeeded) {
+      setInspectionPanelOpen(false);
+    }
+  }, [buildInspectionPayload, canCompleteInspection, executeMobileAction, selectedInspectionProgress, selectedInspectionTrailer]);
+
+  const handleUploadInspectionPhoto = useCallback(async (input: { file: File; category: string; description: string | null }) => {
+    if (!selectedInspectionTrailer) {
+      throw new Error("Select a trailer before uploading photos.");
+    }
+
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+
+    const uploadedBy = session?.user?.email?.trim() || session?.user?.id || "TrailerHub User";
+
+    await saveVesselInspectionPhoto({
+      vesselTrailerId: selectedInspectionTrailer.vesselTrailerId,
+      vesselOperationId: selectedInspectionTrailer.operationId,
+      trailerId: selectedInspectionTrailer.trailerId,
+      trailerNumber: selectedInspectionTrailer.trailerNumber,
+      file: input.file,
+      category: input.category,
+      description: input.description,
+      uploadedBy,
+    });
+
+    await loadInspectionActivity(selectedInspectionTrailer);
+  }, [loadInspectionActivity, selectedInspectionTrailer]);
+
+  const inspectionPanelSubmitting = selectedInspectionTrailer
+    ? hasAction("START_INSPECTION", selectedInspectionTrailer.vesselTrailerId)
+      || hasAction("SAVE_INSPECTION_PROGRESS", selectedInspectionTrailer.vesselTrailerId)
+      || hasAction("COMPLETE_INSPECTION", selectedInspectionTrailer.vesselTrailerId)
+    : false;
 
   return (
     <PermissionGuard roleKey={mobileRoleKey} moduleKey="dashboard" action="view" allowWhenRoleMissing={false}>
@@ -421,10 +769,10 @@ export function SupervisorMobileDashboard() {
               <section className="space-y-3">
                 <Card title="Core Operations" subtitle="Reach each operational workflow in one tap.">
                   <div className="grid grid-cols-2 gap-2">
-                    <NavBlock icon={<Ship className="h-5 w-5" />} label="Vessel Operations" onPress={() => setActiveTab("vessel")} />
-                    <NavBlock icon={<Layers3 className="h-5 w-5" />} label="Compound" onPress={() => setActiveTab("compound")} />
-                    <NavBlock icon={<Truck className="h-5 w-5" />} label="Departures" onPress={() => setActiveTab("departures")} />
-                    <NavBlock icon={<SquareStack className="h-5 w-5" />} label="Export Operations" onPress={() => setActiveTab("exports")} />
+                    <NavBlock icon={<Ship className="h-5 w-5" />} label="Vessel Operations" onPress={() => handleTabChange("vessel")} />
+                    <NavBlock icon={<Layers3 className="h-5 w-5" />} label="Compound" onPress={() => handleTabChange("compound")} />
+                    <NavBlock icon={<Truck className="h-5 w-5" />} label="Departures" onPress={() => handleTabChange("departures")} />
+                    <NavBlock icon={<SquareStack className="h-5 w-5" />} label="Export Operations" onPress={() => handleTabChange("exports")} />
                   </div>
                 </Card>
 
@@ -456,14 +804,14 @@ export function SupervisorMobileDashboard() {
 
             {activeTab === "vessel" ? (
               <section className="space-y-3">
-                <Card title="Active Vessel Operations" subtitle="Select a vessel, then run arrival or inspection actions.">
+                <Card title="Active Vessel Workspace" subtitle="Persistent quay queue with in-place Arrived and Inspection actions.">
                   <div className="flex gap-2 overflow-x-auto pb-1">
                     {activeVessels.map((vessel) => (
                       <button
                         key={vessel.id}
                         type="button"
                         onClick={() => setSelectedVesselId(vessel.id)}
-                        className={`min-w-[220px] rounded-2xl border px-3 py-2 text-left ${selectedVesselId === vessel.id ? "border-cyan-400 bg-cyan-50" : "border-slate-200 bg-white"}`}
+                        className={`min-w-[220px] rounded-2xl border px-3 py-2 text-left ${selectedVessel?.id === vessel.id ? "border-cyan-400 bg-cyan-50" : "border-slate-200 bg-white"}`}
                       >
                         <p className="text-sm font-semibold text-slate-900">{vessel.vessel_name ?? "Unnamed vessel"}</p>
                         <p className="text-xs text-slate-600">{vessel.sailing_reference ?? "No reference"}</p>
@@ -471,13 +819,25 @@ export function SupervisorMobileDashboard() {
                       </button>
                     ))}
                   </div>
-                </Card>
 
-                <Card
-                  title={selectedVessel ? `${selectedVessel.vessel_name ?? "Vessel"} Trailer List` : "Trailer List"}
-                  subtitle="One-touch Arrived and direct inspection access using existing vessel backend logic."
-                >
-                  <div className="mb-2 flex items-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2">
+                  <div className="mt-2 grid grid-cols-5 gap-1.5 text-center">
+                    <CountChip label="Expected" value={vesselQuickCounts.expected} />
+                    <CountChip label="Arrived" value={vesselQuickCounts.arrived} />
+                    <CountChip label="Pending" value={vesselQuickCounts.pending} />
+                    <CountChip label="Insp. Pending" value={vesselQuickCounts.inspectionPending} />
+                    <CountChip label="Priority" value={vesselQuickCounts.priority} />
+                  </div>
+
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    <QuickFilterChip label="All" active={vesselQuickFilter === "all"} onPress={() => setVesselQuickFilter("all")} />
+                    <QuickFilterChip label="Pending Arrival" active={vesselQuickFilter === "pending_arrival"} onPress={() => setVesselQuickFilter("pending_arrival")} />
+                    <QuickFilterChip label="Inspection Pending" active={vesselQuickFilter === "inspection_pending"} onPress={() => setVesselQuickFilter("inspection_pending")} />
+                    <QuickFilterChip label="Priority" active={vesselQuickFilter === "priority"} onPress={() => setVesselQuickFilter("priority")} />
+                    <QuickFilterChip label="Temperature Required" active={vesselQuickFilter === "temperature_required"} onPress={() => setVesselQuickFilter("temperature_required")} />
+                    <QuickFilterChip label="Alerts" active={vesselQuickFilter === "alerts"} onPress={() => setVesselQuickFilter("alerts")} />
+                  </div>
+
+                  <div className="mt-2 flex items-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2">
                     <Search className="h-4 w-4 text-slate-500" />
                     <input
                       value={vesselFilter}
@@ -487,38 +847,64 @@ export function SupervisorMobileDashboard() {
                     />
                   </div>
 
-                  <div className="space-y-2">
-                    {vesselRows.length === 0 ? <p className="text-sm text-slate-500">No trailers for this vessel.</p> : null}
-                    {vesselRows.map((row) => {
-                      const status = normalizeText(row.arrival_status);
-                      const canMarkArrived = canArrive && (status === "expected" || status === "available_for_arrival");
-                      const pending = hasPendingVesselAction(row.id);
+                  <div className="mt-2 space-y-2">
+                    {filteredVesselRows.length === 0 ? <p className="text-sm text-slate-500">No trailers match this vessel filter.</p> : null}
+                    {filteredVesselRows.map((row) => {
+                      const pendingArrivedAction = hasAction("MARK_ARRIVED", row.id);
+                      const pendingAnyAction = hasAnyActionForTrailer(row.id);
+                      const canMarkArrived = canArrive && isPendingArrivalState(row.arrival_status);
+                      const canOpenInspection = canInspect && (isArrivedState(row.arrival_status) || row.inspection_started_at !== null || row.inspection_completed_at !== null);
+                      const tempRequired = isTemperatureRequired(row);
+                      const tempStatus = !tempRequired
+                        ? "Temp n/a"
+                        : row.has_temperature_alert
+                          ? "Temp alert"
+                          : row.inspection_completed_at
+                            ? "Temp complete"
+                            : "Temp pending";
+                      const inspectionStatusLabel = row.inspection_completed_at
+                        ? "Completed"
+                        : isArrivedState(row.arrival_status)
+                          ? "Arrived - Inspection Pending"
+                          : "Not arrived";
 
                       return (
                         <article key={row.id} className="rounded-2xl border border-slate-200 bg-white p-3">
-                          <p className="text-lg font-semibold text-slate-900">{row.trailer_number ?? "-"}</p>
+                          <p className="text-xl font-semibold tracking-tight text-slate-900">{row.trailer_number ?? "-"}</p>
                           <p className="text-xs text-slate-600">{row.customer ?? "-"}</p>
+
                           <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
                             <InfoPill label="Priority" value={row.priority_level ?? "normal"} />
                             <InfoPill label="Arrival" value={row.arrival_status ?? "-"} />
-                            <InfoPill label="Temp" value={row.temperature_required ?? row.expected_front_temperature?.toString() ?? "n/a"} />
-                            <InfoPill label="Inspection" value={row.inspection_completed_at ? "done" : "pending"} />
+                            <InfoPill label="Inspection" value={inspectionStatusLabel} />
+                            <InfoPill label="Temperature" value={tempStatus} />
                           </div>
+
+                          <div className="mt-2 flex flex-wrap gap-1">
+                            {row.has_damage ? <Badge tone="danger" text="Damage" /> : <Badge tone="ok" text="No Damage" />}
+                            {row.has_temperature_alert ? <Badge tone="warn" text="Temp Alert" /> : null}
+                            {tempRequired ? <Badge tone="info" text="Temp Required" /> : null}
+                          </div>
+
                           <div className="mt-3 grid grid-cols-2 gap-2">
                             <button
                               type="button"
                               onClick={() => void markArrived(row)}
-                              disabled={!canMarkArrived || pending}
+                              disabled={!canMarkArrived || pendingArrivedAction}
                               className="rounded-xl bg-cyan-600 px-3 py-2 text-xs font-semibold text-white disabled:bg-cyan-300"
                             >
-                              {pending ? "Updating..." : "Arrived"}
+                              {pendingArrivedAction ? "Updating..." : "Arrived"}
                             </button>
-                            <Link
-                              href={`/dashboard/vessel-operations/${row.vessel_operation_id}/boat-check/${row.id}?returnTo=/dashboard/mobile`}
-                              className="inline-flex items-center justify-center rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700"
+                            <button
+                              type="button"
+                              onClick={() => {
+                                void openInspectionPanel(row);
+                              }}
+                              disabled={!canOpenInspection || pendingAnyAction}
+                              className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 disabled:opacity-50"
                             >
-                              Inspection
-                            </Link>
+                              {pendingAnyAction ? "Busy..." : "Inspect"}
+                            </button>
                           </div>
                         </article>
                       );
@@ -624,7 +1010,7 @@ export function SupervisorMobileDashboard() {
                     {exportRows.length === 0 ? <p className="text-sm text-slate-500">No export allocations found.</p> : null}
                     {exportRows.map((row) => {
                       const nextAction = getAdvanceStatusActionLabel(row.status);
-                      const pending = hasPendingExportAction(row.id);
+                      const pending = hasAction("EXPORT_ADVANCE", row.id);
 
                       return (
                         <article key={row.id} className="rounded-2xl border border-slate-200 bg-white p-3">
@@ -667,7 +1053,7 @@ export function SupervisorMobileDashboard() {
                   <button
                     key={tab.key}
                     type="button"
-                    onClick={() => setActiveTab(tab.key)}
+                    onClick={() => handleTabChange(tab.key)}
                     className={`flex flex-col items-center gap-1 rounded-2xl px-2 py-2 text-[11px] font-semibold transition ${isActive ? "bg-slate-950 text-white" : "text-slate-500"}`}
                   >
                     {tab.icon}
@@ -677,6 +1063,28 @@ export function SupervisorMobileDashboard() {
               })}
             </div>
           </div>
+
+          <MobileInspectionPanel
+            open={inspectionPanelOpen && Boolean(selectedInspectionTrailer)}
+            trailer={selectedInspectionTrailer}
+            progress={selectedInspectionProgress}
+            activityRows={inspectionActivityRows}
+            activityLoading={inspectionActivityLoading}
+            isOnline={typeof window === "undefined" ? true : window.navigator.onLine}
+            isSubmitting={inspectionPanelSubmitting}
+            onClose={() => setInspectionPanelOpen(false)}
+            onProgressChange={updateInspectionProgress}
+            onStartInspection={() => {
+              void handleStartInspection();
+            }}
+            onSaveProgress={() => {
+              void handleSaveInspectionProgress();
+            }}
+            onCompleteInspection={() => {
+              void handleCompleteInspection();
+            }}
+            onUploadPhoto={handleUploadInspectionPhoto}
+          />
         </main>
       ) : null}
 
@@ -750,6 +1158,55 @@ function NavBlock({ icon, label, onPress }: NavBlockProps) {
       <p>{label}</p>
     </button>
   );
+}
+
+type CountChipProps = {
+  label: string;
+  value: number;
+};
+
+function CountChip({ label, value }: CountChipProps) {
+  return (
+    <div className="rounded-xl border border-slate-200 bg-slate-50 px-1.5 py-1 text-[10px]">
+      <p className="font-semibold uppercase tracking-[0.08em] text-slate-500">{label}</p>
+      <p className="mt-0.5 text-sm font-semibold text-slate-900">{value}</p>
+    </div>
+  );
+}
+
+type QuickFilterChipProps = {
+  label: string;
+  active: boolean;
+  onPress: () => void;
+};
+
+function QuickFilterChip({ label, active, onPress }: QuickFilterChipProps) {
+  return (
+    <button
+      type="button"
+      onClick={onPress}
+      className={`rounded-full border px-3 py-1.5 text-[11px] font-semibold ${active ? "border-slate-900 bg-slate-900 text-white" : "border-slate-200 bg-white text-slate-700"}`}
+    >
+      {label}
+    </button>
+  );
+}
+
+type BadgeProps = {
+  tone: "info" | "warn" | "danger" | "ok";
+  text: string;
+};
+
+function Badge({ tone, text }: BadgeProps) {
+  const className = tone === "danger"
+    ? "border-rose-200 bg-rose-50 text-rose-700"
+    : tone === "warn"
+      ? "border-amber-200 bg-amber-50 text-amber-700"
+      : tone === "ok"
+        ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+        : "border-cyan-200 bg-cyan-50 text-cyan-700";
+
+  return <span className={`rounded-full border px-2 py-1 text-[10px] font-semibold ${className}`}>{text}</span>;
 }
 
 type InfoPillProps = {
