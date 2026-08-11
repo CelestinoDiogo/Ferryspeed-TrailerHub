@@ -83,6 +83,39 @@ const isEligibleForDeparture = (trailer: TrailerRecord) => {
   return true;
 };
 
+const readDepartureQueryState = () => {
+  if (typeof window === "undefined") {
+    return {
+      requestedTrailerId: null as string | null,
+      requestedTrailerNumber: null as string | null,
+      search: "",
+      statusFilter: "all" as DepartureStatusFilter,
+      customerFilter: "all",
+      prefixFilter: "all",
+      sortBy: "trailer_asc" as DepartureSort,
+    };
+  }
+
+  const params = new URLSearchParams(window.location.search);
+  const nextStatus = normalizeFilterValue(params.get("status") ?? params.get("load") ?? "all");
+  const nextCustomer = normalizeFilterValue(params.get("customer"));
+  const nextPrefix = normalizeFilterValue(params.get("prefix"));
+  const nextSort = (params.get("sort") ?? "trailer_asc").toLowerCase();
+
+  return {
+    requestedTrailerId: params.get("trailerId"),
+    requestedTrailerNumber: params.get("trailer"),
+    search: params.get("search") ?? "",
+    statusFilter: !nextStatus || isAllFilterValue(nextStatus) ? "all" : normalizeOperationalStatus(nextStatus),
+    customerFilter: !nextCustomer || isAllFilterValue(nextCustomer) ? "all" : nextCustomer,
+    prefixFilter: !nextPrefix || isAllFilterValue(nextPrefix) ? "all" : nextPrefix.toUpperCase(),
+    sortBy:
+      nextSort === "trailer_asc" || nextSort === "trailer_desc" || nextSort === "arrival_desc"
+        ? (nextSort as DepartureSort)
+        : "trailer_asc",
+  };
+};
+
 const formatOperationalStatus = (value?: string | null) => {
   const normalized = normalizeOperationalStatus(value);
   if (!normalized) {
@@ -100,24 +133,28 @@ export default function DeparturePage() {
   const [trailers, setTrailers] = useState<TrailerRecord[]>([]);
   const [selectedTrailerId, setSelectedTrailerId] = useState<string | null>(null);
   const [selectedTrailerIds, setSelectedTrailerIds] = useState<string[]>([]);
-  const [requestedTrailerId, setRequestedTrailerId] = useState<string | null>(null);
-  const [requestedTrailerNumber, setRequestedTrailerNumber] = useState<string | null>(null);
+  const initialQueryState = readDepartureQueryState();
+  const [requestedTrailerId] = useState<string | null>(initialQueryState.requestedTrailerId);
+  const [requestedTrailerNumber] = useState<string | null>(initialQueryState.requestedTrailerNumber);
   const [processingTrailerIds, setProcessingTrailerIds] = useState<string[]>([]);
   const [historyTrailer, setHistoryTrailer] = useState<{ trailerId: string | null; trailerNumber: string | null } | null>(null);
   const [panelTrailerId, setPanelTrailerId] = useState<string | null>(null);
   const [lastDepartureSnapshot, setLastDepartureSnapshot] = useState<DepartureTransitionSnapshot | null>(null);
-  const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState<DepartureStatusFilter>("all");
-  const [customerFilter, setCustomerFilter] = useState<string>("all");
-  const [prefixFilter, setPrefixFilter] = useState<string>("all");
-  const [sortBy, setSortBy] = useState<DepartureSort>("trailer_asc");
+  const [search, setSearch] = useState(initialQueryState.search);
+  const [statusFilter, setStatusFilter] = useState<DepartureStatusFilter>(initialQueryState.statusFilter);
+  const [customerFilter, setCustomerFilter] = useState<string>(initialQueryState.customerFilter);
+  const [prefixFilter, setPrefixFilter] = useState<string>(initialQueryState.prefixFilter);
+  const [sortBy, setSortBy] = useState<DepartureSort>(initialQueryState.sortBy);
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
-  const loadDepartureTrailers = useCallback(async () => {
-    setIsLoading(true);
+  const loadDepartureTrailers = useCallback(async (options?: { showLoading?: boolean }) => {
+    const showLoading = options?.showLoading ?? true;
+    if (showLoading) {
+      setIsLoading(true);
+    }
     setError(null);
 
     try {
@@ -149,6 +186,8 @@ export default function DeparturePage() {
 
       const eligibleRows = Array.from(deduped.values());
       setTrailers(eligibleRows);
+
+      setSelectedTrailerIds((current) => current.filter((id) => eligibleRows.some((row) => row.id === id && isEligibleForDeparture(row))));
 
       setSelectedTrailerId((currentSelection) => {
         if (currentSelection && eligibleRows.some((row) => row.id === currentSelection)) {
@@ -182,7 +221,9 @@ export default function DeparturePage() {
       }
       setError(message);
     } finally {
-      setIsLoading(false);
+      if (showLoading) {
+        setIsLoading(false);
+      }
     }
   }, [requestedTrailerId, requestedTrailerNumber]);
 
@@ -199,28 +240,11 @@ export default function DeparturePage() {
   }, [success]);
 
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    setRequestedTrailerId(params.get("trailerId"));
-    setRequestedTrailerNumber(params.get("trailer"));
-    setSearch(params.get("search") ?? "");
+    const timeoutId = window.setTimeout(() => {
+      void loadDepartureTrailers({ showLoading: true });
+    }, 0);
 
-    const nextStatus = normalizeFilterValue(params.get("status") ?? params.get("load") ?? "all");
-    setStatusFilter(!nextStatus || isAllFilterValue(nextStatus) ? "all" : normalizeOperationalStatus(nextStatus));
-
-    const nextSort = (params.get("sort") ?? "trailer_asc").toLowerCase();
-    if (nextSort === "trailer_asc" || nextSort === "trailer_desc" || nextSort === "arrival_desc") {
-      setSortBy(nextSort);
-    }
-
-    const nextCustomer = normalizeFilterValue(params.get("customer"));
-    setCustomerFilter(!nextCustomer || isAllFilterValue(nextCustomer) ? "all" : nextCustomer);
-
-    const nextPrefix = normalizeFilterValue(params.get("prefix"));
-    setPrefixFilter(!nextPrefix || isAllFilterValue(nextPrefix) ? "all" : nextPrefix.toUpperCase());
-  }, []);
-
-  useEffect(() => {
-    void loadDepartureTrailers();
+    return () => window.clearTimeout(timeoutId);
   }, [loadDepartureTrailers]);
 
   const customerOptions = useMemo(() => {
@@ -428,10 +452,6 @@ export default function DeparturePage() {
     });
   };
 
-  useEffect(() => {
-    setSelectedTrailerIds((current) => current.filter((id) => trailers.some((row) => row.id === id && isEligibleForDeparture(row))));
-  }, [trailers]);
-
   const clearSelections = () => {
     setSelectedTrailerIds([]);
   };
@@ -603,7 +623,7 @@ export default function DeparturePage() {
 
     try {
       await registerDepartureHistory(currentTrailer.id, currentTrailer.trailer_number ?? null, previousValue, updatePayload, operatorName);
-    } catch (historyError) {
+    } catch {
       const rollbackResult = await supabase
         .from("trailers")
         .update({
@@ -663,7 +683,7 @@ export default function DeparturePage() {
     try {
       const result = await performDeparture(targetTrailerId);
       removeTrailersFromList([targetTrailerId]);
-      await loadDepartureTrailers();
+      await loadDepartureTrailers({ showLoading: false });
       setLastDepartureSnapshot(result.snapshot);
       setSuccess(`${result.trailerNumber ?? "Trailer"} departed.`);
     } catch (err) {
@@ -711,7 +731,7 @@ export default function DeparturePage() {
 
     if (succeeded.length > 0) {
       removeTrailersFromList(succeeded.map((item) => item.id));
-      await loadDepartureTrailers();
+      await loadDepartureTrailers({ showLoading: false });
       setLastDepartureSnapshot(succeeded[succeeded.length - 1]?.snapshot ?? null);
       setSuccess(`${succeeded.length} trailer${succeeded.length === 1 ? "" : "s"} departed.`);
     }
@@ -773,7 +793,7 @@ export default function DeparturePage() {
       });
 
       setTrailers((current) => [restoredTrailer as TrailerRecord, ...current]);
-      await loadDepartureTrailers();
+      await loadDepartureTrailers({ showLoading: false });
       setLastDepartureSnapshot(null);
       setSuccess(`Undo applied for ${restoredTrailer.trailer_number ?? "trailer"}.`);
     } catch (undoErr) {
