@@ -297,6 +297,8 @@ export type Database = {
           demurrage_daily_rate: number | null;
           demurrage_currency: string | null;
           demurrage_notes: string | null;
+          temperature_required: boolean;
+          collected_temperature_c: number | null;
         };
         Insert: Partial<Database["public"]["Tables"]["delivery_bookings"]["Row"]>;
         Update: Partial<Database["public"]["Tables"]["delivery_bookings"]["Row"]>;

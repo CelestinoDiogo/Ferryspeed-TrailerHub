@@ -31,6 +31,7 @@ export function DashboardAuthGuard({ children }: DashboardAuthGuardProps) {
   const [isChecking, setIsChecking] = useState(true);
   const [authError, setAuthError] = useState<string | null>(null);
   const hasRedirectedRef = useRef(false);
+  const isDriverMobileRoute = pathname === "/dashboard/driver" || pathname?.startsWith("/dashboard/driver/");
 
   const redirectToLogin = useCallback(() => {
     if (hasRedirectedRef.current) {
@@ -191,7 +192,11 @@ export function DashboardAuthGuard({ children }: DashboardAuthGuardProps) {
     );
   }
 
-  if (roleKey && !canAccessModule(roleKey, "dashboard")) {
+  const hasRouteAccess = roleKey
+    ? canAccessModule(roleKey, isDriverMobileRoute ? "driver_mobile" : "dashboard")
+    : true;
+
+  if (!hasRouteAccess) {
     return (
       <div className="min-h-screen bg-slate-100 px-4 py-10 text-slate-900 sm:px-6 lg:px-8">
         <div className="mx-auto max-w-xl rounded-3xl border border-rose-200 bg-rose-50 p-8 shadow-sm">

@@ -14,8 +14,9 @@ export function AppShell({ children }: AppShellProps) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const pathname = usePathname();
   const isMobileDashboardRoute = pathname === "/dashboard/mobile" || pathname.startsWith("/dashboard/mobile/");
+  const isDriverDashboardRoute = pathname === "/dashboard/driver" || pathname.startsWith("/dashboard/driver/");
 
-  if (isMobileDashboardRoute) {
+  if (isMobileDashboardRoute || isDriverDashboardRoute) {
     return <div className="min-h-screen">{children}</div>;
   }
 
