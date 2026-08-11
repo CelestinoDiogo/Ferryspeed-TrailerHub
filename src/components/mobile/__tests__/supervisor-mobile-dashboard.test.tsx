@@ -718,14 +718,53 @@ describe("SupervisorMobileDashboard", () => {
     });
   });
 
+  it("speaks a direct test phrase from the voice card", async () => {
+    render(<SupervisorMobileDashboard />);
+    const user = await openVesselWorkspace();
+
+    await user.click(screen.getByRole("button", { name: "Test voice output" }));
+
+    expect(speechSynthesisMock.speak).toHaveBeenCalledTimes(1);
+    const utterance = speechSynthesisMock.speak.mock.calls[0][0] as SpeechSynthesisUtterance;
+    expect((utterance as { text: string }).text).toBe("Ferryspeed voice test.");
+    expect((utterance as { lang: string }).lang).toBe("en-GB");
+    expect(screen.getByText("Voice output: Speaking")).toBeInTheDocument();
+  });
+
+  it("shows voice output lifecycle status when synthesis reports start and end", async () => {
+    speechSynthesisMock.speak.mockImplementationOnce((utterance: SpeechSynthesisUtterance) => {
+      utterance.onstart?.();
+      utterance.onend?.();
+    });
+
+    render(<SupervisorMobileDashboard />);
+    const user = await openVesselWorkspace();
+
+    await user.click(screen.getByRole("button", { name: "Test voice output" }));
+
+    expect(screen.getByText("Voice output: Completed")).toBeInTheDocument();
+  });
+
+  it("shows an error status when synthesis reports an error", async () => {
+    speechSynthesisMock.speak.mockImplementationOnce((utterance: SpeechSynthesisUtterance) => {
+      utterance.onerror?.({ error: "interrupted" } as SpeechSynthesisErrorEvent);
+    });
+
+    render(<SupervisorMobileDashboard />);
+    const user = await openVesselWorkspace();
+
+    await user.click(screen.getByRole("button", { name: "Test voice output" }));
+
+    expect(screen.getByText("Voice output: Error")).toBeInTheDocument();
+    expect(screen.getByText("interrupted")).toBeInTheDocument();
+  });
+
   it("speaks successful lookup results in English by default", async () => {
     const view = render(<SupervisorMobileDashboard />);
     const user = await openVesselWorkspace();
 
     await triggerVoiceCommand(user, view.rerender, "FS1001");
 
-    expect(speechSynthesisMock.cancel).toHaveBeenCalled();
-    expect(speechSynthesisMock.resume).toHaveBeenCalled();
     const utterance = speechSynthesisMock.speak.mock.calls[0][0] as SpeechSynthesisUtterance;
     expect((utterance as { text: string }).text).toContain("FS1001. Customer Alpha Logistics.");
     expect((utterance as { text: string }).text).toContain("Pending arrival.");

@@ -32,6 +32,8 @@ import { useSpeechRecognition } from "@/lib/voice/speech-recognition";
 import {
   getVoiceResponsesEnabled,
   isSpeechSynthesisSupported,
+  buildVoiceTestPhrase,
+  cancelVoiceResponseSpeech,
   setVoiceResponsesEnabled,
   speakVoiceResponse,
 } from "@/lib/voice/speech-synthesis";
@@ -101,6 +103,7 @@ type VesselQuickCounts = {
 };
 
 type VoiceAssistantStatus = "idle" | "listening" | "processing" | "error";
+type VoiceOutputStatus = "idle" | "speaking" | "completed" | "error" | "unavailable";
 type VoiceLanguage = "en-GB" | "pt-PT";
 
 type VoiceAssistantResult = {
@@ -224,6 +227,8 @@ export function SupervisorMobileDashboard() {
   });
   const [voiceResponsesEnabled, setVoiceResponsesEnabledState] = useState(() => getVoiceResponsesEnabled());
   const [voiceErrorMessage, setVoiceErrorMessage] = useState<string | null>(null);
+  const [voiceOutputStatus, setVoiceOutputStatus] = useState<VoiceOutputStatus>("idle");
+  const [voiceOutputMessage, setVoiceOutputMessage] = useState<string | null>(null);
 
   const scrollByTabRef = useRef<Partial<Record<MobileTabKey, number>>>({});
   const wasListeningRef = useRef(false);
@@ -840,6 +845,45 @@ export function SupervisorMobileDashboard() {
     await loadInspectionActivity(selectedInspectionTrailer);
   }, [loadInspectionActivity, selectedInspectionTrailer]);
 
+  const updateVoiceOutput = useCallback((status: VoiceOutputStatus, message: string | null = null) => {
+    setVoiceOutputStatus(status);
+    setVoiceOutputMessage(message);
+  }, []);
+
+  const speakVoiceOutput = useCallback((text: string, options?: { force?: boolean }) => {
+    if (!isSpeechSynthesisSupported()) {
+      updateVoiceOutput("unavailable", "Speech synthesis is unavailable in this browser.");
+      return false;
+    }
+
+    if (!voiceResponsesEnabled && !options?.force) {
+      cancelVoiceResponseSpeech();
+      return false;
+    }
+
+    updateVoiceOutput("speaking", null);
+
+    const spoken = speakVoiceResponse(text, {
+      lang: voiceLanguage,
+      callbacks: {
+        onStart: () => updateVoiceOutput("speaking", null),
+        onEnd: () => updateVoiceOutput("completed", null),
+        onError: (reason) => updateVoiceOutput("error", reason),
+      },
+    });
+
+    if (!spoken) {
+      updateVoiceOutput("unavailable", "Speech synthesis is unavailable in this browser.");
+    }
+
+    return spoken;
+  }, [updateVoiceOutput, voiceLanguage, voiceResponsesEnabled]);
+
+  const handleVoiceTest = useCallback(() => {
+    const phrase = buildVoiceTestPhrase(voiceLanguage);
+    void speakVoiceOutput(phrase, { force: true });
+  }, [speakVoiceOutput, voiceLanguage]);
+
   const inspectionPanelSubmitting = selectedInspectionTrailer
     ? hasAction("START_INSPECTION", selectedInspectionTrailer.vesselTrailerId)
       || hasAction("SAVE_INSPECTION_PROGRESS", selectedInspectionTrailer.vesselTrailerId)
@@ -914,11 +958,9 @@ export function SupervisorMobileDashboard() {
       setVoiceErrorMessage(result.responseText);
     } else {
       setVoiceStatus("idle");
-      if (voiceResponsesEnabled && isSpeechSynthesisSupported()) {
-        speakVoiceResponse(result.speakText, { lang: voiceLanguage });
-      }
+      void speakVoiceOutput(result.speakText);
     }
-  }, [allVesselRowsForVoice, canArrive, hasAnyActionForTrailer, markArrived, selectedVessel, selectedVesselRowsForVoice, trailerMetaByNumber, vesselTrailers, voiceLanguage, voiceResponsesEnabled]);
+  }, [allVesselRowsForVoice, canArrive, hasAnyActionForTrailer, markArrived, selectedVessel, selectedVesselRowsForVoice, speakVoiceOutput, trailerMetaByNumber, vesselTrailers, voiceLanguage]);
 
   const handleVoiceMicToggle = useCallback(() => {
     if (!isSpeechRecognitionSupported) {
@@ -943,17 +985,20 @@ export function SupervisorMobileDashboard() {
     setVoiceErrorMessage(null);
     setVoiceStatus("idle");
     setVoiceResult(null);
+    cancelVoiceResponseSpeech();
+    updateVoiceOutput("idle", null);
     resetTranscript();
-  }, [resetTranscript]);
+  }, [resetTranscript, updateVoiceOutput]);
 
   const handleToggleVoiceResponses = useCallback(() => {
     const next = !voiceResponsesEnabled;
     setVoiceResponsesEnabledState(next);
     setVoiceResponsesEnabled(next);
     if (!next && isSpeechSynthesisSupported()) {
-      window.speechSynthesis.cancel();
+      cancelVoiceResponseSpeech();
+      updateVoiceOutput("idle", null);
     }
-  }, [voiceResponsesEnabled]);
+  }, [updateVoiceOutput, voiceResponsesEnabled]);
 
   useEffect(() => {
     if (!speechRecognitionError) {
@@ -1056,6 +1101,15 @@ export function SupervisorMobileDashboard() {
 
                     <button
                       type="button"
+                      onClick={handleVoiceTest}
+                      className="inline-flex h-10 items-center rounded-full border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700"
+                      aria-label="Test voice output"
+                    >
+                      Test Voice
+                    </button>
+
+                    <button
+                      type="button"
                       onClick={handleVoiceRetry}
                       className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-600"
                       aria-label="Retry voice command"
@@ -1091,6 +1145,11 @@ export function SupervisorMobileDashboard() {
                       State: {voiceStatus === "idle" ? "Idle" : voiceStatus === "listening" ? "Listening" : voiceStatus === "processing" ? "Processing" : "Error"}
                     </p>
                     <p className="mt-1">{isSpeechRecognitionSupported ? "Tap mic, speak short command, tap again or pause to process." : "Speech recognition unavailable. Use touch controls."}</p>
+                  </div>
+
+                  <div className="mt-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-700">
+                    <p>Voice output: {voiceOutputStatus === "idle" ? "Idle" : voiceOutputStatus === "speaking" ? "Speaking" : voiceOutputStatus === "completed" ? "Completed" : voiceOutputStatus === "error" ? "Error" : "Unavailable"}</p>
+                    {voiceOutputMessage ? <p className="mt-1 text-slate-500">{voiceOutputMessage}</p> : null}
                   </div>
 
                   {voiceResult ? (
