@@ -457,9 +457,9 @@ describe("SupervisorMobileDashboard", () => {
     render(<SupervisorMobileDashboard />);
     const user = await openVesselWorkspace();
 
-    let resolveFetch: ((value: { ok: boolean; json: () => Promise<{ status: string; message: string }> }) => void) | null = null;
+    let resolveFetch: (value: { ok: boolean; json: () => Promise<{ status: string; message: string }> }) => void = () => undefined;
     fetchMock.mockImplementationOnce(
-      () => new Promise((resolve) => {
+      () => new Promise<{ ok: boolean; json: () => Promise<{ status: string; message: string }> }>((resolve) => {
         resolveFetch = resolve;
       }),
     );
@@ -490,7 +490,7 @@ describe("SupervisorMobileDashboard", () => {
 
     expect(secondExpectedArrivedButton).toBeEnabled();
 
-    resolveFetch?.({
+    resolveFetch({
       ok: true,
       json: async () => ({ status: "success", message: "Arrival confirmed." }),
     });
@@ -569,5 +569,21 @@ describe("SupervisorMobileDashboard", () => {
     expect(screen.getByText("FS2001")).toBeInTheDocument();
     expect(screen.queryByText("FS2002")).not.toBeInTheDocument();
     expect(screen.queryByText("FS1001")).not.toBeInTheDocument();
+  });
+
+  it("keeps touch workflow usable when speech recognition is unsupported", async () => {
+    render(<SupervisorMobileDashboard />);
+    const user = await openVesselWorkspace();
+
+    expect(screen.getByText("Speech recognition unavailable. Use touch controls.")).toBeInTheDocument();
+
+    const expectedCard = getTrailerCard("FS1001");
+    const arrivedButton = within(expectedCard).getByRole("button", { name: "Arrived" });
+    expect(arrivedButton).toBeEnabled();
+    await user.click(arrivedButton);
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
   });
 });

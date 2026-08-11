@@ -26,14 +26,14 @@ export const isSpeechSynthesisSupported = () => {
   return "speechSynthesis" in window;
 };
 
-export const speakVoiceResponse = (text: string) => {
+export const speakVoiceResponse = (text: string, options?: { lang?: string }) => {
   if (!isSpeechSynthesisSupported() || !text.trim()) {
     return;
   }
 
   window.speechSynthesis.cancel();
   const utterance = new SpeechSynthesisUtterance(text.trim());
-  utterance.lang = "en-GB";
+  utterance.lang = options?.lang?.trim() || "en-GB";
   utterance.rate = 1;
   utterance.pitch = 1;
   window.speechSynthesis.speak(utterance);

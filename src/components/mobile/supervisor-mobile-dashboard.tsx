@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { Home, Ship, Layers3, Truck, SquareStack, AlertTriangle, ThermometerSnowflake, Search } from "lucide-react";
+import { Home, Ship, Layers3, Truck, SquareStack, AlertTriangle, ThermometerSnowflake, Search, Mic, MicOff, Languages, Volume2, RotateCcw } from "lucide-react";
 import { PermissionGuard } from "@/components/auth/permission-guard";
 import { MobileInspectionPanel, type MobileInspectionProgress, type MobileInspectionTrailer } from "@/components/mobile/mobile-inspection-panel";
 import { canAccessModule, canPerformAction } from "@/lib/auth/permissions";
@@ -22,6 +22,20 @@ import { useOperationalRealtime } from "@/lib/realtime/operational-realtime";
 import { supabase } from "@/lib/supabase";
 import { getTrailerActivity, type TrailerActivityRow } from "@/lib/trailer-activity";
 import { saveVesselInspectionPhoto } from "@/lib/vessel-inspection-photos";
+import {
+  buildQuayTrailerVoiceSummary,
+  executeQuayVoiceCommand,
+  type QuayVoiceTrailerMeta,
+  type QuayVoiceTrailerRecord,
+} from "@/lib/mobile/quay-voice";
+import { useSpeechRecognition } from "@/lib/voice/speech-recognition";
+import {
+  getVoiceResponsesEnabled,
+  isSpeechSynthesisSupported,
+  setVoiceResponsesEnabled,
+  speakVoiceResponse,
+} from "@/lib/voice/speech-synthesis";
+import { normalizeTrailerNumber } from "@/lib/voice/normalizer";
 
 type MobileTabKey = "home" | "vessel" | "compound" | "departures" | "exports";
 type VesselQuickFilter = "all" | "pending_arrival" | "inspection_pending" | "priority" | "temperature_required" | "alerts";
@@ -84,6 +98,17 @@ type VesselQuickCounts = {
   pending: number;
   inspectionPending: number;
   priority: number;
+};
+
+type VoiceAssistantStatus = "idle" | "listening" | "processing" | "error";
+type VoiceLanguage = "en-GB" | "pt-PT";
+
+type VoiceAssistantResult = {
+  recognizedPhrase: string;
+  resolvedTrailer: string | null;
+  response: string;
+  details: string | null;
+  status: "success" | "error";
 };
 
 const EMPTY_SUMMARY: MobileSummary = {
@@ -187,7 +212,32 @@ export function SupervisorMobileDashboard() {
   const [inspectionActivityRows, setInspectionActivityRows] = useState<TrailerActivityRow[]>([]);
   const [inspectionActivityLoading, setInspectionActivityLoading] = useState(false);
 
+  const [voiceStatus, setVoiceStatus] = useState<VoiceAssistantStatus>("idle");
+  const [voiceResult, setVoiceResult] = useState<VoiceAssistantResult | null>(null);
+  const [voiceLanguage, setVoiceLanguage] = useState<VoiceLanguage>(() => {
+    if (typeof window === "undefined") {
+      return "en-GB";
+    }
+
+    const browserLanguage = window.navigator.language.toLowerCase();
+    return browserLanguage.startsWith("pt") ? "pt-PT" : "en-GB";
+  });
+  const [voiceResponsesEnabled, setVoiceResponsesEnabledState] = useState(() => getVoiceResponsesEnabled());
+  const [voiceErrorMessage, setVoiceErrorMessage] = useState<string | null>(null);
+
   const scrollByTabRef = useRef<Partial<Record<MobileTabKey, number>>>({});
+  const wasListeningRef = useRef(false);
+
+  const {
+    isSupported: isSpeechRecognitionSupported,
+    isListening,
+    transcript,
+    interimTranscript,
+    error: speechRecognitionError,
+    startListening,
+    stopListening,
+    resetTranscript,
+  } = useSpeechRecognition({ language: voiceLanguage, continuous: false });
 
   const loadData = useCallback(async (options?: { showLoading?: boolean }) => {
     const showLoading = options?.showLoading ?? true;
@@ -441,6 +491,60 @@ export function SupervisorMobileDashboard() {
     }).slice(0, 100);
   }, [exports, exportsFilter]);
 
+  const trailerMetaByNumber = useMemo<Record<string, QuayVoiceTrailerMeta>>(() => {
+    return trailers.reduce<Record<string, QuayVoiceTrailerMeta>>((accumulator, row) => {
+      const normalized = normalizeTrailerNumber(row.trailer_number)?.replace(/[^A-Z0-9]/g, "");
+      if (!normalized) {
+        return accumulator;
+      }
+
+      accumulator[normalized] = {
+        trailerNumber: row.trailer_number ?? normalized,
+        customer: row.customer ?? null,
+        compoundPosition: row.compound_position ?? null,
+        operationalStatus: row.operational_status ?? null,
+      };
+
+      return accumulator;
+    }, {});
+  }, [trailers]);
+
+  const allVesselRowsForVoice = useMemo<QuayVoiceTrailerRecord[]>(() => {
+    return vesselTrailers.map((row) => ({
+      id: row.id,
+      vesselOperationId: row.vessel_operation_id,
+      trailerNumber: row.trailer_number ?? "",
+      customer: row.customer ?? null,
+      arrivalStatus: row.arrival_status ?? null,
+      priorityLevel: row.priority_level ?? null,
+      temperatureRequired: row.temperature_required ?? null,
+      expectedFrontTemperature: row.expected_front_temperature,
+      expectedRearTemperature: row.expected_rear_temperature,
+      expectedTemperatureUnit: row.expected_temperature_unit,
+      inspectionCompletedAt: row.inspection_completed_at,
+      hasTemperatureAlert: row.has_temperature_alert,
+      hasDamage: row.has_damage,
+    }));
+  }, [vesselTrailers]);
+
+  const selectedVesselRowsForVoice = useMemo<QuayVoiceTrailerRecord[]>(() => {
+    return selectedVesselRows.map((row) => ({
+      id: row.id,
+      vesselOperationId: row.vessel_operation_id,
+      trailerNumber: row.trailer_number ?? "",
+      customer: row.customer ?? null,
+      arrivalStatus: row.arrival_status ?? null,
+      priorityLevel: row.priority_level ?? null,
+      temperatureRequired: row.temperature_required ?? null,
+      expectedFrontTemperature: row.expected_front_temperature,
+      expectedRearTemperature: row.expected_rear_temperature,
+      expectedTemperatureUnit: row.expected_temperature_unit,
+      inspectionCompletedAt: row.inspection_completed_at,
+      hasTemperatureAlert: row.has_temperature_alert,
+      hasDamage: row.has_damage,
+    }));
+  }, [selectedVesselRows]);
+
   const startAction = useCallback((actionType: string, trailerRowId: string) => {
     const key = `${actionType}:${trailerRowId}`;
     setActioningKeys((current) => (current.includes(key) ? current : [...current, key]));
@@ -508,10 +612,10 @@ export function SupervisorMobileDashboard() {
 
   const markArrived = useCallback(async (row: VesselTrailerRow) => {
     if (hasAction("MARK_ARRIVED", row.id)) {
-      return;
+      return false;
     }
 
-    await executeMobileAction({
+    return executeMobileAction({
       actionType: "MARK_ARRIVED",
       trailerRowId: row.id,
       payload: {
@@ -742,6 +846,139 @@ export function SupervisorMobileDashboard() {
       || hasAction("COMPLETE_INSPECTION", selectedInspectionTrailer.vesselTrailerId)
     : false;
 
+  const runVoiceCommand = useCallback(async (recognizedPhrase: string) => {
+    const trimmedPhrase = recognizedPhrase.trim();
+    if (!trimmedPhrase) {
+      setVoiceStatus("error");
+      setVoiceErrorMessage("No speech detected. Tap retry and speak again.");
+      setVoiceResult({
+        recognizedPhrase,
+        resolvedTrailer: null,
+        response: "No speech detected. Tap retry and speak again.",
+        details: null,
+        status: "error",
+      });
+      return;
+    }
+
+    setVoiceStatus("processing");
+    setVoiceErrorMessage(null);
+
+    const result = await executeQuayVoiceCommand({
+      recognizedText: trimmedPhrase,
+      selectedVesselId: selectedVessel?.id ?? null,
+      selectedVesselRows: selectedVesselRowsForVoice,
+      allRows: allVesselRowsForVoice,
+      trailerMetaByNumber,
+      canMarkArrived: canArrive,
+      isTrailerBusy: (trailerRowId) => hasAnyActionForTrailer(trailerRowId),
+      onMarkArrived: async (trailer) => {
+        const target = vesselTrailers.find((row) => row.id === trailer.id);
+        if (!target) {
+          return false;
+        }
+
+        return markArrived(target);
+      },
+    });
+
+    const normalizedTrailer = result.trailerNumber ? result.trailerNumber.replace(/[^A-Z0-9]/g, "") : null;
+    const voiceTrailer = normalizedTrailer
+      ? allVesselRowsForVoice.find((row) => normalizeTrailerNumber(row.trailerNumber)?.replace(/[^A-Z0-9]/g, "") === normalizedTrailer)
+      : null;
+    const trailerMeta = normalizedTrailer ? trailerMetaByNumber[normalizedTrailer] ?? null : null;
+    const notOnSelectedVessel = Boolean(
+      voiceTrailer
+      && selectedVessel
+      && voiceTrailer.vesselOperationId !== selectedVessel.id,
+    );
+    const summary = voiceTrailer
+      ? buildQuayTrailerVoiceSummary({
+          trailer: voiceTrailer,
+          trailerMeta,
+          notOnSelectedVessel,
+        })
+      : null;
+
+    setVoiceResult({
+      recognizedPhrase: result.recognizedText,
+      resolvedTrailer: result.trailerNumber,
+      response: result.responseText,
+      details: result.details ?? summary?.details ?? null,
+      status: result.status,
+    });
+
+    if (result.status === "error") {
+      setVoiceStatus("error");
+      setVoiceErrorMessage(result.responseText);
+    } else {
+      setVoiceStatus("idle");
+      if (voiceResponsesEnabled && isSpeechSynthesisSupported()) {
+        speakVoiceResponse(result.speakText, { lang: voiceLanguage });
+      }
+    }
+  }, [allVesselRowsForVoice, canArrive, hasAnyActionForTrailer, markArrived, selectedVessel, selectedVesselRowsForVoice, trailerMetaByNumber, vesselTrailers, voiceLanguage, voiceResponsesEnabled]);
+
+  const handleVoiceMicToggle = useCallback(() => {
+    if (!isSpeechRecognitionSupported) {
+      setVoiceStatus("error");
+      setVoiceErrorMessage("Speech recognition is not supported in this browser.");
+      return;
+    }
+
+    if (isListening) {
+      setVoiceStatus("processing");
+      stopListening();
+      return;
+    }
+
+    resetTranscript();
+    setVoiceErrorMessage(null);
+    setVoiceStatus("listening");
+    startListening();
+  }, [isListening, isSpeechRecognitionSupported, resetTranscript, startListening, stopListening]);
+
+  const handleVoiceRetry = useCallback(() => {
+    setVoiceErrorMessage(null);
+    setVoiceStatus("idle");
+    setVoiceResult(null);
+    resetTranscript();
+  }, [resetTranscript]);
+
+  const handleToggleVoiceResponses = useCallback(() => {
+    const next = !voiceResponsesEnabled;
+    setVoiceResponsesEnabledState(next);
+    setVoiceResponsesEnabled(next);
+    if (!next && isSpeechSynthesisSupported()) {
+      window.speechSynthesis.cancel();
+    }
+  }, [voiceResponsesEnabled]);
+
+  useEffect(() => {
+    if (!speechRecognitionError) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setVoiceStatus("error");
+      setVoiceErrorMessage(speechRecognitionError);
+    }, 0);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [speechRecognitionError]);
+
+  useEffect(() => {
+    const wasListening = wasListeningRef.current;
+    wasListeningRef.current = isListening;
+
+    if (!wasListening || isListening || (voiceStatus !== "processing" && voiceStatus !== "listening")) {
+      return;
+    }
+
+    const recognizedPhrase = `${transcript} ${interimTranscript}`.trim();
+    void runVoiceCommand(recognizedPhrase);
+  }, [interimTranscript, isListening, runVoiceCommand, transcript, voiceStatus]);
+
   return (
     <PermissionGuard roleKey={mobileRoleKey} moduleKey="dashboard" action="view" allowWhenRoleMissing={false}>
       {!isSupervisorMobileRole ? (
@@ -804,6 +1041,69 @@ export function SupervisorMobileDashboard() {
 
             {activeTab === "vessel" ? (
               <section className="space-y-3">
+                <Card title="Voice Assistant" subtitle="Push-to-talk trailer lookup and safe Arrived command.">
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={handleVoiceMicToggle}
+                      disabled={voiceStatus === "processing"}
+                      className={`inline-flex h-12 w-12 items-center justify-center rounded-full border text-white ${voiceStatus === "listening" ? "border-rose-400 bg-rose-500" : "border-cyan-500 bg-cyan-600"} disabled:cursor-not-allowed disabled:border-slate-300 disabled:bg-slate-400`}
+                      aria-label={voiceStatus === "listening" ? "Stop listening" : "Start push to talk"}
+                    >
+                      {voiceStatus === "listening" ? <MicOff className="h-5 w-5" /> : <Mic className="h-5 w-5" />}
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={handleVoiceRetry}
+                      className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-600"
+                      aria-label="Retry voice command"
+                    >
+                      <RotateCcw className="h-4 w-4" />
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={handleToggleVoiceResponses}
+                      className={`inline-flex h-10 w-10 items-center justify-center rounded-full border ${voiceResponsesEnabled ? "border-cyan-400 bg-cyan-100 text-cyan-800" : "border-slate-300 bg-white text-slate-500"}`}
+                      aria-label="Toggle spoken responses"
+                    >
+                      <Volume2 className="h-4 w-4" />
+                    </button>
+
+                    <div className="ml-auto flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-2 py-1.5 text-xs text-slate-700">
+                      <Languages className="h-3.5 w-3.5" />
+                      <select
+                        value={voiceLanguage}
+                        onChange={(event) => setVoiceLanguage(event.target.value as VoiceLanguage)}
+                        className="bg-transparent text-xs font-semibold outline-none"
+                        aria-label="Voice recognition language"
+                      >
+                        <option value="en-GB">EN</option>
+                        <option value="pt-PT">PT</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="mt-2 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700">
+                    <p>
+                      State: {voiceStatus === "idle" ? "Idle" : voiceStatus === "listening" ? "Listening" : voiceStatus === "processing" ? "Processing" : "Error"}
+                    </p>
+                    <p className="mt-1">{isSpeechRecognitionSupported ? "Tap mic, speak short command, tap again or pause to process." : "Speech recognition unavailable. Use touch controls."}</p>
+                  </div>
+
+                  {voiceResult ? (
+                    <div className={`mt-2 rounded-2xl border px-3 py-2 text-xs ${voiceResult.status === "success" ? "border-emerald-200 bg-emerald-50 text-emerald-900" : "border-rose-200 bg-rose-50 text-rose-900"}`}>
+                      <p><span className="font-semibold">Heard:</span> {voiceResult.recognizedPhrase || "-"}</p>
+                      <p className="mt-1"><span className="font-semibold">Trailer:</span> {voiceResult.resolvedTrailer ?? "Not resolved"}</p>
+                      <p className="mt-1"><span className="font-semibold">Response:</span> {voiceResult.response}</p>
+                      {voiceResult.details ? <p className="mt-1">{voiceResult.details}</p> : null}
+                    </div>
+                  ) : null}
+
+                  {voiceErrorMessage ? <p className="mt-2 text-xs text-rose-700">{voiceErrorMessage}</p> : null}
+                </Card>
+
                 <Card title="Active Vessel Workspace" subtitle="Persistent quay queue with in-place Arrived and Inspection actions.">
                   <div className="flex gap-2 overflow-x-auto pb-1">
                     {activeVessels.map((vessel) => (
