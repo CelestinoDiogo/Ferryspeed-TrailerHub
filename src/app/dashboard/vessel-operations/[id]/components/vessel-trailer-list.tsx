@@ -601,7 +601,7 @@ export function VesselTrailerList({
         }
         inspectionHref={
           panelTrailer
-            ? `/dashboard/vessel-operations/${panelTrailer.vessel_operation_id}/boat-check/${panelTrailer.id}`
+            ? `/dashboard/vessel-operations/${panelTrailer.vessel_operation_id}/boat-check/${panelTrailer.id}?returnTo=${encodeURIComponent(pathname)}`
             : null
         }
         photosHref={panelTrailer?.trailer_id ? `/dashboard/trailers/${panelTrailer.trailer_id}` : null}

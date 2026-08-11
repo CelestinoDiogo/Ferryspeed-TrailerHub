@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SuccessToast } from "@/components/common/success-toast";
 import { supabase } from "@/lib/supabase";
@@ -156,10 +156,22 @@ const loadInspectionPhotoRows = async (targetVesselTrailerId: string) => {
     .order("uploaded_at", { ascending: false });
 };
 
+const resolveSafeReturnTo = (value: string | null, fallback: string) => {
+  const candidate = value?.trim();
+  if (candidate && candidate.startsWith("/") && !candidate.startsWith("//")) {
+    return candidate;
+  }
+
+  return fallback;
+};
+
 function VesselInspectionPageContent() {
   const params = useParams();
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const operationId = typeof params?.id === "string" ? params.id : "";
   const vesselTrailerId = typeof params?.vesselTrailerId === "string" ? params.vesselTrailerId : "";
+  const returnTo = resolveSafeReturnTo(searchParams.get("returnTo"), `/dashboard/vessel-operations/${operationId}`);
 
   const [operation, setOperation] = useState<VesselOperationRecord | null>(null);
   const [trailer, setTrailer] = useState<VesselOperationTrailerRecord | null>(null);
@@ -922,6 +934,7 @@ function VesselInspectionPageContent() {
       await loadInspection();
 
       setSuccess("Inspection saved successfully.");
+      router.replace(returnTo);
     } catch (saveErr) {
       console.error("Unable to save inspection:", saveErr);
       logVesselSupabaseError("Unable to save inspection", asSupabaseErrorLike(saveErr));
@@ -948,8 +961,10 @@ function VesselInspectionPageContent() {
     frontMeasuredTemperature,
     isFrontTemperatureRequired,
     isRearTemperatureRequired,
+    router,
     trailer,
     temperatureTolerance,
+    returnTo,
     vesselTrailerId,
     loadInspection,
   ]);
@@ -1009,12 +1024,12 @@ function VesselInspectionPageContent() {
               <p className="mt-2 text-sm text-slate-300">{operation.vessel_name ?? "Unnamed vessel"} - {trailer.trailer_number ?? "Trailer"}</p>
             </div>
             <div className="flex flex-wrap gap-2">
-              <Link href={`/dashboard/vessel-operations/${operation.id}/boat-check`} className="rounded-2xl border border-white/10 bg-slate-800 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700">
-                Back to Boat Check
+              <Link href={returnTo} className="rounded-2xl border border-white/10 bg-slate-800 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700">
+                Back
               </Link>
               {previousTrailer ? (
                 <Link
-                  href={`/dashboard/vessel-operations/${operation.id}/boat-check/${previousTrailer.id}`}
+                  href={`/dashboard/vessel-operations/${operation.id}/boat-check/${previousTrailer.id}?returnTo=${encodeURIComponent(returnTo)}`}
                   className="rounded-2xl border border-white/10 bg-slate-800 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700"
                 >
                   Previous Trailer
@@ -1022,7 +1037,7 @@ function VesselInspectionPageContent() {
               ) : null}
               {nextTrailer ? (
                 <Link
-                  href={`/dashboard/vessel-operations/${operation.id}/boat-check/${nextTrailer.id}`}
+                  href={`/dashboard/vessel-operations/${operation.id}/boat-check/${nextTrailer.id}?returnTo=${encodeURIComponent(returnTo)}`}
                   className="rounded-2xl border border-white/10 bg-slate-800 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700"
                 >
                   Next Trailer

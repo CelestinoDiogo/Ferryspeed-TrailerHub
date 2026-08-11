@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { SuccessToast } from "@/components/common/success-toast";
 import { TrailerHistoryDrawer } from "@/components/trailers/trailer-history-drawer";
@@ -40,7 +40,14 @@ type ViewTrailer = VesselOperationTrailerRecord & {
 function VesselBoatCheckPageContent() {
   const params = useParams();
   const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
   const operationId = typeof params?.id === "string" ? params.id : "";
+  const returnTo = (() => {
+    const query = searchParams.toString();
+    const candidate = query ? `${pathname}?${query}` : pathname;
+    return candidate.startsWith("/") && !candidate.startsWith("//") ? candidate : `/dashboard/vessel-operations/${operationId}`;
+  })();
 
   const [operation, setOperation] = useState<VesselOperationRecord | null>(null);
   const [trailers, setTrailers] = useState<ViewTrailer[]>([]);
@@ -187,9 +194,9 @@ function VesselBoatCheckPageContent() {
       }
 
       setError(null);
-      router.push(`/dashboard/vessel-operations/${operationId}/boat-check/${trailer.id}`);
+      router.push(`/dashboard/vessel-operations/${operationId}/boat-check/${trailer.id}?returnTo=${encodeURIComponent(returnTo)}`);
     },
-    [actioningTrailerId, operationId, router],
+    [actioningTrailerId, operationId, returnTo, router],
   );
 
   if (isLoading) {
@@ -323,7 +330,7 @@ function VesselBoatCheckPageContent() {
                           {actioningTrailerId === trailer.id ? "Opening..." : inspectionActionLabel}
                         </button>
                       ) : (
-                        <Link href={`/dashboard/vessel-operations/${operation.id}/boat-check/${trailer.id}`} className="rounded-2xl border border-white/10 bg-slate-800 px-4 py-3 text-center text-sm font-semibold text-white hover:bg-slate-700">
+                        <Link href={`/dashboard/vessel-operations/${operation.id}/boat-check/${trailer.id}?returnTo=${encodeURIComponent(returnTo)}`} className="rounded-2xl border border-white/10 bg-slate-800 px-4 py-3 text-center text-sm font-semibold text-white hover:bg-slate-700">
                           View Inspection
                         </Link>
                       )}

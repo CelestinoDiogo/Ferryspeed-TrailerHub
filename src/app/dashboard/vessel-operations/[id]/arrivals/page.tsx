@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, usePathname, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { SuccessToast } from "@/components/common/success-toast";
 import { TrailerHistoryDrawer } from "@/components/trailers/trailer-history-drawer";
@@ -65,6 +65,12 @@ const getDateKey = (value?: string | null) => {
   }
 };
 
+const buildReturnTo = (pathname: string, searchParams: URLSearchParams) => {
+  const query = searchParams.toString();
+  const candidate = query ? `${pathname}?${query}` : pathname;
+  return candidate.startsWith("/") && !candidate.startsWith("//") ? candidate : "/dashboard/vessel-operations";
+};
+
 const resolveOperatorName = async () => {
   const { data } = await supabase.auth.getUser();
   const user = data.user;
@@ -123,7 +129,10 @@ const getPrintedDateTime = () =>
 
 function VesselArrivalsPageContent() {
   const params = useParams();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
   const operationId = typeof params?.id === "string" ? params.id : "";
+  const returnTo = buildReturnTo(pathname, searchParams);
 
   const [operation, setOperation] = useState<VesselOperationRecord | null>(null);
   const [trailers, setTrailers] = useState<VesselOperationTrailerRecord[]>([]);
@@ -713,7 +722,7 @@ function VesselArrivalsPageContent() {
                         </button>
                       ) : canOpenInspection ? (
                         <Link
-                          href={`/dashboard/vessel-operations/${operation.id}/boat-check/${trailer.id}`}
+                          href={`/dashboard/vessel-operations/${operation.id}/boat-check/${trailer.id}?returnTo=${encodeURIComponent(returnTo)}`}
                           className="rounded-2xl bg-cyan-500 px-5 py-4 text-center text-lg font-semibold text-slate-950 hover:bg-cyan-400"
                         >
                           {isInspected ? "View Inspection" : "Start Inspection"}
@@ -736,7 +745,7 @@ function VesselArrivalsPageContent() {
 
                           {canOpenInspection ? (
                             <Link
-                              href={`/dashboard/vessel-operations/${operation.id}/boat-check/${trailer.id}`}
+                              href={`/dashboard/vessel-operations/${operation.id}/boat-check/${trailer.id}?returnTo=${encodeURIComponent(returnTo)}`}
                               className="rounded-xl border border-white/10 bg-slate-800 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-700"
                             >
                               {isInspected ? "View Inspection" : "Start Inspection"}
