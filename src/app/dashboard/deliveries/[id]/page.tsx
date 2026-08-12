@@ -3,6 +3,13 @@
 import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
+import {
+  formatAssignedDriverName,
+  listActiveDriverOptions,
+  recordDeliveryAssignmentChange,
+  UNASSIGNED_DRIVER_LABEL,
+  type ActiveDriverOption,
+} from "@/lib/delivery-driver-assignment";
 import type { Json } from "@/lib/database.types";
 import { supabase } from "@/lib/supabase";
 import {
@@ -24,6 +31,7 @@ import {
 type DeliveryBooking = {
   id: string;
   trailer_id: string;
+  driver_id?: string | null;
   delivery_date: string;
   delivery_time?: string | null;
   customer?: string | null;
@@ -35,6 +43,7 @@ type DeliveryBooking = {
   notes?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
+  assigned_driver_name?: string | null;
   trailer_number?: string | null;
   trailer_container_number?: string | null;
   // Collection tracking
@@ -49,6 +58,7 @@ type DeliveryBooking = {
 };
 
 type FormValues = {
+  driver_id: string;
   delivery_date: string;
   delivery_time: string;
   customer: string;
@@ -117,6 +127,7 @@ export default function DeliveryDetailsPage() {
   const isEditMode = searchParams.get("edit") === "1";
 
   const [booking, setBooking] = useState<DeliveryBooking | null>(null);
+  const [drivers, setDrivers] = useState<ActiveDriverOption[]>([]);
   const [trailerData, setTrailerData] = useState<Record<string, unknown> | null>(null);
   const [values, setValues] = useState<FormValues | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -133,27 +144,33 @@ export default function DeliveryDetailsPage() {
       setError(null);
 
       try {
-        const { data, error: err } = await supabase
-          .from("delivery_bookings")
-          .select(
-            `id, trailer_id, delivery_date, delivery_time, customer, consignee,
-             delivery_location, booking_reference, escort_required, status, notes,
-             created_at, updated_at,
-             delivered_at, waiting_collection_since, collection_due_date, collected_at,
-             demurrage_free_days, demurrage_daily_rate, demurrage_currency, demurrage_notes,
-             trailers(trailer_number, container_number, compound_position, departure_date)`
-          )
-          .eq("id", bookingId)
-          .single();
+        const [{ data, error: err }, driverOptions] = await Promise.all([
+          supabase
+            .from("delivery_bookings")
+            .select(
+              `id, trailer_id, driver_id, delivery_date, delivery_time, customer, consignee,
+               delivery_location, booking_reference, escort_required, status, notes,
+               created_at, updated_at,
+               delivered_at, waiting_collection_since, collection_due_date, collected_at,
+               demurrage_free_days, demurrage_daily_rate, demurrage_currency, demurrage_notes,
+               driver:drivers(display_name),
+               trailers(trailer_number, container_number, compound_position, departure_date)`
+            )
+            .eq("id", bookingId)
+            .single(),
+          listActiveDriverOptions(supabase),
+        ]);
 
         if (err) throw err;
 
         const raw = data as Record<string, unknown>;
+        const driver = raw["driver"] as Record<string, unknown> | null;
         const trailer = raw["trailers"] as Record<string, unknown> | null;
 
         const enriched: DeliveryBooking = {
           id: raw["id"] as string,
           trailer_id: raw["trailer_id"] as string,
+          driver_id: raw["driver_id"] as string | null,
           delivery_date: raw["delivery_date"] as string,
           delivery_time: raw["delivery_time"] as string | null,
           customer: raw["customer"] as string | null,
@@ -165,6 +182,7 @@ export default function DeliveryDetailsPage() {
           notes: raw["notes"] as string | null,
           created_at: raw["created_at"] as string | null,
           updated_at: raw["updated_at"] as string | null,
+          assigned_driver_name: (driver?.["display_name"] as string | null) ?? null,
           trailer_number: (trailer?.["trailer_number"] as string | null) ?? null,
           trailer_container_number: (trailer?.["container_number"] as string | null) ?? null,
           delivered_at: raw["delivered_at"] as string | null,
@@ -178,8 +196,10 @@ export default function DeliveryDetailsPage() {
         };
 
         setBooking(enriched);
+        setDrivers(driverOptions);
         setTrailerData(trailer);
         setValues({
+          driver_id: enriched.driver_id ?? "",
           delivery_date: enriched.delivery_date,
           delivery_time: enriched.delivery_time ?? "",
           customer: enriched.customer ?? "",
@@ -226,6 +246,10 @@ export default function DeliveryDetailsPage() {
       const now = new Date().toISOString();
       const prevStatus = booking.status;
       const newStatus  = values.status;
+      const previousDriverId = booking.driver_id ?? null;
+      const previousDriverName = booking.assigned_driver_name ?? null;
+      const nextDriverId = values.driver_id.trim() || null;
+      const nextDriver = drivers.find((driver) => driver.id === nextDriverId) ?? null;
 
       // Auto-set timestamps on status transitions
       const deliveredAtPatch = newStatus === "delivered" && !booking.delivered_at ? now : null;
@@ -251,6 +275,7 @@ export default function DeliveryDetailsPage() {
       const { error: updateErr } = await supabase
         .from("delivery_bookings")
         .update({
+          driver_id: nextDriverId,
           delivery_date:   values.delivery_date,
           delivery_time:   values.delivery_time || null,
           customer:        values.customer.trim() || null,
@@ -274,6 +299,7 @@ export default function DeliveryDetailsPage() {
 
       // ── Trailer events ────────────────────────────────────────────────────
       const events: { type: string; desc: string; old: Json; next: Json }[] = [];
+  let assignmentAuditFailed = false;
       let eventInsertFailed = false;
 
       if (prevStatus !== newStatus) {
@@ -323,10 +349,36 @@ export default function DeliveryDetailsPage() {
         }
       }
 
+      if (previousDriverId !== nextDriverId) {
+        try {
+          await recordDeliveryAssignmentChange({
+            supabaseClient: supabase,
+            bookingId: booking.id,
+            trailerId: booking.trailer_id,
+            trailerNumber: booking.trailer_number || "Unknown",
+            previousDriverId,
+            previousDriverName,
+            nextDriverId,
+            nextDriverName: nextDriver?.display_name ?? null,
+          });
+        } catch (assignmentError) {
+          assignmentAuditFailed = true;
+          console.error("Delivery assignment audit insert failed", {
+            bookingId: booking.id,
+            previousDriverId,
+            nextDriverId,
+            error: assignmentError,
+          });
+          setError("Booking was updated, but the driver assignment audit trail could not be recorded. Please notify operations support.");
+        }
+      }
+
       // Update local state
       const updated: DeliveryBooking = {
         ...booking,
         ...values,
+        driver_id: nextDriverId,
+        assigned_driver_name: nextDriver?.display_name ?? null,
         delivery_time:       values.delivery_time || null,
         customer:            values.customer.trim() || null,
         consignee:           values.consignee.trim() || null,
@@ -348,7 +400,7 @@ export default function DeliveryDetailsPage() {
       if (prevStatus !== "delivered" && newStatus === "delivered") {
         setShowCollectionChoice(true);
       } else {
-        if (!eventInsertFailed) {
+        if (!eventInsertFailed && !assignmentAuditFailed) {
           setNotice("Booking updated successfully.");
         }
       }
@@ -565,6 +617,7 @@ export default function DeliveryDetailsPage() {
                 {([
                   ["Trailer", booking.trailer_number],
                   ["Container", booking.trailer_container_number],
+                  ["Assigned Driver", formatAssignedDriverName(booking.assigned_driver_name)],
                   ["Status", statusLabel(booking.status)],
                   ["Delivery Date", formatDate(booking.delivery_date)],
                   ["Delivery Time", booking.delivery_time ?? "\u2014"],
@@ -747,6 +800,16 @@ export default function DeliveryDetailsPage() {
                   <label className="mb-2 block text-sm font-semibold text-slate-200">Booking Reference</label>
                   <input type="text" value={values.booking_reference} onChange={(e) => handleChange("booking_reference", e.target.value)} className="w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm outline-none" />
                 </div>
+                <div>
+                  <label className="mb-2 block text-sm font-semibold text-slate-200">Assigned Driver</label>
+                  <select value={values.driver_id} onChange={(e) => handleChange("driver_id", e.target.value)} className="w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm outline-none">
+                    <option value="">{UNASSIGNED_DRIVER_LABEL}</option>
+                    {drivers.map((driver) => <option key={driver.id} value={driver.id}>{formatAssignedDriverName(driver.display_name)}</option>)}
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid gap-4 sm:grid-cols-2">
                 <div>
                   <label className="mb-2 block text-sm font-semibold text-slate-200">Status</label>
                   <select value={values.status} onChange={(e) => handleChange("status", e.target.value)} className="w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm outline-none">

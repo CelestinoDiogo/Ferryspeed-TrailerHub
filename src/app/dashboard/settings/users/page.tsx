@@ -1,21 +1,23 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { PermissionGuard } from "@/components/auth/permission-guard";
 import { SettingsNav } from "@/components/settings/settings-nav";
 import { useCurrentUser } from "@/lib/auth/use-current-user";
 import { fetchRbacJson } from "@/lib/rbac/client-fetch";
 import { roleKeys, type RoleKey } from "@/lib/rbac/constants";
-import type { Database } from "@/lib/database.types";
-
-type UserRoleRow = Database["public"]["Tables"]["app_user_roles"]["Row"];
+import type { SettingsUserListItem } from "@/lib/rbac/types";
 
 type UsersResponse = {
-  users: UserRoleRow[];
+  users: SettingsUserListItem[];
 };
 
 type UserPatchResponse = {
-  user: UserRoleRow;
+  user: {
+    user_id: string;
+    role_key: RoleKey;
+    is_active: boolean;
+  };
 };
 
 const roleLabels: Record<RoleKey, string> = {
@@ -27,29 +29,33 @@ const roleLabels: Record<RoleKey, string> = {
 
 export default function SettingsUsersPage() {
   const { roleKey: currentRoleKey } = useCurrentUser();
-  const [users, setUsers] = useState<UserRoleRow[]>([]);
+  const [users, setUsers] = useState<SettingsUserListItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [savingUserId, setSavingUserId] = useState<string | null>(null);
 
-  useEffect(() => {
-    const loadUsers = async () => {
-      setIsLoading(true);
-      setError(null);
+  const loadUsers = useCallback(async () => {
+    setIsLoading(true);
+    setError(null);
 
-      try {
-        const payload = await fetchRbacJson<UsersResponse>("/api/settings/users");
-        setUsers(payload.users ?? []);
-      } catch (loadError) {
-        setError(loadError instanceof Error ? loadError.message : "Unable to load users.");
-      } finally {
-        setIsLoading(false);
-      }
-    };
-
-    void loadUsers();
+    try {
+      const payload = await fetchRbacJson<UsersResponse>("/api/settings/users");
+      setUsers(payload.users ?? []);
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "Unable to load users.");
+    } finally {
+      setIsLoading(false);
+    }
   }, []);
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      void loadUsers();
+    }, 0);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [loadUsers]);
 
   const updateRole = async (userId: string, roleKey: RoleKey) => {
     setSavingUserId(userId);
@@ -62,7 +68,8 @@ export default function SettingsUsersPage() {
         body: JSON.stringify({ userId, roleKey }),
       });
 
-      setUsers((current) => current.map((row) => (row.user_id === userId ? payload.user : row)));
+      await loadUsers();
+      void payload;
       setMessage("User role updated successfully.");
     } catch (updateError) {
       setError(updateError instanceof Error ? updateError.message : "Unable to update user role.");
@@ -71,24 +78,42 @@ export default function SettingsUsersPage() {
     }
   };
 
-  const toggleActive = async (row: UserRoleRow) => {
-    setSavingUserId(row.user_id);
+  const toggleActive = async (row: SettingsUserListItem) => {
+    if (!row.roleKey || typeof row.isActive !== "boolean") {
+      return;
+    }
+
+    setSavingUserId(row.userId);
     setError(null);
     setMessage(null);
 
     try {
       const payload = await fetchRbacJson<UserPatchResponse>("/api/settings/users", {
         method: "PATCH",
-        body: JSON.stringify({ userId: row.user_id, roleKey: row.role_key, isActive: !row.is_active }),
+        body: JSON.stringify({ userId: row.userId, roleKey: row.roleKey, isActive: !row.isActive }),
       });
 
-      setUsers((current) => current.map((item) => (item.user_id === row.user_id ? payload.user : item)));
+      await loadUsers();
+      void payload;
       setMessage("User status updated successfully.");
     } catch (updateError) {
       setError(updateError instanceof Error ? updateError.message : "Unable to update user status.");
     } finally {
       setSavingUserId(null);
     }
+  };
+
+  const formatLastSignIn = (lastSignInAt: string | null) => {
+    if (!lastSignInAt) {
+      return "-";
+    }
+
+    const parsed = new Date(lastSignInAt);
+    if (Number.isNaN(parsed.getTime())) {
+      return "-";
+    }
+
+    return parsed.toLocaleString();
   };
 
   return (
@@ -125,23 +150,30 @@ export default function SettingsUsersPage() {
                 </tr>
               ) : users.length === 0 ? (
                 <tr>
-                  <td colSpan={5} className="px-4 py-8 text-center text-slate-500">No users assigned yet.</td>
+                  <td colSpan={5} className="px-4 py-8 text-center text-slate-500">No authenticated users found.</td>
                 </tr>
               ) : (
                 users.map((row) => (
-                  <tr key={row.user_id}>
-                    <td className="px-4 py-3 font-medium text-slate-900">{row.display_name ?? "Unknown User"}</td>
+                  <tr key={row.userId}>
+                    <td className="px-4 py-3 font-medium text-slate-900">{row.displayName ?? "Unknown User"}</td>
                     <td className="px-4 py-3 text-slate-600">{row.email ?? "-"}</td>
                     <td className="px-4 py-3">
                       <select
-                        value={row.role_key}
-                        disabled={savingUserId === row.user_id}
+                        value={row.roleKey ?? ""}
+                        disabled={savingUserId === row.userId}
                         onChange={(event) => {
-                          const nextRole = event.target.value as RoleKey;
-                          void updateRole(row.user_id, nextRole);
+                          const nextRole = event.target.value;
+                          if (!nextRole) {
+                            return;
+                          }
+
+                          void updateRole(row.userId, nextRole as RoleKey);
                         }}
                         className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800"
                       >
+                        <option value="" disabled>
+                          Unassigned
+                        </option>
                         {roleKeys.map((roleKey) => (
                           <option key={roleKey} value={roleKey}>
                             {roleLabels[roleKey]}
@@ -152,20 +184,22 @@ export default function SettingsUsersPage() {
                     <td className="px-4 py-3">
                       <button
                         type="button"
-                        disabled={savingUserId === row.user_id}
+                        disabled={savingUserId === row.userId || !row.roleKey || typeof row.isActive !== "boolean"}
                         onClick={() => {
                           void toggleActive(row);
                         }}
                         className={
-                          row.is_active
+                          row.isActive
                             ? "rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700"
-                            : "rounded-xl border border-slate-300 bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-700"
+                            : row.roleKey
+                              ? "rounded-xl border border-slate-300 bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-700"
+                              : "rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-500"
                         }
                       >
-                        {row.is_active ? "Active" : "Inactive"}
+                        {typeof row.isActive === "boolean" ? (row.isActive ? "Active" : "Inactive") : "Not assigned"}
                       </button>
                     </td>
-                    <td className="px-4 py-3 text-slate-500">-</td>
+                    <td className="px-4 py-3 text-slate-500">{formatLastSignIn(row.lastSignInAt)}</td>
                   </tr>
                 ))
               )}

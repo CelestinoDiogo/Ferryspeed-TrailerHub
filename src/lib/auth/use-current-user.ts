@@ -9,8 +9,18 @@ const isDev = process.env.NODE_ENV !== "production";
 
 type RoleSource = "database" | "session_user_metadata" | "unassigned";
 
-let cachedResolvedState: Omit<CurrentUserState, "isLoading"> | null = null;
-let inFlightStatePromise: Promise<Omit<CurrentUserState, "isLoading">> | null = null;
+type CachedCurrentUserState = {
+  userId: string | null;
+  state: Omit<CurrentUserState, "isLoading">;
+};
+
+let cachedResolvedState: CachedCurrentUserState | null = null;
+let inFlightStatePromise: Promise<CachedCurrentUserState> | null = null;
+
+export function resetCurrentUserCache() {
+  cachedResolvedState = null;
+  inFlightStatePromise = null;
+}
 
 const withTimeout = async <T>(promise: PromiseLike<T>, timeoutMs: number, label: string): Promise<T> => {
   return await Promise.race([
@@ -113,6 +123,14 @@ const loadCurrentUserState = async (): Promise<Omit<CurrentUserState, "isLoading
   return buildCurrentUserStateFromSessionUser(sessionUser);
 };
 
+const resolveCurrentUserState = async (): Promise<CachedCurrentUserState> => {
+  const state = await loadCurrentUserState();
+  return {
+    userId: state.userId,
+    state,
+  };
+};
+
 export type CurrentUserState = {
   userId: string | null;
   email: string | null;
@@ -136,6 +154,7 @@ export function useCurrentUser(): CurrentUserState {
 
   useEffect(() => {
     let active = true;
+    let authSubscription: { unsubscribe: () => void } | null = null;
 
     const loadUser = async () => {
       if (active) {
@@ -143,13 +162,42 @@ export function useCurrentUser(): CurrentUserState {
       }
 
       try {
-        if (cachedResolvedState) {
-          setState({ ...cachedResolvedState, isLoading: false });
+        const { data, error } = await withTimeout(supabase.auth.getSession(), AUTH_LOADING_TIMEOUT_MS, "Supabase auth.getSession");
+        const sessionUser = data.session?.user ?? null;
+
+        if (error || !sessionUser) {
+          resetCurrentUserCache();
+
+          if (!active) {
+            return;
+          }
+
+          setState({
+            userId: null,
+            email: null,
+            fullName: null,
+            roleKey: null,
+            isActive: null,
+            loadError: null,
+            isLoading: false,
+          });
           return;
         }
 
+        if (cachedResolvedState?.userId === sessionUser.id) {
+          if (!active) {
+            return;
+          }
+
+          setState({ ...cachedResolvedState.state, isLoading: false });
+          return;
+        }
+
+        cachedResolvedState = null;
+        inFlightStatePromise = null;
+
         if (!inFlightStatePromise) {
-          inFlightStatePromise = loadCurrentUserState()
+          inFlightStatePromise = resolveCurrentUserState()
             .then((resolved) => {
               cachedResolvedState = resolved;
               return resolved;
@@ -166,7 +214,7 @@ export function useCurrentUser(): CurrentUserState {
         }
 
         setState({
-          ...resolvedState,
+          ...resolvedState.state,
           isLoading: false,
         });
       } catch (error) {
@@ -200,10 +248,23 @@ export function useCurrentUser(): CurrentUserState {
       }
     };
 
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((event) => {
+      if (event === "SIGNED_OUT" || event === "SIGNED_IN" || event === "USER_UPDATED") {
+        resetCurrentUserCache();
+        if (active) {
+          void loadUser();
+        }
+      }
+    });
+
+    authSubscription = subscription;
     void loadUser();
 
     return () => {
       active = false;
+      authSubscription?.unsubscribe();
     };
   }, []);
 

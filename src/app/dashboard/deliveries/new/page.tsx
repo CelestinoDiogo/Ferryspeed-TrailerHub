@@ -3,6 +3,13 @@
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useState } from "react";
+import {
+  formatAssignedDriverName,
+  listActiveDriverOptions,
+  recordDeliveryAssignmentChange,
+  UNASSIGNED_DRIVER_LABEL,
+  type ActiveDriverOption,
+} from "@/lib/delivery-driver-assignment";
 import { supabase } from "@/lib/supabase";
 import { parseDateParam } from "@/lib/calendar-utils";
 
@@ -16,6 +23,7 @@ type TrailerOption = {
 
 type FormValues = {
   trailer_id: string;
+  driver_id: string;
   delivery_date: string;
   delivery_time: string;
   customer: string;
@@ -29,6 +37,7 @@ type FormValues = {
 
 const initialValues: FormValues = {
   trailer_id: "",
+  driver_id: "",
   delivery_date: "",
   delivery_time: "",
   customer: "",
@@ -62,6 +71,7 @@ function NewDeliveryForm() {
   const searchParams = useSearchParams();
   const prefillDate = parseDateParam(searchParams.get("date"));
   const [trailers, setTrailers] = useState<TrailerOption[]>([]);
+  const [drivers, setDrivers] = useState<ActiveDriverOption[]>([]);
   const [values, setValues] = useState<FormValues>(() => ({
     ...initialValues,
     delivery_date: prefillDate ?? "",
@@ -72,32 +82,36 @@ function NewDeliveryForm() {
   const [validation, setValidation] = useState<Record<string, string>>({});
 
   useEffect(() => {
-    const loadTrailers = async () => {
+    const loadFormOptions = async () => {
       setIsLoading(true);
       setError(null);
 
       try {
-        const { data, error: supabaseError } = await supabase
-          .from("trailers")
-          .select("id, trailer_number, container_number, customer, consignee")
-          .is("departure_date", null)
-          .order("trailer_number", { ascending: true });
+        const [{ data, error: supabaseError }, driverOptions] = await Promise.all([
+          supabase
+            .from("trailers")
+            .select("id, trailer_number, container_number, customer, consignee")
+            .is("departure_date", null)
+            .order("trailer_number", { ascending: true }),
+          listActiveDriverOptions(supabase),
+        ]);
 
         if (supabaseError) throw supabaseError;
 
         setTrailers((data ?? []) as TrailerOption[]);
+        setDrivers(driverOptions);
       } catch (err) {
         const message =
           err instanceof Error
             ? err.message
-            : "Unable to load trailers.";
+            : "Unable to load delivery booking options.";
         setError(message);
       } finally {
         setIsLoading(false);
       }
     };
 
-    void loadTrailers();
+    void loadFormOptions();
   }, []);
 
   const handleChange = (field: keyof FormValues, value: string | boolean) => {
@@ -145,11 +159,13 @@ function NewDeliveryForm() {
 
     try {
       const trailer = trailers.find((t) => t.id === values.trailer_id);
+      const assignedDriver = drivers.find((driver) => driver.id === values.driver_id) ?? null;
 
-      const { error: insertError } = await supabase
+      const { data: insertedBooking, error: insertError } = await supabase
         .from("delivery_bookings")
         .insert({
           trailer_id: values.trailer_id,
+          driver_id: values.driver_id || null,
           delivery_date: values.delivery_date,
           delivery_time: values.delivery_time || null,
           customer: values.customer.trim() || null,
@@ -191,6 +207,23 @@ function NewDeliveryForm() {
           code: eventError.code,
         });
         // Don't fail the booking creation if event insertion fails
+      }
+
+      if (insertedBooking?.id && assignedDriver) {
+        try {
+          await recordDeliveryAssignmentChange({
+            supabaseClient: supabase,
+            bookingId: insertedBooking.id,
+            trailerId: values.trailer_id,
+            trailerNumber: trailer?.trailer_number || "Unknown",
+            previousDriverId: null,
+            previousDriverName: null,
+            nextDriverId: assignedDriver.id,
+            nextDriverName: assignedDriver.display_name,
+          });
+        } catch (assignmentError) {
+          console.error("Driver assignment audit creation failed:", assignmentError);
+        }
       }
 
       router.push("/dashboard/deliveries?saved=1");
@@ -294,6 +327,24 @@ function NewDeliveryForm() {
               </div>
 
               <div className="grid gap-4 sm:grid-cols-2">
+                <div>
+                  <label className="mb-2 block text-sm font-semibold text-slate-200">
+                    Assigned Driver
+                  </label>
+                  <select
+                    value={values.driver_id}
+                    onChange={(e) => handleChange("driver_id", e.target.value)}
+                    className="w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm outline-none"
+                  >
+                    <option value="">{UNASSIGNED_DRIVER_LABEL}</option>
+                    {drivers.map((driver) => (
+                      <option key={driver.id} value={driver.id}>
+                        {formatAssignedDriverName(driver.display_name)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
                 <div>
                   <label className="mb-2 block text-sm font-semibold text-slate-200">
                     Customer

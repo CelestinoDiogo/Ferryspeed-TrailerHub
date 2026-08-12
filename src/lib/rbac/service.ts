@@ -1,9 +1,9 @@
 import "server-only";
-import type { SupabaseClient, User } from "@supabase/supabase-js";
+import { createClient, type SupabaseClient, type User } from "@supabase/supabase-js";
 import { hasPermission, moduleKeys, toLegacyPermissionColumn, toLegacyPermissionModule, type PermissionModuleKey } from "@/lib/auth/permissions";
 import type { Database } from "@/lib/database.types";
 import type { PermissionAction, RoleKey } from "@/lib/rbac/constants";
-import type { AppRolePermissionRow, AppRoleRow, AppUserRoleRow, PermissionMatrixItem } from "@/lib/rbac/types";
+import type { AppRolePermissionRow, AppRoleRow, AppUserRoleRow, PermissionMatrixItem, SettingsUserListItem } from "@/lib/rbac/types";
 
 const roleRank: Record<RoleKey, number> = {
   administrator: 0,
@@ -47,6 +47,145 @@ const getDisplayName = (user: User) => {
   }
 
   return user.email ?? "Unknown User";
+};
+
+type UserIdentity = {
+  email: string | null;
+  displayName: string | null;
+};
+
+const driverSelect = "id,user_id,display_name,phone,active,created_at,updated_at";
+
+const getServiceSupabase = () => {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+  if (!supabaseUrl || !serviceRoleKey) {
+    return null;
+  }
+
+  return createClient<Database>(supabaseUrl, serviceRoleKey, {
+    auth: {
+      autoRefreshToken: false,
+      persistSession: false,
+      detectSessionInUrl: false,
+    },
+  });
+};
+
+const requireServiceSupabase = () => {
+  const serviceSupabase = getServiceSupabase();
+
+  if (!serviceSupabase) {
+    throw new Error("Unable to list Auth users. Missing SUPABASE_SERVICE_ROLE_KEY or NEXT_PUBLIC_SUPABASE_URL in server environment.");
+  }
+
+  return serviceSupabase;
+};
+
+const listAuthUsers = async () => {
+  const serviceSupabase = requireServiceSupabase();
+  const users: User[] = [];
+  const perPage = 200;
+  const maxPages = 20;
+
+  for (let page = 1; page <= maxPages; page += 1) {
+    const { data, error } = await serviceSupabase.auth.admin.listUsers({ page, perPage });
+
+    if (error) {
+      throw new Error(error.message || "Unable to list Auth users.");
+    }
+
+    const pageUsers = data?.users ?? [];
+    users.push(...pageUsers);
+
+    if (pageUsers.length < perPage) {
+      break;
+    }
+  }
+
+  return users;
+};
+
+export async function loadTargetUserIdentity(userId: string): Promise<UserIdentity | null> {
+  const serviceSupabase = getServiceSupabase();
+
+  if (!serviceSupabase) {
+    return null;
+  }
+
+  const { data, error } = await serviceSupabase.auth.admin.getUserById(userId);
+
+  if (error || !data.user) {
+    return null;
+  }
+
+  return {
+    email: data.user.email ?? null,
+    displayName: getDisplayName(data.user),
+  };
+}
+
+const resolveDriverDisplayName = (previousDisplayName: string | null | undefined, identity: UserIdentity | null) => {
+  const fallbackName = identity?.displayName ?? identity?.email ?? "Driver";
+  return previousDisplayName?.trim() || fallbackName.trim() || "Driver";
+};
+
+const provisionDriverProfileForUser = async (
+  supabase: SupabaseClient<Database>,
+  userId: string,
+  identity: UserIdentity | null,
+) => {
+  const { data: existingDriver, error: existingError } = await supabase
+    .from("drivers")
+    .select(driverSelect)
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  if (existingError) {
+    throw new Error(existingError.message || "Unable to load driver profile.");
+  }
+
+  const resolvedDisplayName = resolveDriverDisplayName(existingDriver?.display_name ?? null, identity);
+
+  if (existingDriver) {
+    if (existingDriver.active) {
+      return existingDriver as Database["public"]["Tables"]["drivers"]["Row"];
+    }
+
+    const { data: reactivatedDriver, error: reactivateError } = await supabase
+      .from("drivers")
+      .update({
+        active: true,
+        display_name: resolvedDisplayName,
+      })
+      .eq("id", existingDriver.id)
+      .select(driverSelect)
+      .single();
+
+    if (reactivateError || !reactivatedDriver) {
+      throw new Error(reactivateError?.message || "Unable to reactivate driver profile.");
+    }
+
+    return reactivatedDriver as Database["public"]["Tables"]["drivers"]["Row"];
+  }
+
+  const { data: insertedDriver, error: insertError } = await supabase
+    .from("drivers")
+    .insert({
+      user_id: userId,
+      display_name: resolvedDisplayName,
+      phone: null,
+      active: true,
+    })
+    .select(driverSelect)
+    .single();
+
+  if (insertError || !insertedDriver) {
+    throw new Error(insertError?.message || "Unable to provision driver profile.");
+  }
+
+  return insertedDriver as Database["public"]["Tables"]["drivers"]["Row"];
 };
 
 export async function ensureCurrentUserRole(supabase: SupabaseClient<Database>, user: User) {
@@ -161,16 +300,54 @@ export type UserRoleAuditEvent = {
 };
 
 export async function listUsersWithRoles(supabase: SupabaseClient<Database>) {
-  const { data, error } = await supabase
+  const authUsers = await listAuthUsers();
+
+  const { data: roleRows, error: roleError } = await supabase
     .from("app_user_roles")
     .select("user_id, email, display_name, role_key, is_active, created_at, updated_at")
     .order("created_at", { ascending: false });
 
-  if (error) {
-    throw new Error(error.message || "Unable to load users.");
+  if (roleError) {
+    throw new Error(roleError.message || "Unable to load users.");
   }
 
-  return (data ?? []) as AppUserRoleRow[];
+  const { data: driverRows, error: driverError } = await supabase
+    .from("drivers")
+    .select("user_id")
+    .not("user_id", "is", null);
+
+  if (driverError) {
+    throw new Error(driverError.message || "Unable to load users.");
+  }
+
+  const rolesByUserId = new Map<string, AppUserRoleRow>((roleRows ?? []).map((row) => [row.user_id, row as AppUserRoleRow]));
+  const driverLinkedUserIds = new Set<string>((driverRows ?? []).flatMap((row) => (row.user_id ? [row.user_id] : [])));
+  const mergedUsers: SettingsUserListItem[] = authUsers.map((authUser) => {
+    const roleRow = rolesByUserId.get(authUser.id);
+    const roleKey = roleRow?.role_key ?? null;
+
+    return {
+      userId: authUser.id,
+      email: roleRow?.email ?? authUser.email ?? null,
+      displayName: roleRow?.display_name ?? getDisplayName(authUser),
+      roleKey: roleKey && isRoleKey(roleKey) ? roleKey : null,
+      isActive: roleRow?.is_active ?? null,
+      lastSignInAt: authUser.last_sign_in_at ?? null,
+      driverLinked: driverLinkedUserIds.has(authUser.id),
+    };
+  });
+
+  mergedUsers.sort((a, b) => {
+    const signInA = a.lastSignInAt ? Date.parse(a.lastSignInAt) : 0;
+    const signInB = b.lastSignInAt ? Date.parse(b.lastSignInAt) : 0;
+    if (signInA !== signInB) {
+      return signInB - signInA;
+    }
+
+    return (a.email ?? "").localeCompare(b.email ?? "");
+  });
+
+  return mergedUsers;
 }
 
 export async function updateUserRole(
@@ -179,38 +356,81 @@ export async function updateUserRole(
 ) {
   const { data: previous, error: previousError } = await supabase
     .from("app_user_roles")
-    .select("role_key, is_active")
+    .select("user_id, email, display_name, role_key, is_active")
     .eq("user_id", payload.userId)
-    .single();
+    .maybeSingle();
 
   if (previousError) {
     throw new Error(previousError.message || "Unable to load current user role before update.");
   }
 
-  const updatePayload: Database["public"]["Tables"]["app_user_roles"]["Update"] = {
-    role_key: payload.roleKey,
-  };
+  const targetIdentity = await loadTargetUserIdentity(payload.userId);
+  const resolvedEmail = previous?.email ?? targetIdentity?.email ?? null;
+  const resolvedDisplayName = previous?.display_name ?? targetIdentity?.displayName ?? null;
 
-  if (typeof payload.isActive === "boolean") {
-    updatePayload.is_active = payload.isActive;
+  if (payload.roleKey === "driver") {
+    await provisionDriverProfileForUser(supabase, payload.userId, targetIdentity);
   }
 
-  const { data, error } = await supabase
-    .from("app_user_roles")
-    .update(updatePayload)
-    .eq("user_id", payload.userId)
-    .select("user_id, email, display_name, role_key, is_active, created_at, updated_at")
-    .single();
+  const rolePayload: Database["public"]["Tables"]["app_user_roles"]["Insert"] = {
+    user_id: payload.userId,
+    email: resolvedEmail,
+    display_name: resolvedDisplayName,
+    role_key: payload.roleKey,
+    is_active: typeof payload.isActive === "boolean" ? payload.isActive : previous?.is_active ?? true,
+  };
 
-  if (error) {
-    throw new Error(error.message || "Unable to update user role.");
+  let data: AppUserRoleRow | null = null;
+
+  if (previous) {
+    const updatePayload: Database["public"]["Tables"]["app_user_roles"]["Update"] = {
+      role_key: payload.roleKey,
+      is_active: rolePayload.is_active,
+    };
+
+    if (!previous.email && resolvedEmail) {
+      updatePayload.email = resolvedEmail;
+    }
+
+    if (!previous.display_name && resolvedDisplayName) {
+      updatePayload.display_name = resolvedDisplayName;
+    }
+
+    const { data: updated, error } = await supabase
+      .from("app_user_roles")
+      .update(updatePayload)
+      .eq("user_id", payload.userId)
+      .select("user_id, email, display_name, role_key, is_active, created_at, updated_at")
+      .single();
+
+    if (error) {
+      throw new Error(error.message || "Unable to update user role.");
+    }
+
+    data = updated as AppUserRoleRow;
+  } else {
+    const { data: inserted, error } = await supabase
+      .from("app_user_roles")
+      .insert(rolePayload)
+      .select("user_id, email, display_name, role_key, is_active, created_at, updated_at")
+      .single();
+
+    if (error) {
+      throw new Error(error.message || "Unable to update user role.");
+    }
+
+    data = inserted as AppUserRoleRow;
+  }
+
+  if (!data) {
+    throw new Error("Unable to update user role.");
   }
 
   const auditEvent: UserRoleAuditEvent = {
     userId: payload.userId,
-    previousRole: (previous.role_key as RoleKey) ?? "operator",
+    previousRole: (previous?.role_key as RoleKey) ?? payload.roleKey,
     newRole: (data.role_key as RoleKey) ?? payload.roleKey,
-    previousIsActive: previous.is_active,
+    previousIsActive: previous?.is_active ?? false,
     newIsActive: data.is_active,
     changedBy: payload.changedBy,
     changedAt: new Date().toISOString(),

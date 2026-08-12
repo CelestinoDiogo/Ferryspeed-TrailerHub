@@ -33,6 +33,12 @@ export function DashboardAuthGuard({ children }: DashboardAuthGuardProps) {
   const hasRedirectedRef = useRef(false);
   const isDriverMobileRoute = pathname === "/dashboard/driver" || pathname?.startsWith("/dashboard/driver/");
 
+  const handleSignOut = useCallback(async () => {
+    await supabase.auth.signOut();
+    router.replace("/login");
+    router.refresh();
+  }, [router]);
+
   const redirectToLogin = useCallback(() => {
     if (hasRedirectedRef.current) {
       return;
@@ -203,6 +209,17 @@ export function DashboardAuthGuard({ children }: DashboardAuthGuardProps) {
           <p className="text-sm font-semibold uppercase tracking-[0.25em] text-rose-700">Ferryspeed TrailerHub</p>
           <h1 className="mt-3 text-2xl font-semibold text-rose-900">Access denied</h1>
           <p className="mt-3 text-sm text-rose-700">You do not have permission to access this area.</p>
+          <div className="mt-6">
+            <button
+              type="button"
+              onClick={() => {
+                void handleSignOut();
+              }}
+              className="rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-900 hover:bg-slate-50"
+            >
+              Sign Out
+            </button>
+          </div>
         </div>
       </div>
     );

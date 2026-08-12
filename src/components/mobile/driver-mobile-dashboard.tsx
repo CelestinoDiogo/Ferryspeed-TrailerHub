@@ -1,11 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+import { LogOut } from "lucide-react";
 import { PermissionGuard } from "@/components/auth/permission-guard";
 import { toRoleLabel, type RoleKey } from "@/lib/auth/roles";
 import { useCurrentUser } from "@/lib/auth/use-current-user";
+import { supabase } from "@/lib/supabase";
 import { getSessionToken, SESSION_EXPIRED_MESSAGE } from "@/lib/voice/session";
-import type { DriverMobileTask, DriverTaskAction } from "@/lib/driver-mobile-service";
+import type { DriverMobileTask, DriverTaskAction, DriverTaskKind } from "@/lib/driver-mobile-service";
 import { useOperationalRealtime } from "@/lib/realtime/operational-realtime";
 
 type DriverTaskResponse = {
@@ -107,15 +110,16 @@ const parseTemperature = (value: string) => {
   return parsed;
 };
 
-const groupOrder: Array<"current" | "upcoming" | "completed"> = ["current", "upcoming", "completed"];
+const toTaskKindLabel = (taskKind: DriverTaskKind) => {
+  return taskKind === "collection" ? "Collection" : "Delivery";
+};
 
-const groupTitles: Record<(typeof groupOrder)[number], string> = {
-  current: "Current",
-  upcoming: "Upcoming",
-  completed: "Completed",
+const toScheduleLabel = (taskKind: DriverTaskKind) => {
+  return taskKind === "collection" ? "Collection" : "Delivery";
 };
 
 export function DriverMobileDashboard() {
+  const router = useRouter();
   const { roleKey, fullName, email, isLoading } = useCurrentUser();
   const [driver, setDriver] = useState<DriverTaskResponse["driver"]>(null);
   const [tasks, setTasks] = useState<DriverMobileTask[]>([]);
@@ -131,10 +135,23 @@ export function DriverMobileDashboard() {
   });
   const [isLoadingInstructions, setIsLoadingInstructions] = useState(true);
   const [instructionActionId, setInstructionActionId] = useState<string | null>(null);
+  const [isSigningOut, setIsSigningOut] = useState(false);
 
   const mobileRoleKey = roleKey as RoleKey | null;
   const roleLabel = toRoleLabel(mobileRoleKey);
   const userLabel = fullName ?? email ?? "Authenticated Driver";
+
+  const handleSignOut = useCallback(async () => {
+    if (isSigningOut) {
+      return;
+    }
+
+    setIsSigningOut(true);
+    await supabase.auth.signOut();
+    router.replace("/login");
+    router.refresh();
+    setIsSigningOut(false);
+  }, [isSigningOut, router]);
 
   const loadTasks = useCallback(async (options?: { withLoading?: boolean }) => {
     const withLoading = options?.withLoading ?? true;
@@ -226,16 +243,34 @@ export function DriverMobileDashboard() {
   }, [loadInstructions]);
 
   useOperationalRealtime(["dashboard"], () => {
+    void loadTasks({ withLoading: false });
     void loadInstructions({ withLoading: false });
   }, { debounceMs: 700 });
 
-  const groupedTasks = useMemo(() => {
-    return groupOrder.map((group) => ({
-      key: group,
-      title: groupTitles[group],
-      items: tasks.filter((task) => task.group === group),
-    }));
+  const workSections = useMemo(() => {
+    return [
+      {
+        key: "delivery" as const,
+        title: "Deliveries",
+        items: tasks.filter((task) => task.taskKind === "delivery"),
+      },
+      {
+        key: "collection" as const,
+        title: "Collections",
+        items: tasks.filter((task) => task.taskKind === "collection"),
+      },
+    ];
   }, [tasks]);
+
+  const activeDeliveryCount = useMemo(
+    () => tasks.filter((task) => task.taskKind === "delivery" && task.group !== "completed").length,
+    [tasks],
+  );
+
+  const activeCollectionCount = useMemo(
+    () => tasks.filter((task) => task.taskKind === "collection" && task.group !== "completed").length,
+    [tasks],
+  );
 
   const handleAction = useCallback(
     async (task: DriverMobileTask) => {
@@ -328,19 +363,64 @@ export function DriverMobileDashboard() {
     }
   }, [instructionActionId, loadInstructions]);
 
+  const shellHeader = (
+    <header className="rounded-3xl border border-slate-200 bg-white/95 p-4 shadow-sm">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-[0.24em] text-cyan-700">Ferryspeed Driver Mobile</p>
+          <h1 className="mt-2 text-2xl font-semibold text-slate-950">My Work</h1>
+          <p className="mt-1 text-sm text-slate-600">{userLabel} • {roleLabel}</p>
+          {driver ? <p className="mt-2 text-sm text-slate-700">Driver profile: {driver.display_name}</p> : null}
+        </div>
+        <button
+          type="button"
+          disabled={isSigningOut}
+          onClick={() => {
+            void handleSignOut();
+          }}
+          className="inline-flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-semibold uppercase tracking-[0.12em] text-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          <LogOut className="h-4 w-4" />
+          {isSigningOut ? "Signing out..." : "Sign out"}
+        </button>
+      </div>
+      <div className="mt-4 grid gap-2 sm:grid-cols-3">
+        <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">Deliveries</p>
+          <p className="mt-1 text-lg font-semibold text-slate-900">{activeDeliveryCount}</p>
+        </div>
+        <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">Collections</p>
+          <p className="mt-1 text-lg font-semibold text-slate-900">{activeCollectionCount}</p>
+        </div>
+        <div className="rounded-2xl border border-cyan-200 bg-cyan-50 px-3 py-2">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-cyan-800">Messages</p>
+          <p className="mt-1 text-lg font-semibold text-cyan-950">{instructionFeed.unreadCount}</p>
+        </div>
+      </div>
+    </header>
+  );
+
   return (
-    <PermissionGuard roleKey={mobileRoleKey} moduleKey="driver_mobile" action="view" allowWhenRoleMissing={false}>
+    <PermissionGuard
+      roleKey={mobileRoleKey}
+      moduleKey="driver_mobile"
+      action="view"
+      allowWhenRoleMissing={false}
+      fallback={
+        <div className="min-h-screen bg-[linear-gradient(180deg,#f8fafc_0%,#eef2ff_100%)] px-3 py-4 text-slate-900 sm:px-4">
+          <div className="mx-auto w-full max-w-2xl">
+            {shellHeader}
+            <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">
+              You do not have permission to access Driver Mobile.
+            </div>
+          </div>
+        </div>
+      }
+    >
       <div className="min-h-screen bg-[linear-gradient(180deg,#f8fafc_0%,#eef2ff_100%)] px-3 py-4 text-slate-900 sm:px-4">
         <div className="mx-auto w-full max-w-2xl">
-          <header className="rounded-3xl border border-slate-200 bg-white/95 p-4 shadow-sm">
-            <p className="text-xs font-semibold uppercase tracking-[0.24em] text-cyan-700">Ferryspeed Driver Mobile</p>
-            <h1 className="mt-2 text-2xl font-semibold text-slate-950">Assigned Delivery Tasks</h1>
-            <p className="mt-1 text-sm text-slate-600">{userLabel} • {roleLabel}</p>
-            {driver ? <p className="mt-2 text-sm text-slate-700">Driver profile: {driver.display_name}</p> : null}
-            <div className="mt-3 inline-flex items-center rounded-full border border-cyan-200 bg-cyan-50 px-3 py-1 text-xs font-semibold uppercase tracking-[0.12em] text-cyan-900">
-              Instructions {instructionFeed.unreadCount}
-            </div>
-          </header>
+          {shellHeader}
 
           {error ? (
             <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">{error}</div>
@@ -364,7 +444,12 @@ export function DriverMobileDashboard() {
           {!isLoading && !isLoadingTasks && driver ? (
             <div className="mt-4 space-y-4">
               <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                <h2 className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-700">Operational Instructions</h2>
+                <div className="flex items-center justify-between gap-3">
+                  <h2 className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-700">Messages / Instructions</h2>
+                  <span className="rounded-full border border-cyan-200 bg-cyan-50 px-2 py-1 text-xs font-semibold text-cyan-900">
+                    {instructionFeed.unreadCount} unread
+                  </span>
+                </div>
 
                 {isLoadingInstructions ? (
                   <p className="mt-3 text-sm text-slate-500">Loading instructions...</p>
@@ -414,7 +499,7 @@ export function DriverMobileDashboard() {
                 </div>
               </section>
 
-              {groupedTasks.map((group) => (
+              {workSections.map((group) => (
                 <section key={group.key} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
                   <div className="mb-3 flex items-center justify-between">
                     <h2 className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-700">{group.title}</h2>
@@ -432,15 +517,17 @@ export function DriverMobileDashboard() {
                           <article key={task.bookingId} className="rounded-xl border border-slate-200 bg-slate-50/80 p-3">
                             <div className="flex items-start justify-between gap-3">
                               <div>
+                                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-cyan-700">{toTaskKindLabel(task.taskKind)}</p>
                                 <h3 className="text-base font-semibold text-slate-900">{task.trailerNumber}</h3>
                                 <p className="text-sm text-slate-600">{task.customer || "No customer name"}</p>
+                                {task.consignee ? <p className="text-xs text-slate-500">Consignee: {task.consignee}</p> : null}
                               </div>
                               <span className="rounded-full bg-white px-2 py-1 text-xs font-medium text-slate-700">{toStatusLabel(task.status)}</span>
                             </div>
 
                             <dl className="mt-3 grid grid-cols-1 gap-1 text-sm text-slate-700">
                               <div>
-                                <dt className="inline font-medium">Delivery:</dt> <dd className="inline">{formatDeliveryDate(task.deliveryDate, task.deliveryTime)}</dd>
+                                <dt className="inline font-medium">{toScheduleLabel(task.taskKind)}:</dt> <dd className="inline">{formatDeliveryDate(task.deliveryDate, task.deliveryTime)}</dd>
                               </div>
                               <div>
                                 <dt className="inline font-medium">Acknowledged:</dt>{" "}

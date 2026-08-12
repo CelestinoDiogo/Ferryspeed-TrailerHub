@@ -855,4 +855,72 @@ describe("SupervisorMobileDashboard", () => {
 
     expect(screen.queryByRole("button", { name: "Check Read" })).not.toBeInTheDocument();
   });
+
+  it("shows assigned driver context and quick presets on departure instruction cards", async () => {
+    tableData = {
+      ...buildBaseData(),
+      delivery_bookings: [
+        {
+          id: "booking-a",
+          trailer_id: "trailer-1",
+          driver_id: "driver-a",
+          delivery_date: "2026-08-01",
+          status: "scheduled",
+          drivers: { display_name: "Driver A" },
+        },
+      ],
+    };
+
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+
+      if (url.includes("/api/operations/driver-instructions") && method === "GET") {
+        return {
+          ok: true,
+          json: async () => ({ instructions: [] }),
+        };
+      }
+
+      if (url.includes("/api/operations/driver-instructions") && method === "POST") {
+        return {
+          ok: true,
+          json: async () => ({
+            instruction: {
+              createdAt: "2026-08-01T09:00:00.000Z",
+              readAt: null,
+            },
+          }),
+        };
+      }
+
+      return {
+        ok: true,
+        json: async () => ({ status: "success", message: "Action completed." }),
+      };
+    });
+
+    render(<SupervisorMobileDashboard />);
+    const user = userEvent.setup();
+
+    const departuresButtons = await screen.findAllByRole("button", { name: "Departures" });
+    await user.click(departuresButtons[0]);
+    await screen.findByText("Departures Mobile Access");
+
+    expect(screen.getByText("Driver: Driver A")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Priority" }));
+
+    const textbox = screen.getByPlaceholderText("Send message / instruction") as HTMLTextAreaElement;
+    expect(textbox.value).toContain("Priority");
+
+    await user.click(screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/operations/driver-instructions",
+        expect.objectContaining({ method: "POST" }),
+      );
+    });
+  });
 });

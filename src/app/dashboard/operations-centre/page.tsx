@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
+import { DRIVER_INSTRUCTION_PRESETS } from "@/lib/driver-instruction-presets";
 import { supabase } from "@/lib/supabase";
 import {
   calculateOperationalReadiness,
@@ -93,6 +94,16 @@ export default function OperationsCentrePage() {
   const [sendingInstructionForBookingId, setSendingInstructionForBookingId] = useState<string | null>(null);
   const [instructionStatusByBookingId, setInstructionStatusByBookingId] = useState<Record<string, InstructionStatus>>({});
 
+  const applyInstructionPreset = (bookingId: string, preset: string) => {
+    setInstructionByBookingId((current) => {
+      const existing = current[bookingId]?.trim() ?? "";
+      return {
+        ...current,
+        [bookingId]: existing ? `${existing} ${preset}` : preset,
+      };
+    });
+  };
+
   const todayKey = useMemo(() => getLocalDateKey(), []);
 
   useEffect(() => {
@@ -108,6 +119,7 @@ export default function OperationsCentrePage() {
               `id, trailer_id, delivery_date, delivery_time, customer, consignee,
                delivery_location, booking_reference, escort_required, status, notes, driver_id,
                delivered_at, waiting_collection_since, collection_due_date,
+               drivers(display_name),
                trailers(trailer_number, compound_position, departure_date)`
             )
             .order("delivery_date", { ascending: true })
@@ -125,6 +137,7 @@ export default function OperationsCentrePage() {
         if (exportAllocationsError) throw exportAllocationsError;
 
         const bookingRows = ((bookingsData ?? []) as Array<Record<string, unknown>>).map((row) => {
+          const joinedDriver = row["drivers"] as Record<string, unknown> | null;
           const joinedTrailer = row["trailers"] as Record<string, unknown> | null;
 
           return {
@@ -140,6 +153,7 @@ export default function OperationsCentrePage() {
             escort_required: Boolean(row["escort_required"]),
             status: row["status"] as string,
             notes: (row["notes"] as string | null) ?? null,
+            assigned_driver_name: (joinedDriver?.["display_name"] as string | null) ?? null,
             trailer_number: (joinedTrailer?.["trailer_number"] as string | null) ?? "--",
             trailer_compound_position: (joinedTrailer?.["compound_position"] as string | null) ?? null,
             trailer_departure_date: (joinedTrailer?.["departure_date"] as string | null) ?? null,
@@ -535,6 +549,7 @@ export default function OperationsCentrePage() {
                                 <p className="text-xs text-amber-300">No driver assigned yet.</p>
                               ) : (
                                 <>
+                                  <p className="text-xs text-cyan-200">Driver: {booking.assigned_driver_name ?? booking.driver_id}</p>
                                   <textarea
                                     value={instructionByBookingId[booking.id] ?? ""}
                                     onChange={(event) => {
@@ -542,9 +557,21 @@ export default function OperationsCentrePage() {
                                       setInstructionByBookingId((current) => ({ ...current, [booking.id]: value }));
                                     }}
                                     maxLength={180}
-                                    placeholder="Add a short operational instruction"
+                                    placeholder="Send message / instruction"
                                     className="w-full rounded-md border border-white/10 bg-slate-900 px-2 py-1.5 text-xs text-slate-100"
                                   />
+                                  <div className="flex flex-wrap gap-1.5">
+                                    {DRIVER_INSTRUCTION_PRESETS.map((preset) => (
+                                      <button
+                                        key={preset}
+                                        type="button"
+                                        onClick={() => applyInstructionPreset(booking.id, preset)}
+                                        className="rounded-lg border border-white/10 bg-slate-800 px-2 py-1 text-[11px] font-semibold text-slate-200 hover:bg-slate-700"
+                                      >
+                                        {preset}
+                                      </button>
+                                    ))}
+                                  </div>
                                   <div className="flex flex-wrap gap-1.5">
                                     <button
                                       type="button"
@@ -613,6 +640,88 @@ export default function OperationsCentrePage() {
                   )}
                 </div>
               </article>
+            </section>
+
+            <section className="rounded-3xl border border-white/10 bg-slate-900/70 p-5 shadow-lg shadow-black/20 backdrop-blur">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-semibold uppercase tracking-[0.3em] text-purple-300">Collection Work</p>
+                  <h2 className="mt-1 text-lg font-semibold text-white">Waiting collections with driver context</h2>
+                </div>
+                <span className="rounded-full border border-purple-500/30 bg-purple-500/10 px-3 py-1 text-xs font-semibold text-purple-200">
+                  {collectionsPending.length}
+                </span>
+              </div>
+
+              <div className="mt-4 space-y-3">
+                {collectionsPending.length === 0 ? (
+                  <p className="text-sm text-slate-400">No waiting collections require driver follow-up.</p>
+                ) : (
+                  collectionsPending.map((booking) => (
+                    <article key={booking.id} className="rounded-2xl border border-white/10 bg-slate-950/60 p-4">
+                      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                        <div className="space-y-1">
+                          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-purple-300">Collection</p>
+                          <p className="text-lg font-semibold text-white">{booking.trailer_number ?? "--"}</p>
+                          <p className="text-sm text-slate-300">{booking.customer || booking.consignee || "--"}</p>
+                          <p className="text-xs text-slate-400">Location: {booking.delivery_location || "--"}</p>
+                          <p className="text-xs text-slate-400">Driver: {booking.assigned_driver_name ?? (booking.driver_id ? booking.driver_id : "Unassigned")}</p>
+                        </div>
+
+                        <div className="min-w-[16rem] space-y-2 rounded-xl border border-white/10 bg-slate-900/80 p-3">
+                          <p className="text-[11px] uppercase tracking-[0.14em] text-slate-400">Message / Instruction</p>
+                          {!booking.driver_id ? (
+                            <p className="text-xs text-amber-300">No driver assigned yet.</p>
+                          ) : (
+                            <>
+                              <textarea
+                                value={instructionByBookingId[booking.id] ?? ""}
+                                onChange={(event) => {
+                                  const { value } = event.target;
+                                  setInstructionByBookingId((current) => ({ ...current, [booking.id]: value }));
+                                }}
+                                maxLength={180}
+                                placeholder="Send message / instruction"
+                                className="w-full rounded-md border border-white/10 bg-slate-950 px-2 py-1.5 text-xs text-slate-100"
+                              />
+                              <div className="flex flex-wrap gap-1.5">
+                                {DRIVER_INSTRUCTION_PRESETS.map((preset) => (
+                                  <button
+                                    key={preset}
+                                    type="button"
+                                    onClick={() => applyInstructionPreset(booking.id, preset)}
+                                    className="rounded-lg border border-white/10 bg-slate-800 px-2 py-1 text-[11px] font-semibold text-slate-200 hover:bg-slate-700"
+                                  >
+                                    {preset}
+                                  </button>
+                                ))}
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  void sendInstruction(booking);
+                                }}
+                                disabled={sendingInstructionForBookingId === booking.id}
+                                className="rounded-lg border border-emerald-500/30 bg-emerald-500/15 px-2 py-1 text-xs font-semibold text-emerald-200 disabled:opacity-60"
+                              >
+                                {sendingInstructionForBookingId === booking.id ? "Sending..." : "Send"}
+                              </button>
+                              {instructionStatusByBookingId[booking.id] ? (
+                                <p className="text-xs text-slate-300">
+                                  Sent: {new Date(instructionStatusByBookingId[booking.id].sentAt).toLocaleString("en-GB")}
+                                  {instructionStatusByBookingId[booking.id].readAt
+                                    ? ` | Read: ${new Date(instructionStatusByBookingId[booking.id].readAt as string).toLocaleString("en-GB")}`
+                                    : " | Read: pending"}
+                                </p>
+                              ) : null}
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    </article>
+                  ))
+                )}
+              </div>
             </section>
 
             <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">

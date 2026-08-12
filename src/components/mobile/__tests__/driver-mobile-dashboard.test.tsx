@@ -7,9 +7,29 @@ import { DriverMobileDashboard } from "@/components/mobile/driver-mobile-dashboa
 
 const useCurrentUserMock = vi.fn();
 const getSessionTokenMock = vi.fn();
+const { signOutMock, routerReplaceMock, routerRefreshMock } = vi.hoisted(() => ({
+  signOutMock: vi.fn(),
+  routerReplaceMock: vi.fn(),
+  routerRefreshMock: vi.fn(),
+}));
+
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({
+    replace: routerReplaceMock,
+    refresh: routerRefreshMock,
+  }),
+}));
 
 vi.mock("@/lib/auth/use-current-user", () => ({
   useCurrentUser: () => useCurrentUserMock(),
+}));
+
+vi.mock("@/lib/supabase", () => ({
+  supabase: {
+    auth: {
+      signOut: signOutMock,
+    },
+  },
 }));
 
 vi.mock("@/lib/voice/session", () => ({
@@ -17,15 +37,14 @@ vi.mock("@/lib/voice/session", () => ({
   getSessionToken: () => getSessionTokenMock(),
 }));
 
-vi.mock("@/components/auth/permission-guard", () => ({
-  PermissionGuard: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-}));
-
 vi.mock("@/lib/realtime/operational-realtime", () => ({
   useOperationalRealtime: () => undefined,
 }));
 
 const makeTask = (overrides?: Record<string, unknown>) => ({
+  taskId: "booking-a",
+  driverId: "driver-a",
+  taskKind: "delivery",
   bookingId: "booking-a",
   trailerId: "trailer-a",
   trailerNumber: "FS1234",
@@ -59,6 +78,7 @@ describe("DriverMobileDashboard", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     getSessionTokenMock.mockResolvedValue("token");
+    signOutMock.mockResolvedValue(undefined);
     useCurrentUserMock.mockReturnValue({
       roleKey: "driver",
       fullName: "Driver One",
@@ -67,7 +87,7 @@ describe("DriverMobileDashboard", () => {
     });
   });
 
-  it("renders current, upcoming, and completed assigned tasks", async () => {
+  it("renders deliveries and collections sections on the unified workboard", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL) => {
@@ -76,9 +96,9 @@ describe("DriverMobileDashboard", () => {
             JSON.stringify({
               driver: { id: "driver-a", display_name: "Driver One", user_id: "user-a" },
               tasks: [
-                makeTask({ bookingId: "a", trailerNumber: "FS-A", group: "current", status: "on_delivery", nextAction: "DELIVERED" }),
-                makeTask({ bookingId: "b", trailerNumber: "FS-B", group: "upcoming", status: "scheduled", nextAction: "COLLECTED" }),
-                makeTask({ bookingId: "c", trailerNumber: "FS-C", group: "completed", status: "collected", nextAction: null }),
+                makeTask({ bookingId: "a", taskId: "a", trailerNumber: "FS-A", group: "current", status: "on_delivery", nextAction: "DELIVERED", taskKind: "delivery" }),
+                makeTask({ bookingId: "b", taskId: "b", trailerNumber: "FS-B", group: "upcoming", status: "scheduled", nextAction: "COLLECTED", taskKind: "delivery" }),
+                makeTask({ bookingId: "c", taskId: "c", trailerNumber: "FS-C", group: "current", status: "waiting_collection", nextAction: "COLLECTED", taskKind: "collection" }),
               ],
             }),
             { status: 200 },
@@ -91,13 +111,15 @@ describe("DriverMobileDashboard", () => {
 
     render(<DriverMobileDashboard />);
 
-    expect(await screen.findByText("Current")).toBeInTheDocument();
-    expect(screen.getByText("Upcoming")).toBeInTheDocument();
-    expect(screen.getByText("Completed")).toBeInTheDocument();
+    expect(await screen.findByText("Deliveries")).toBeInTheDocument();
+    expect(screen.getAllByText("Collections").length).toBeGreaterThan(0);
+    expect(screen.getByText("Messages / Instructions")).toBeInTheDocument();
 
     expect(screen.getByText("FS-A")).toBeInTheDocument();
     expect(screen.getByText("FS-B")).toBeInTheDocument();
     expect(screen.getByText("FS-C")).toBeInTheDocument();
+    expect(screen.getAllByText("Delivery").length).toBeGreaterThan(0);
+    expect(screen.getByText("Collection")).toBeInTheDocument();
   });
 
   it("shows acknowledge/read as the primary action for unacknowledged tasks", async () => {
@@ -163,7 +185,7 @@ describe("DriverMobileDashboard", () => {
     render(<DriverMobileDashboard />);
 
     expect(await screen.findByText("FS-HOT")).toBeInTheDocument();
-  expect(screen.getByLabelText("Collection reading (C)")).toBeInTheDocument();
+    expect(screen.getByLabelText("Collection reading (C)")).toBeInTheDocument();
 
     const coldCard = screen.getByText("FS-COLD").closest("article");
     expect(coldCard?.textContent).not.toContain("Temperature controlled");
@@ -186,7 +208,137 @@ describe("DriverMobileDashboard", () => {
     render(<DriverMobileDashboard />);
 
     expect(await screen.findByText("Driver profile required")).toBeInTheDocument();
-    expect(screen.getAllByText("Assigned Delivery Tasks").length).toBeGreaterThan(0);
+    expect(screen.getByText("My Work")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Sign out" })).toBeInTheDocument();
+  });
+
+  it("shows sign out on normal dashboard and signs out to login", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+
+        if (url.includes("/api/driver-mobile/tasks") && method === "GET") {
+          return new Response(
+            JSON.stringify({
+              driver: { id: "driver-a", display_name: "Driver One", user_id: "user-a" },
+              tasks: [makeTask({ bookingId: "a", trailerNumber: "FS-A", group: "upcoming" })],
+            }),
+            { status: 200 },
+          );
+        }
+
+        if (url.includes("/api/driver-mobile/instructions") && method === "GET") {
+          return new Response(
+            JSON.stringify({
+              unreadCount: 0,
+              newestUnread: null,
+              recent: [],
+            }),
+            { status: 200 },
+          );
+        }
+
+        return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+      }),
+    );
+
+    render(<DriverMobileDashboard />);
+
+    expect(await screen.findByText("FS-A")).toBeInTheDocument();
+
+    const signOutButton = screen.getByRole("button", { name: "Sign out" });
+    expect(signOutButton).toBeInTheDocument();
+
+    fireEvent.click(signOutButton);
+
+    await waitFor(() => {
+      expect(signOutMock).toHaveBeenCalledTimes(1);
+      expect(routerReplaceMock).toHaveBeenCalledWith("/login");
+      expect(routerRefreshMock).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("shows sign out when there are zero assigned tasks", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+
+        if (url.includes("/api/driver-mobile/tasks") && method === "GET") {
+          return new Response(
+            JSON.stringify({
+              driver: { id: "driver-a", display_name: "Driver One", user_id: "user-a" },
+              tasks: [],
+            }),
+            { status: 200 },
+          );
+        }
+
+        if (url.includes("/api/driver-mobile/instructions") && method === "GET") {
+          return new Response(
+            JSON.stringify({
+              unreadCount: 0,
+              newestUnread: null,
+              recent: [],
+            }),
+            { status: 200 },
+          );
+        }
+
+        return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+      }),
+    );
+
+    render(<DriverMobileDashboard />);
+
+    expect((await screen.findAllByText("No tasks in this section.")).length).toBe(2);
+    expect(screen.getByRole("button", { name: "Sign out" })).toBeInTheDocument();
+  });
+
+  it("shows sign out when task API returns an error", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        if (String(input).includes("/api/driver-mobile/tasks")) {
+          return new Response(JSON.stringify({ error: "Unable to load assigned tasks." }), { status: 500 });
+        }
+
+        if (String(input).includes("/api/driver-mobile/instructions")) {
+          return new Response(
+            JSON.stringify({
+              unreadCount: 0,
+              newestUnread: null,
+              recent: [],
+            }),
+            { status: 200 },
+          );
+        }
+
+        return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+      }),
+    );
+
+    render(<DriverMobileDashboard />);
+
+    expect(await screen.findByText("Unable to load assigned tasks.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Sign out" })).toBeInTheDocument();
+  });
+
+  it("keeps sign out visible in permission-denied fallback", async () => {
+    useCurrentUserMock.mockReturnValueOnce({
+      roleKey: "operator",
+      fullName: "Operator One",
+      email: "operator@example.com",
+      isLoading: false,
+    });
+
+    render(<DriverMobileDashboard />);
+
+    expect(screen.getByText("You do not have permission to access Driver Mobile.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Sign out" })).toBeInTheDocument();
   });
 
   it("applies collected action with task busy state, prevents duplicate click, and keeps user on driver screen", async () => {
@@ -366,7 +518,7 @@ describe("DriverMobileDashboard", () => {
 
     render(<DriverMobileDashboard />);
 
-    expect(await screen.findByText("Instructions 2")).toBeInTheDocument();
+    expect(await screen.findByText("2 unread")).toBeInTheDocument();
     expect(screen.getAllByText("Proceed to loading lane A").length).toBeGreaterThan(0);
     expect(screen.getByText("Recent History")).toBeInTheDocument();
     expect(screen.getByText("Collect documents before departure")).toBeInTheDocument();
@@ -478,7 +630,7 @@ describe("DriverMobileDashboard", () => {
     resolveRead();
 
     await waitFor(() => {
-      expect(screen.getByText("Instructions 1")).toBeInTheDocument();
+      expect(screen.getByText("1 unread")).toBeInTheDocument();
       expect(screen.getAllByText("Collect documents before departure").length).toBeGreaterThan(0);
     });
   });

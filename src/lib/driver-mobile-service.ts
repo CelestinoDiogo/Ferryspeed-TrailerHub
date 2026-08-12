@@ -16,12 +16,17 @@ type TrailerRow = Pick<
 
 export type DriverTaskAction = "ACKNOWLEDGED" | "COLLECTED" | "DELIVERED";
 export type DriverTaskGroup = "current" | "upcoming" | "completed";
+export type DriverTaskKind = "delivery" | "collection";
 
 export type DriverMobileTask = {
+  taskId: string;
+  driverId: string | null;
+  taskKind: DriverTaskKind;
   bookingId: string;
   trailerId: string;
   trailerNumber: string;
   customer: string | null;
+  consignee: string | null;
   location: string | null;
   bookingReference: string | null;
   notes: string | null;
@@ -54,6 +59,19 @@ type DriverTransition = {
 };
 
 const normalizeStatus = (value?: string | null) => value?.trim().toLowerCase() ?? "";
+
+const isCollectionTask = (booking: DeliveryBookingRow) => {
+  const normalized = normalizeStatus(booking.status);
+  if (normalized === "waiting_collection") {
+    return true;
+  }
+
+  if (normalized === "collected") {
+    return Boolean(booking.waiting_collection_since || booking.collection_due_date || booking.delivered_at);
+  }
+
+  return false;
+};
 
 const resolveOperatorName = (user: User) => {
   const metadataName =
@@ -154,11 +172,17 @@ const buildTransition = (booking: DeliveryBookingRow, action: DriverTaskAction, 
 };
 
 const toTask = (booking: DeliveryBookingRow, trailerNumber: string): DriverMobileTask => {
+  const taskKind: DriverTaskKind = isCollectionTask(booking) ? "collection" : "delivery";
+
   return {
+    taskId: booking.id,
+    driverId: booking.driver_id,
+    taskKind,
     bookingId: booking.id,
     trailerId: booking.trailer_id,
     trailerNumber,
     customer: booking.customer,
+    consignee: booking.consignee,
     location: booking.delivery_location,
     bookingReference: booking.booking_reference,
     notes: booking.notes,

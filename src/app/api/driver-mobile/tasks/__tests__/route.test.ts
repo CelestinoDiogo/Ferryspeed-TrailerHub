@@ -52,6 +52,14 @@ const makeRequest = () =>
     },
   });
 
+const makeRequestWithDriverQuery = () =>
+  new Request("http://localhost/api/driver-mobile/tasks?driverId=driver-b", {
+    method: "GET",
+    headers: {
+      Authorization: "Bearer test-token",
+    },
+  });
+
 describe("GET /api/driver-mobile/tasks", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -140,5 +148,13 @@ describe("GET /api/driver-mobile/tasks", () => {
       tasks: [{ bookingId: "booking-a", trailerNumber: "FS1234" }],
     });
     expect(requireRbacPermissionMock).toHaveBeenCalledWith({}, "11111111-1111-4111-8111-111111111111", "driver_mobile", "view");
+  });
+
+  it("ignores any client-supplied driver query and still resolves tasks from the authenticated user", async () => {
+    const { GET } = await importRoute();
+    const response = await GET(makeRequestWithDriverQuery());
+
+    expect(response.status).toBe(200);
+    expect(loadDriverMobileTasksForUserMock).toHaveBeenCalledWith({}, "11111111-1111-4111-8111-111111111111");
   });
 });

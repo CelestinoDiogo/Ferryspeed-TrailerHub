@@ -15,6 +15,7 @@ export type OpsBooking = {
   id: string;
   trailer_id: string;
   driver_id?: string | null;
+  assigned_driver_name?: string | null;
   delivery_date: string;
   delivery_time?: string | null;
   customer?: string | null;

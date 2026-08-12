@@ -17,6 +17,7 @@ import {
   type ExportAllocationRecord,
   type ExportAllocationStatus,
 } from "@/lib/export-allocation";
+import { DRIVER_INSTRUCTION_PRESETS } from "@/lib/driver-instruction-presets";
 import { advanceExportAllocationStatus } from "@/lib/operations/export-lifecycle";
 import { useOperationalRealtime } from "@/lib/realtime/operational-realtime";
 import { supabase } from "@/lib/supabase";
@@ -85,6 +86,7 @@ type DriverAssignmentRow = {
   id: string;
   trailer_id: string;
   driver_id: string | null;
+  driver_display_name?: string | null;
   delivery_date: string;
   status: string;
 };
@@ -247,6 +249,16 @@ export function SupervisorMobileDashboard() {
   const [sendingInstructionBookingId, setSendingInstructionBookingId] = useState<string | null>(null);
   const [instructionStatusByBookingId, setInstructionStatusByBookingId] = useState<Record<string, InstructionStatus>>({});
 
+  const applyInstructionPreset = useCallback((bookingId: string, preset: string) => {
+    setInstructionByBookingId((current) => {
+      const existing = current[bookingId]?.trim() ?? "";
+      return {
+        ...current,
+        [bookingId]: existing ? `${existing} ${preset}` : preset,
+      };
+    });
+  }, []);
+
   const scrollByTabRef = useRef<Partial<Record<MobileTabKey, number>>>({});
   const wasListeningRef = useRef(false);
 
@@ -300,7 +312,7 @@ export function SupervisorMobileDashboard() {
           .limit(260),
         supabase
           .from("delivery_bookings")
-          .select("id, trailer_id, driver_id, delivery_date, status")
+          .select("id, trailer_id, driver_id, delivery_date, status, drivers(display_name)")
           .not("driver_id", "is", null)
           .neq("status", "cancelled")
           .order("delivery_date", { ascending: false })
@@ -319,7 +331,17 @@ export function SupervisorMobileDashboard() {
       const nextVesselTrailers = (vesselTrailerResult.data ?? []) as VesselTrailerRow[];
       const nextAlerts = (alertsResult.data ?? []) as OperationalAlertRow[];
       const nextExports = ((exportResult.data ?? []) as ExportRow[]).map((row) => normalizeExportAllocationRecord(row));
-      const nextAssignments = (assignmentResult.data ?? []) as DriverAssignmentRow[];
+      const nextAssignments = ((assignmentResult.data ?? []) as Array<Record<string, unknown>>).map((row) => {
+        const driver = row["drivers"] as Record<string, unknown> | null;
+        return {
+          id: row["id"] as string,
+          trailer_id: row["trailer_id"] as string,
+          driver_id: (row["driver_id"] as string | null) ?? null,
+          driver_display_name: (driver?.["display_name"] as string | null) ?? null,
+          delivery_date: row["delivery_date"] as string,
+          status: row["status"] as string,
+        } as DriverAssignmentRow;
+      });
 
       const pendingArrivals = nextVesselTrailers.filter((row) => isPendingArrivalState(row.arrival_status)).length;
       const arrivedCount = nextVesselTrailers.filter((row) => isArrivedState(row.arrival_status)).length;
@@ -1543,6 +1565,7 @@ export function SupervisorMobileDashboard() {
                               <p className="mt-2 text-xs text-amber-700">No assigned driver for this trailer.</p>
                             ) : (
                               <>
+                                <p className="mt-2 text-xs text-cyan-700">Driver: {assignment.driver_display_name ?? assignment.driver_id}</p>
                                 <textarea
                                   value={instructionByBookingId[assignment.id] ?? ""}
                                   onChange={(event) => {
@@ -1550,9 +1573,21 @@ export function SupervisorMobileDashboard() {
                                     setInstructionByBookingId((current) => ({ ...current, [assignment.id]: value }));
                                   }}
                                   maxLength={180}
-                                  placeholder="Short operational instruction"
+                                  placeholder="Send message / instruction"
                                   className="mt-2 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900"
                                 />
+                                <div className="mt-2 flex flex-wrap gap-1.5">
+                                  {DRIVER_INSTRUCTION_PRESETS.map((preset) => (
+                                    <button
+                                      key={preset}
+                                      type="button"
+                                      onClick={() => applyInstructionPreset(assignment.id, preset)}
+                                      className="rounded-lg border border-slate-300 bg-slate-100 px-2 py-1 text-[11px] font-semibold text-slate-700"
+                                    >
+                                      {preset}
+                                    </button>
+                                  ))}
+                                </div>
                                 <div className="mt-2 flex gap-2">
                                   <button
                                     type="button"

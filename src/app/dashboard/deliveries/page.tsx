@@ -10,6 +10,7 @@ import { PrintReportLayout } from "@/components/print/print-report-layout";
 import { ReportPrintLayout } from "@/components/print/report-print-layout";
 import { PrintSummary } from "@/components/print/print-summary";
 import { PrintTable } from "@/components/print/print-table";
+import { formatAssignedDriverName } from "@/lib/delivery-driver-assignment";
 import { supabase } from "@/lib/supabase";
 import {
   getDateKey,
@@ -28,6 +29,7 @@ import {
 type DeliveryBooking = {
   id: string;
   trailer_id: string;
+  driver_id?: string | null;
   delivery_date: string;
   delivery_time?: string | null;
   customer?: string | null;
@@ -38,6 +40,7 @@ type DeliveryBooking = {
   status: string;
   notes?: string | null;
   created_at?: string | null;
+  assigned_driver_name?: string | null;
   trailer_number?: string | null;
   trailer_container_number?: string | null;
   trailer_active?: boolean;
@@ -139,9 +142,10 @@ function DeliveriesPageContent() {
           .from("delivery_bookings")
           .select(
             `id, trailer_id, delivery_date, delivery_time, customer, consignee,
-             delivery_location, booking_reference, escort_required, status, notes, created_at,
+             driver_id, delivery_location, booking_reference, escort_required, status, notes, created_at,
              delivered_at, waiting_collection_since, collection_due_date, collected_at,
              demurrage_free_days, demurrage_daily_rate, demurrage_currency, demurrage_notes,
+             driver:drivers(display_name),
              trailers(trailer_number, container_number, compound_position, departure_date)`,
           )
           .order("delivery_date", { ascending: true })
@@ -152,9 +156,11 @@ function DeliveriesPageContent() {
         }
 
         const enriched = ((data ?? []) as Array<Record<string, unknown>>).map((booking) => {
+          const driver = booking["driver"] as Record<string, unknown> | null;
           const trailerFromJoin = booking["trailers"] as Record<string, unknown> | null;
           return {
             ...booking,
+            assigned_driver_name: (driver?.["display_name"] as string | null) ?? null,
             trailer_number: (trailerFromJoin?.["trailer_number"] as string | null) ?? "—",
             trailer_container_number: (trailerFromJoin?.["container_number"] as string | null) ?? null,
             trailer_compound_position: (trailerFromJoin?.["compound_position"] as string | null) ?? null,
@@ -517,6 +523,10 @@ function DeliveriesPageContent() {
                               <span className="font-mono">{booking.booking_reference}</span>
                             </p>
                           ) : null}
+                          <p className="text-sm text-slate-300">
+                            <span className="text-slate-500">Driver:</span>{" "}
+                            {formatAssignedDriverName(booking.assigned_driver_name)}
+                          </p>
                           {booking.escort_required ? (
                             <p className="text-sm text-amber-200">
                               ⚠ Escort Required
@@ -672,6 +682,10 @@ function DeliveriesPageContent() {
                           <p className="mt-0.5 text-slate-300">{b.customer || b.consignee || "—"}</p>
                         </div>
                         <div>
+                          <p className="text-[10px] uppercase tracking-[0.25em] text-slate-500">Assigned Driver</p>
+                          <p className="mt-0.5 text-slate-300">{formatAssignedDriverName(b.assigned_driver_name)}</p>
+                        </div>
+                        <div>
                           <p className="text-[10px] uppercase tracking-[0.25em] text-slate-500">Delivered At</p>
                           <p className="mt-0.5 text-slate-300">{b.delivered_at ? formatDate(b.delivered_at) : "—"}</p>
                         </div>
@@ -753,6 +767,7 @@ function DeliveriesPageContent() {
               { key: "delivery_time", header: "Time", render: (booking) => formatTime(booking.delivery_time) },
               { key: "trailer_number", header: "Trailer", render: (booking) => booking.trailer_number ?? "—" },
               { key: "customer", header: "Customer", render: (booking) => booking.customer ?? booking.consignee ?? "—" },
+              { key: "assigned_driver_name", header: "Assigned Driver", render: (booking) => formatAssignedDriverName(booking.assigned_driver_name) },
               { key: "delivery_location", header: "Location", render: (booking) => booking.delivery_location ?? "—" },
               { key: "booking_reference", header: "Booking Reference", render: (booking) => booking.booking_reference ?? "—" },
               { key: "status", header: "Status", render: (booking) => statusLabel(booking.status) },

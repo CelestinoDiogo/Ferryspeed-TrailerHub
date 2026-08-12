@@ -322,6 +322,32 @@ describe("driver mobile service", () => {
         temperature_required: false,
         collected_temperature_c: null,
       },
+      {
+        id: "booking-unassigned",
+        trailer_id: "trailer-c",
+        driver_id: null,
+        delivery_date: "2026-08-11",
+        delivery_time: null,
+        customer: "Customer C",
+        consignee: "Consignee C",
+        delivery_location: "Dock C",
+        booking_reference: "BK-C",
+        escort_required: false,
+        status: "scheduled",
+        notes: null,
+        created_at: "2026-08-11T00:00:00.000Z",
+        updated_at: "2026-08-11T00:00:00.000Z",
+        delivered_at: null,
+        waiting_collection_since: null,
+        collection_due_date: null,
+        collected_at: null,
+        demurrage_free_days: null,
+        demurrage_daily_rate: null,
+        demurrage_currency: null,
+        demurrage_notes: null,
+        temperature_required: false,
+        collected_temperature_c: null,
+      },
     ];
 
     const { supabase, bookingQueryState, driverQueryState } = createMockSupabase({
@@ -337,8 +363,66 @@ describe("driver mobile service", () => {
     expect(result.driver?.id).toBe("driver-a");
     expect(result.tasks).toHaveLength(1);
     expect(result.tasks[0]?.bookingId).toBe("booking-a");
+    expect(result.tasks[0]?.consignee).toBeNull();
     expect(result.tasks[0]?.nextAction).toBe("ACKNOWLEDGED");
     expect(result.tasks[0]?.temperature.required).toBe(false);
+  });
+
+  it("classifies waiting_collection work as collection tasks", async () => {
+    const driver: DriverRow = {
+      id: "driver-a",
+      user_id: "user-a",
+      display_name: "Driver A",
+      phone: null,
+      active: true,
+      created_at: "2026-08-11T00:00:00.000Z",
+      updated_at: "2026-08-11T00:00:00.000Z",
+    };
+
+    const bookings: BookingRow[] = [
+      {
+        id: "booking-collection",
+        trailer_id: "trailer-a",
+        driver_id: "driver-a",
+        delivery_date: "2026-08-11",
+        delivery_time: null,
+        customer: "Customer A",
+        consignee: "Consignee A",
+        delivery_location: "Dock A",
+        booking_reference: "BK-A",
+        escort_required: false,
+        status: "waiting_collection",
+        notes: null,
+        created_at: "2026-08-11T00:00:00.000Z",
+        updated_at: "2026-08-11T00:00:00.000Z",
+        delivered_at: "2026-08-11T09:00:00.000Z",
+        waiting_collection_since: "2026-08-11T09:10:00.000Z",
+        collection_due_date: "2026-08-12",
+        collected_at: null,
+        demurrage_free_days: null,
+        demurrage_daily_rate: null,
+        demurrage_currency: null,
+        demurrage_notes: null,
+        temperature_required: false,
+        collected_temperature_c: null,
+      },
+    ];
+
+    const { supabase } = createMockSupabase({
+      driver,
+      bookings,
+      trailers: [{ id: "trailer-a", trailer_number: "FS1001" }],
+    });
+
+    const result = await loadDriverMobileTasksForUser(supabase, "user-a");
+
+    expect(result.tasks).toHaveLength(1);
+    expect(result.tasks[0]).toMatchObject({
+      bookingId: "booking-collection",
+      taskKind: "collection",
+      nextAction: "ACKNOWLEDGED",
+      waitingCollectionSince: "2026-08-11T09:10:00.000Z",
+    });
   });
 
   it("acknowledges owned booking once and keeps subsequent acknowledgements idempotent", async () => {
