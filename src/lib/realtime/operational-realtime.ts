@@ -24,6 +24,7 @@ const topicTableMap: Record<RealtimeTopic, PublicTableName[]> = {
     "trailer_audit_log",
     "trailer_activity_log",
     "operational_alerts",
+    "driver_operational_instructions",
     "operational_alert_settings",
     "vessel_operations",
     "vessel_operation_trailers",
@@ -50,6 +51,7 @@ const topicTableMap: Record<RealtimeTopic, PublicTableName[]> = {
     "trailer_audit_log",
     "trailer_events",
     "operational_alerts",
+    "driver_operational_instructions",
     "delivery_bookings",
     "export_allocations",
     "vessel_operation_trailers",
@@ -67,16 +69,6 @@ let channel: RealtimeChannel | null = null;
 let activeChannelTables = new Set<PublicTableName>();
 let listenerIdCounter = 1;
 const listeners = new Map<number, Listener>();
-
-const getTablesForTopics = (topics: RealtimeTopic[]) => {
-  const tables = new Set<PublicTableName>();
-  for (const topic of topics) {
-    for (const tableName of topicTableMap[topic]) {
-      tables.add(tableName);
-    }
-  }
-  return tables;
-};
 
 const setEquals = <T,>(left: Set<T>, right: Set<T>) => {
   if (left.size !== right.size) {

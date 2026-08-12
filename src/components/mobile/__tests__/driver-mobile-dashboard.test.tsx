@@ -21,6 +21,10 @@ vi.mock("@/components/auth/permission-guard", () => ({
   PermissionGuard: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
 
+vi.mock("@/lib/realtime/operational-realtime", () => ({
+  useOperationalRealtime: () => undefined,
+}));
+
 const makeTask = (overrides?: Record<string, unknown>) => ({
   bookingId: "booking-a",
   trailerId: "trailer-a",
@@ -304,6 +308,178 @@ describe("DriverMobileDashboard", () => {
       bookingId: "booking-temp",
       action: "COLLECTED",
       temperatureC: 2.5,
+    });
+  });
+
+  it("renders unread count, newest instruction and recent history", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+
+        if (url.includes("/api/driver-mobile/tasks") && method === "GET") {
+          return new Response(
+            JSON.stringify({
+              driver: { id: "driver-a", display_name: "Driver One", user_id: "user-a" },
+              tasks: [makeTask({ bookingId: "a", trailerNumber: "FS-A", group: "current", status: "on_delivery", nextAction: "DELIVERED" })],
+            }),
+            { status: 200 },
+          );
+        }
+
+        if (url.includes("/api/driver-mobile/instructions") && method === "GET") {
+          return new Response(
+            JSON.stringify({
+              unreadCount: 2,
+              newestUnread: {
+                id: "instruction-a",
+                instruction: "Proceed to loading lane A",
+                createdAt: "2026-08-12T10:00:00.000Z",
+                trailerNumber: "FS-A",
+                readAt: null,
+              },
+              recent: [
+                {
+                  id: "instruction-a",
+                  instruction: "Proceed to loading lane A",
+                  createdAt: "2026-08-12T10:00:00.000Z",
+                  readAt: null,
+                },
+                {
+                  id: "instruction-b",
+                  instruction: "Collect documents before departure",
+                  createdAt: "2026-08-12T09:00:00.000Z",
+                  readAt: "2026-08-12T09:30:00.000Z",
+                },
+              ],
+            }),
+            { status: 200 },
+          );
+        }
+
+        return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+      }),
+    );
+
+    const confirmSpy = vi.spyOn(window, "confirm");
+
+    render(<DriverMobileDashboard />);
+
+    expect(await screen.findByText("Instructions 2")).toBeInTheDocument();
+    expect(screen.getAllByText("Proceed to loading lane A").length).toBeGreaterThan(0);
+    expect(screen.getByText("Recent History")).toBeInTheDocument();
+    expect(screen.getByText("Collect documents before departure")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Mark Read" })).toBeInTheDocument();
+    expect(confirmSpy).not.toHaveBeenCalled();
+  });
+
+  it("disables mark-read while pending and refreshes to next unread instruction", async () => {
+    let resolveRead: () => void = () => undefined;
+    const readPromise = new Promise<void>((resolve) => {
+      resolveRead = resolve;
+    });
+
+    let readApplied = false;
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+
+      if (url.includes("/api/driver-mobile/tasks") && method === "GET") {
+        return new Response(
+          JSON.stringify({
+            driver: { id: "driver-a", display_name: "Driver One", user_id: "user-a" },
+            tasks: [makeTask({ bookingId: "a", trailerNumber: "FS-A", group: "current", status: "on_delivery", nextAction: "DELIVERED" })],
+          }),
+          { status: 200 },
+        );
+      }
+
+      if (url.includes("/api/driver-mobile/instructions") && method === "GET") {
+        if (!readApplied) {
+          return new Response(
+            JSON.stringify({
+              unreadCount: 2,
+              newestUnread: {
+                id: "instruction-a",
+                instruction: "Proceed to loading lane A",
+                createdAt: "2026-08-12T10:00:00.000Z",
+                trailerNumber: "FS-A",
+                readAt: null,
+              },
+              recent: [
+                {
+                  id: "instruction-a",
+                  instruction: "Proceed to loading lane A",
+                  createdAt: "2026-08-12T10:00:00.000Z",
+                  readAt: null,
+                },
+                {
+                  id: "instruction-b",
+                  instruction: "Collect documents before departure",
+                  createdAt: "2026-08-12T09:00:00.000Z",
+                  readAt: null,
+                },
+              ],
+            }),
+            { status: 200 },
+          );
+        }
+
+        return new Response(
+          JSON.stringify({
+            unreadCount: 1,
+            newestUnread: {
+              id: "instruction-b",
+              instruction: "Collect documents before departure",
+              createdAt: "2026-08-12T09:00:00.000Z",
+              trailerNumber: "FS-A",
+              readAt: null,
+            },
+            recent: [
+              {
+                id: "instruction-a",
+                instruction: "Proceed to loading lane A",
+                createdAt: "2026-08-12T10:00:00.000Z",
+                readAt: "2026-08-12T10:10:00.000Z",
+              },
+              {
+                id: "instruction-b",
+                instruction: "Collect documents before departure",
+                createdAt: "2026-08-12T09:00:00.000Z",
+                readAt: null,
+              },
+            ],
+          }),
+          { status: 200 },
+        );
+      }
+
+      if (url.includes("/api/driver-mobile/instructions/read") && method === "POST") {
+        await readPromise;
+        readApplied = true;
+        return new Response(JSON.stringify({ ok: true, instruction: { id: "instruction-a" } }), { status: 200 });
+      }
+
+      return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<DriverMobileDashboard />);
+
+    const markButton = await screen.findByRole("button", { name: "Mark Read" });
+    fireEvent.click(markButton);
+
+    const pendingButton = await screen.findByRole("button", { name: "Marking..." });
+    expect(pendingButton).toBeDisabled();
+
+    resolveRead();
+
+    await waitFor(() => {
+      expect(screen.getByText("Instructions 1")).toBeInTheDocument();
+      expect(screen.getAllByText("Collect documents before departure").length).toBeGreaterThan(0);
     });
   });
 });

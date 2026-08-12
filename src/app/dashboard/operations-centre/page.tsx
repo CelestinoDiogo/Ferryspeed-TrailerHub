@@ -25,6 +25,8 @@ import {
   normalizeTemperatureToleranceSettings,
   saveTemperatureToleranceSettingsToStorage,
 } from "@/lib/temperature-tolerance";
+import { getSessionToken } from "@/lib/voice/session";
+import { useOperationalRealtime } from "@/lib/realtime/operational-realtime";
 
 type DeliveryRow = OpsBooking;
 
@@ -42,6 +44,11 @@ type YardStatus = {
   waitingCollections: number;
   needPreparation: number;
   attentionRequired: number;
+};
+
+type InstructionStatus = {
+  sentAt: string;
+  readAt: string | null;
 };
 
 const COMPOUND_CAPACITY = 50;
@@ -67,23 +74,26 @@ const sortTodayDeliveries = (a: DeliveryRow, b: DeliveryRow) => {
 };
 
 export default function OperationsCentrePage() {
+  const defaultTemperatureTolerance = getDefaultTemperatureToleranceSettings();
+  const initialTemperatureTolerance = getTemperatureToleranceSettingsFromStorage();
+
   const [bookings, setBookings] = useState<DeliveryRow[]>([]);
   const [trailers, setTrailers] = useState<OpsTrailer[]>([]);
   const [exportAllocations, setExportAllocations] = useState<ExportAllocationRecord[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [lowerToleranceInput, setLowerToleranceInput] = useState("3");
-  const [upperToleranceInput, setUpperToleranceInput] = useState("3");
+  const [lowerToleranceInput, setLowerToleranceInput] = useState(
+    String(initialTemperatureTolerance.lowerTolerance ?? defaultTemperatureTolerance.lowerTolerance),
+  );
+  const [upperToleranceInput, setUpperToleranceInput] = useState(
+    String(initialTemperatureTolerance.upperTolerance ?? defaultTemperatureTolerance.upperTolerance),
+  );
   const [settingsMessage, setSettingsMessage] = useState<string | null>(null);
+  const [instructionByBookingId, setInstructionByBookingId] = useState<Record<string, string>>({});
+  const [sendingInstructionForBookingId, setSendingInstructionForBookingId] = useState<string | null>(null);
+  const [instructionStatusByBookingId, setInstructionStatusByBookingId] = useState<Record<string, InstructionStatus>>({});
 
   const todayKey = useMemo(() => getLocalDateKey(), []);
-
-  useEffect(() => {
-    const defaults = getDefaultTemperatureToleranceSettings();
-    const settings = getTemperatureToleranceSettingsFromStorage();
-    setLowerToleranceInput(String(settings.lowerTolerance ?? defaults.lowerTolerance));
-    setUpperToleranceInput(String(settings.upperTolerance ?? defaults.upperTolerance));
-  }, []);
 
   useEffect(() => {
     const loadData = async () => {
@@ -96,7 +106,7 @@ export default function OperationsCentrePage() {
             .from("delivery_bookings")
             .select(
               `id, trailer_id, delivery_date, delivery_time, customer, consignee,
-               delivery_location, booking_reference, escort_required, status, notes,
+               delivery_location, booking_reference, escort_required, status, notes, driver_id,
                delivered_at, waiting_collection_since, collection_due_date,
                trailers(trailer_number, compound_position, departure_date)`
             )
@@ -120,6 +130,7 @@ export default function OperationsCentrePage() {
           return {
             id: row["id"] as string,
             trailer_id: row["trailer_id"] as string,
+            driver_id: (row["driver_id"] as string | null) ?? null,
             delivery_date: row["delivery_date"] as string,
             delivery_time: (row["delivery_time"] as string | null) ?? null,
             customer: (row["customer"] as string | null) ?? null,
@@ -297,6 +308,130 @@ export default function OperationsCentrePage() {
     setSettingsMessage("Temperature tolerance settings saved.");
   };
 
+  const refreshInstructionStatus = async (booking: DeliveryRow) => {
+    if (!booking.driver_id) {
+      return;
+    }
+
+    const token = await getSessionToken();
+    const params = new URLSearchParams({
+      driverId: booking.driver_id,
+      deliveryBookingId: booking.id,
+      trailerId: booking.trailer_id,
+      limit: "1",
+    });
+
+    const response = await fetch(`/api/operations/driver-instructions?${params.toString()}`, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+
+    const payload = (await response.json().catch(() => ({}))) as {
+      error?: string;
+      instructions?: Array<{ createdAt: string; readAt: string | null }>;
+    };
+
+    if (!response.ok) {
+      throw new Error(payload.error || "Unable to refresh instruction status.");
+    }
+
+    const latest = payload.instructions?.[0];
+    if (!latest) {
+      return;
+    }
+
+    setInstructionStatusByBookingId((current) => ({
+      ...current,
+      [booking.id]: {
+        sentAt: latest.createdAt,
+        readAt: latest.readAt,
+      },
+    }));
+  };
+
+  const refreshVisibleInstructionStatuses = async () => {
+    const candidates = todayDeliveries.filter((booking) => {
+      return Boolean(booking.driver_id) && Boolean(instructionStatusByBookingId[booking.id]);
+    });
+
+    if (candidates.length === 0) {
+      return;
+    }
+
+    await Promise.allSettled(candidates.map(async (booking) => refreshInstructionStatus(booking)));
+  };
+
+  useOperationalRealtime(["dashboard"], () => {
+    void refreshVisibleInstructionStatuses();
+  }, { debounceMs: 750 });
+
+  const sendInstruction = async (booking: DeliveryRow) => {
+    if (sendingInstructionForBookingId || !booking.driver_id) {
+      return;
+    }
+
+    const instruction = instructionByBookingId[booking.id]?.trim() ?? "";
+    if (!instruction) {
+      setError("Instruction cannot be empty.");
+      return;
+    }
+
+    setError(null);
+    setSendingInstructionForBookingId(booking.id);
+
+    try {
+      const token = await getSessionToken();
+      const response = await fetch("/api/operations/driver-instructions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          driverId: booking.driver_id,
+          deliveryBookingId: booking.id,
+          trailerId: booking.trailer_id,
+          trailerNumber: booking.trailer_number,
+          instruction,
+        }),
+      });
+
+      const payload = (await response.json().catch(() => ({}))) as {
+        error?: string;
+        instruction?: { createdAt: string; readAt: string | null };
+      };
+
+      if (!response.ok) {
+        throw new Error(payload.error || "Unable to send instruction.");
+      }
+
+      if (payload.instruction?.createdAt) {
+        const sentAt = payload.instruction.createdAt;
+        const readAt = payload.instruction.readAt ?? null;
+        setInstructionStatusByBookingId((current) => ({
+          ...current,
+          [booking.id]: {
+            sentAt,
+            readAt,
+          },
+        }));
+      }
+
+      setInstructionByBookingId((current) => ({
+        ...current,
+        [booking.id]: "",
+      }));
+      setSettingsMessage("Instruction sent to driver.");
+      await refreshInstructionStatus(booking);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Unable to send instruction.");
+    } finally {
+      setSendingInstructionForBookingId(null);
+    }
+  };
+
   return (
     <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 text-slate-100">
         <header className="rounded-3xl border border-white/10 bg-slate-900/70 p-5 shadow-2xl shadow-black/20 backdrop-blur sm:p-6">
@@ -393,6 +528,45 @@ export default function OperationsCentrePage() {
                               <Link href={`/dashboard/trailers/${booking.trailer_id}`} className="rounded-lg border border-white/10 bg-slate-800 px-2 py-1 text-xs font-semibold text-white hover:bg-slate-700">View Trailer</Link>
                               <Link href={`/dashboard/deliveries/${booking.id}`} className="rounded-lg border border-white/10 bg-slate-800 px-2 py-1 text-xs font-semibold text-white hover:bg-slate-700">View Booking</Link>
                               <button type="button" className="rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-2 py-1 text-xs font-semibold text-cyan-200 hover:bg-cyan-500/20">Dispatch</button>
+                            </div>
+                            <div className="mt-2 space-y-2 rounded-lg border border-white/10 bg-slate-950/50 p-2">
+                              <p className="text-[11px] uppercase tracking-[0.14em] text-slate-400">Driver Instruction</p>
+                              {!booking.driver_id ? (
+                                <p className="text-xs text-amber-300">No driver assigned yet.</p>
+                              ) : (
+                                <>
+                                  <textarea
+                                    value={instructionByBookingId[booking.id] ?? ""}
+                                    onChange={(event) => {
+                                      const { value } = event.target;
+                                      setInstructionByBookingId((current) => ({ ...current, [booking.id]: value }));
+                                    }}
+                                    maxLength={180}
+                                    placeholder="Add a short operational instruction"
+                                    className="w-full rounded-md border border-white/10 bg-slate-900 px-2 py-1.5 text-xs text-slate-100"
+                                  />
+                                  <div className="flex flex-wrap gap-1.5">
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        void sendInstruction(booking);
+                                      }}
+                                      disabled={sendingInstructionForBookingId === booking.id}
+                                      className="rounded-lg border border-emerald-500/30 bg-emerald-500/15 px-2 py-1 text-xs font-semibold text-emerald-200 disabled:opacity-60"
+                                    >
+                                      {sendingInstructionForBookingId === booking.id ? "Sending..." : "Send"}
+                                    </button>
+                                  </div>
+                                  {instructionStatusByBookingId[booking.id] ? (
+                                    <p className="text-xs text-slate-300">
+                                      Sent: {new Date(instructionStatusByBookingId[booking.id].sentAt).toLocaleString("en-GB")}
+                                      {instructionStatusByBookingId[booking.id].readAt
+                                        ? ` | Read: ${new Date(instructionStatusByBookingId[booking.id].readAt as string).toLocaleString("en-GB")}`
+                                        : " | Read: pending"}
+                                    </p>
+                                  ) : null}
+                                </>
+                              )}
                             </div>
                           </td>
                         </tr>

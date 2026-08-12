@@ -273,6 +273,26 @@ export type Database = {
         Update: Partial<Database["public"]["Tables"]["operational_alerts"]["Row"]>;
         Relationships: [];
       };
+      driver_operational_instructions: {
+        Row: {
+          id: string;
+          driver_id: string;
+          recipient_user_id: string;
+          delivery_booking_id: string | null;
+          trailer_id: string | null;
+          trailer_number: string | null;
+          instruction: string;
+          priority: string;
+          sender_user_id: string | null;
+          sender_display_name: string | null;
+          created_at: string;
+          read_at: string | null;
+          read_by: string | null;
+        };
+        Insert: Partial<Database["public"]["Tables"]["driver_operational_instructions"]["Row"]>;
+        Update: Partial<Database["public"]["Tables"]["driver_operational_instructions"]["Row"]>;
+        Relationships: [];
+      };
       delivery_bookings: {
         Row: {
           id: string;
@@ -723,6 +743,10 @@ export type Database = {
           p_dismissal_reason?: string | null;
         };
         Returns: Database["public"]["Tables"]["operational_alerts"]["Row"];
+      };
+      mark_driver_operational_instruction_read: {
+        Args: { p_instruction_id: string };
+        Returns: Database["public"]["Tables"]["driver_operational_instructions"]["Row"];
       };
     };
     Enums: Record<string, never>;

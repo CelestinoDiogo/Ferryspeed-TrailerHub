@@ -39,6 +39,11 @@ import {
 } from "@/lib/voice/speech-synthesis";
 import { normalizeTrailerNumber } from "@/lib/voice/normalizer";
 
+type InstructionStatus = {
+  sentAt: string;
+  readAt: string | null;
+};
+
 type MobileTabKey = "home" | "vessel" | "compound" | "departures" | "exports";
 type VesselQuickFilter = "all" | "pending_arrival" | "inspection_pending" | "priority" | "temperature_required" | "alerts";
 
@@ -75,6 +80,14 @@ type OperationalAlertRow = Pick<
   Database["public"]["Tables"]["operational_alerts"]["Row"],
   "id" | "title" | "severity" | "status" | "trailer_number" | "source_module" | "created_at"
 >;
+
+type DriverAssignmentRow = {
+  id: string;
+  trailer_id: string;
+  driver_id: string | null;
+  delivery_date: string;
+  status: string;
+};
 
 type ExportRow = ExportAllocationRecord & {
   id: string;
@@ -199,6 +212,7 @@ export function SupervisorMobileDashboard() {
   const [vesselTrailers, setVesselTrailers] = useState<VesselTrailerRow[]>([]);
   const [alerts, setAlerts] = useState<OperationalAlertRow[]>([]);
   const [exports, setExports] = useState<ExportRow[]>([]);
+  const [driverAssignments, setDriverAssignments] = useState<DriverAssignmentRow[]>([]);
 
   const [vesselFilter, setVesselFilter] = useState("");
   const [vesselQuickFilter, setVesselQuickFilter] = useState<VesselQuickFilter>("all");
@@ -229,6 +243,9 @@ export function SupervisorMobileDashboard() {
   const [voiceErrorMessage, setVoiceErrorMessage] = useState<string | null>(null);
   const [voiceOutputStatus, setVoiceOutputStatus] = useState<VoiceOutputStatus>("idle");
   const [voiceOutputMessage, setVoiceOutputMessage] = useState<string | null>(null);
+  const [instructionByBookingId, setInstructionByBookingId] = useState<Record<string, string>>({});
+  const [sendingInstructionBookingId, setSendingInstructionBookingId] = useState<string | null>(null);
+  const [instructionStatusByBookingId, setInstructionStatusByBookingId] = useState<Record<string, InstructionStatus>>({});
 
   const scrollByTabRef = useRef<Partial<Record<MobileTabKey, number>>>({});
   const wasListeningRef = useRef(false);
@@ -253,7 +270,7 @@ export function SupervisorMobileDashboard() {
     setError(null);
 
     try {
-      const [trailerResult, vesselResult, vesselTrailerResult, alertsResult, exportResult] = await Promise.all([
+      const [trailerResult, vesselResult, vesselTrailerResult, alertsResult, exportResult, assignmentResult] = await Promise.all([
         supabase
           .from("trailers")
           .select("id, trailer_number, customer, compound_position, load_status, operational_status, departure_date, is_local")
@@ -281,6 +298,13 @@ export function SupervisorMobileDashboard() {
           .in("status", ["allocated", "delivered_empty", "waiting_loading", "collected_loaded", "completed"])
           .order("updated_at", { ascending: false })
           .limit(260),
+        supabase
+          .from("delivery_bookings")
+          .select("id, trailer_id, driver_id, delivery_date, status")
+          .not("driver_id", "is", null)
+          .neq("status", "cancelled")
+          .order("delivery_date", { ascending: false })
+          .limit(220),
       ]);
 
       if (trailerResult.error) throw trailerResult.error;
@@ -288,12 +312,14 @@ export function SupervisorMobileDashboard() {
       if (vesselTrailerResult.error) throw vesselTrailerResult.error;
       if (alertsResult.error) throw alertsResult.error;
       if (exportResult.error) throw exportResult.error;
+      if (assignmentResult.error) throw assignmentResult.error;
 
       const nextTrailers = (trailerResult.data ?? []) as TrailerRow[];
       const nextVessels = (vesselResult.data ?? []) as VesselOperationRow[];
       const nextVesselTrailers = (vesselTrailerResult.data ?? []) as VesselTrailerRow[];
       const nextAlerts = (alertsResult.data ?? []) as OperationalAlertRow[];
       const nextExports = ((exportResult.data ?? []) as ExportRow[]).map((row) => normalizeExportAllocationRecord(row));
+      const nextAssignments = (assignmentResult.data ?? []) as DriverAssignmentRow[];
 
       const pendingArrivals = nextVesselTrailers.filter((row) => isPendingArrivalState(row.arrival_status)).length;
       const arrivedCount = nextVesselTrailers.filter((row) => isArrivedState(row.arrival_status)).length;
@@ -306,6 +332,7 @@ export function SupervisorMobileDashboard() {
       setVesselTrailers(nextVesselTrailers);
       setAlerts(nextAlerts);
       setExports(nextExports);
+      setDriverAssignments(nextAssignments);
       setSummary({
         inCompound,
         pendingArrivals,
@@ -480,6 +507,20 @@ export function SupervisorMobileDashboard() {
     }).slice(0, 80);
   }, [departuresFilter, trailers]);
 
+  const assignmentByTrailerId = useMemo(() => {
+    const map = new Map<string, DriverAssignmentRow>();
+
+    for (const assignment of driverAssignments) {
+      if (!assignment.trailer_id || map.has(assignment.trailer_id)) {
+        continue;
+      }
+
+      map.set(assignment.trailer_id, assignment);
+    }
+
+    return map;
+  }, [driverAssignments]);
+
   const exportRows = useMemo(() => {
     const normalized = exportsFilter.trim().toLowerCase();
 
@@ -632,6 +673,156 @@ export function SupervisorMobileDashboard() {
       successMessage: "Arrival confirmed.",
     });
   }, [executeMobileAction, hasAction]);
+
+  const refreshInstructionStatus = useCallback(async (assignment: DriverAssignmentRow, trailer: TrailerRow) => {
+    if (!assignment.driver_id) {
+      return;
+    }
+
+    const sessionResult = await supabase.auth.getSession();
+    const accessToken = sessionResult.data.session?.access_token;
+    if (!accessToken) {
+      throw new Error("Authentication session not available.");
+    }
+
+    const params = new URLSearchParams({
+      driverId: assignment.driver_id,
+      deliveryBookingId: assignment.id,
+      trailerId: trailer.id,
+      limit: "1",
+    });
+
+    const response = await fetch(`/api/operations/driver-instructions?${params.toString()}`, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    });
+
+    const payload = (await response.json().catch(() => ({}))) as {
+      error?: string;
+      instructions?: Array<{ createdAt: string; readAt: string | null }>;
+    };
+
+    if (!response.ok) {
+      throw new Error(payload.error || "Unable to refresh instruction status.");
+    }
+
+    const latest = payload.instructions?.[0];
+    if (!latest) {
+      return;
+    }
+
+    setInstructionStatusByBookingId((current) => ({
+      ...current,
+      [assignment.id]: {
+        sentAt: latest.createdAt,
+        readAt: latest.readAt,
+      },
+    }));
+  }, []);
+
+  const sendInstruction = useCallback(async (assignment: DriverAssignmentRow, trailer: TrailerRow) => {
+    if (sendingInstructionBookingId) {
+      return;
+    }
+
+    if (!assignment.driver_id) {
+      setError("Selected booking has no driver assignment.");
+      return;
+    }
+
+    const instruction = instructionByBookingId[assignment.id]?.trim() ?? "";
+    if (!instruction) {
+      setError("Instruction cannot be empty.");
+      return;
+    }
+
+    setSendingInstructionBookingId(assignment.id);
+    setError(null);
+
+    try {
+      const sessionResult = await supabase.auth.getSession();
+      const accessToken = sessionResult.data.session?.access_token;
+      if (!accessToken) {
+        throw new Error("Authentication session not available.");
+      }
+
+      const response = await fetch("/api/operations/driver-instructions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({
+          driverId: assignment.driver_id,
+          deliveryBookingId: assignment.id,
+          trailerId: trailer.id,
+          trailerNumber: trailer.trailer_number,
+          instruction,
+        }),
+      });
+
+      const payload = (await response.json().catch(() => ({}))) as {
+        error?: string;
+        instruction?: { createdAt: string; readAt: string | null };
+      };
+
+      if (!response.ok) {
+        throw new Error(payload.error || "Unable to send instruction.");
+      }
+
+      setInstructionByBookingId((current) => ({
+        ...current,
+        [assignment.id]: "",
+      }));
+
+      if (payload.instruction) {
+        const sentAt = payload.instruction.createdAt;
+        const readAt = payload.instruction.readAt;
+        setInstructionStatusByBookingId((current) => ({
+          ...current,
+          [assignment.id]: {
+            sentAt,
+            readAt,
+          },
+        }));
+      }
+
+      setSuccess("Instruction sent to driver.");
+      await refreshInstructionStatus(assignment, trailer);
+    } catch (actionErr) {
+      setError(actionErr instanceof Error ? actionErr.message : "Unable to send instruction.");
+    } finally {
+      setSendingInstructionBookingId(null);
+    }
+  }, [instructionByBookingId, refreshInstructionStatus, sendingInstructionBookingId]);
+
+  const refreshVisibleInstructionStatuses = useCallback(async () => {
+    const refreshTargets = departureRows
+      .map((row) => ({ row, assignment: assignmentByTrailerId.get(row.id) }))
+      .filter((item) => {
+        return Boolean(item.assignment?.driver_id) && Boolean(item.assignment && instructionStatusByBookingId[item.assignment.id]);
+      });
+
+    if (refreshTargets.length === 0) {
+      return;
+    }
+
+    await Promise.allSettled(
+      refreshTargets.map(async (item) => {
+        if (!item.assignment) {
+          return;
+        }
+
+        await refreshInstructionStatus(item.assignment, item.row);
+      }),
+    );
+  }, [assignmentByTrailerId, departureRows, instructionStatusByBookingId, refreshInstructionStatus]);
+
+  useOperationalRealtime(["dashboard"], () => {
+    void refreshVisibleInstructionStatuses();
+  }, { debounceMs: 750 });
 
   const advanceExport = useCallback(async (row: ExportRow) => {
     if (hasAction("EXPORT_ADVANCE", row.id)) {
@@ -1328,6 +1519,8 @@ export function SupervisorMobileDashboard() {
                       const targetHref = trailerNumber
                         ? `/dashboard/departure?search=${encodeURIComponent(trailerNumber)}`
                         : "/dashboard/departure";
+                      const assignment = assignmentByTrailerId.get(row.id);
+                      const status = assignment ? instructionStatusByBookingId[assignment.id] : null;
 
                       return (
                         <article key={row.id} className="rounded-2xl border border-slate-200 bg-white p-3">
@@ -1343,6 +1536,43 @@ export function SupervisorMobileDashboard() {
                           >
                             Confirm Departure
                           </Link>
+
+                          <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-2">
+                            <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-600">Driver Instruction</p>
+                            {!assignment || !assignment.driver_id ? (
+                              <p className="mt-2 text-xs text-amber-700">No assigned driver for this trailer.</p>
+                            ) : (
+                              <>
+                                <textarea
+                                  value={instructionByBookingId[assignment.id] ?? ""}
+                                  onChange={(event) => {
+                                    const { value } = event.target;
+                                    setInstructionByBookingId((current) => ({ ...current, [assignment.id]: value }));
+                                  }}
+                                  maxLength={180}
+                                  placeholder="Short operational instruction"
+                                  className="mt-2 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900"
+                                />
+                                <div className="mt-2 flex gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      void sendInstruction(assignment, row);
+                                    }}
+                                    disabled={sendingInstructionBookingId === assignment.id}
+                                    className="rounded-lg bg-cyan-700 px-2 py-1 text-xs font-semibold text-white disabled:bg-cyan-300"
+                                  >
+                                    {sendingInstructionBookingId === assignment.id ? "Sending..." : "Send"}
+                                  </button>
+                                </div>
+                                {status ? (
+                                  <p className="mt-2 text-[11px] text-slate-600">
+                                    Sent {formatDateTime(status.sentAt)} • {status.readAt ? `Read ${formatDateTime(status.readAt)}` : "Read pending"}
+                                  </p>
+                                ) : null}
+                              </>
+                            )}
+                          </div>
                         </article>
                       );
                     })}

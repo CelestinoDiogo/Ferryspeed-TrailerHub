@@ -96,6 +96,14 @@ class QueryMock {
     return this;
   }
 
+  not() {
+    return this;
+  }
+
+  neq() {
+    return this;
+  }
+
   then<TResult1 = { data: QueryRow[]; error: null }>(
     onfulfilled?: ((value: { data: QueryRow[]; error: null }) => TResult1 | PromiseLike<TResult1>) | null,
   ) {
@@ -835,5 +843,16 @@ describe("SupervisorMobileDashboard", () => {
     const user = await openVesselWorkspace();
 
     await triggerVoiceCommand(user, view.rerender, "FS1001", false);
+  });
+
+  it("does not require a manual check-read click on departures instruction cards", async () => {
+    render(<SupervisorMobileDashboard />);
+    const user = userEvent.setup();
+
+    const departuresButtons = await screen.findAllByRole("button", { name: "Departures" });
+    await user.click(departuresButtons[0]);
+    await screen.findByText("Departures Mobile Access");
+
+    expect(screen.queryByRole("button", { name: "Check Read" })).not.toBeInTheDocument();
   });
 });

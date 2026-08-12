@@ -14,6 +14,7 @@ export type OpsTrailer = {
 export type OpsBooking = {
   id: string;
   trailer_id: string;
+  driver_id?: string | null;
   delivery_date: string;
   delivery_time?: string | null;
   customer?: string | null;

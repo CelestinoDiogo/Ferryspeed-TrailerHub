@@ -6,6 +6,7 @@ import { toRoleLabel, type RoleKey } from "@/lib/auth/roles";
 import { useCurrentUser } from "@/lib/auth/use-current-user";
 import { getSessionToken, SESSION_EXPIRED_MESSAGE } from "@/lib/voice/session";
 import type { DriverMobileTask, DriverTaskAction } from "@/lib/driver-mobile-service";
+import { useOperationalRealtime } from "@/lib/realtime/operational-realtime";
 
 type DriverTaskResponse = {
   driver: {
@@ -14,6 +15,25 @@ type DriverTaskResponse = {
     user_id: string;
   } | null;
   tasks: DriverMobileTask[];
+};
+
+type DriverInstructionRecord = {
+  id: string;
+  deliveryBookingId: string | null;
+  trailerId: string | null;
+  trailerNumber: string | null;
+  instruction: string;
+  priority: "normal" | "high" | "critical";
+  senderDisplayName: string | null;
+  createdAt: string;
+  readAt: string | null;
+  isRead: boolean;
+};
+
+type DriverInstructionResponse = {
+  unreadCount: number;
+  newestUnread: DriverInstructionRecord | null;
+  recent: DriverInstructionRecord[];
 };
 
 const normalizeStatus = (value: string) => value.trim().toLowerCase();
@@ -104,6 +124,13 @@ export function DriverMobileDashboard() {
   const [success, setSuccess] = useState<string | null>(null);
   const [rowActionBookingId, setRowActionBookingId] = useState<string | null>(null);
   const [temperatureByBookingId, setTemperatureByBookingId] = useState<Record<string, string>>({});
+  const [instructionFeed, setInstructionFeed] = useState<DriverInstructionResponse>({
+    unreadCount: 0,
+    newestUnread: null,
+    recent: [],
+  });
+  const [isLoadingInstructions, setIsLoadingInstructions] = useState(true);
+  const [instructionActionId, setInstructionActionId] = useState<string | null>(null);
 
   const mobileRoleKey = roleKey as RoleKey | null;
   const roleLabel = toRoleLabel(mobileRoleKey);
@@ -147,11 +174,60 @@ export function DriverMobileDashboard() {
     }
   }, []);
 
+  const loadInstructions = useCallback(async (options?: { withLoading?: boolean }) => {
+    const withLoading = options?.withLoading ?? true;
+
+    if (withLoading) {
+      setIsLoadingInstructions(true);
+    }
+
+    try {
+      const token = await getSessionToken();
+      const response = await fetch("/api/driver-mobile/instructions?limit=40", {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      const payload = (await response.json().catch(() => ({}))) as Partial<DriverInstructionResponse> & { error?: string };
+      if (!response.ok) {
+        throw new Error(payload.error || "Unable to load operational instructions.");
+      }
+
+      setInstructionFeed({
+        unreadCount: typeof payload.unreadCount === "number" ? payload.unreadCount : 0,
+        newestUnread: payload.newestUnread ?? null,
+        recent: Array.isArray(payload.recent) ? payload.recent : [],
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unable to load operational instructions.";
+      setError(message);
+    } finally {
+      if (withLoading) {
+        setIsLoadingInstructions(false);
+      }
+    }
+  }, []);
+
   useEffect(() => {
     // Initial fetch runs once on mount to populate the driver's task board.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void loadTasks();
   }, [loadTasks]);
+
+  useEffect(() => {
+    // Initial instruction fetch mirrors task bootstrap pattern and avoids synchronous effect-state writes.
+    const timeoutId = window.setTimeout(() => {
+      void loadInstructions();
+    }, 0);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [loadInstructions]);
+
+  useOperationalRealtime(["dashboard"], () => {
+    void loadInstructions({ withLoading: false });
+  }, { debounceMs: 700 });
 
   const groupedTasks = useMemo(() => {
     return groupOrder.map((group) => ({
@@ -219,6 +295,39 @@ export function DriverMobileDashboard() {
     [loadTasks, rowActionBookingId, temperatureByBookingId],
   );
 
+  const handleMarkInstructionRead = useCallback(async (instructionId: string) => {
+    if (instructionActionId) {
+      return;
+    }
+
+    setInstructionActionId(instructionId);
+    setError(null);
+
+    try {
+      const token = await getSessionToken();
+      const response = await fetch("/api/driver-mobile/instructions/read", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ instructionId }),
+      });
+
+      const payload = (await response.json().catch(() => ({}))) as { error?: string };
+      if (!response.ok) {
+        throw new Error(payload.error || "Unable to mark instruction as read.");
+      }
+
+      await loadInstructions({ withLoading: false });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unable to mark instruction as read.";
+      setError(message);
+    } finally {
+      setInstructionActionId(null);
+    }
+  }, [instructionActionId, loadInstructions]);
+
   return (
     <PermissionGuard roleKey={mobileRoleKey} moduleKey="driver_mobile" action="view" allowWhenRoleMissing={false}>
       <div className="min-h-screen bg-[linear-gradient(180deg,#f8fafc_0%,#eef2ff_100%)] px-3 py-4 text-slate-900 sm:px-4">
@@ -228,6 +337,9 @@ export function DriverMobileDashboard() {
             <h1 className="mt-2 text-2xl font-semibold text-slate-950">Assigned Delivery Tasks</h1>
             <p className="mt-1 text-sm text-slate-600">{userLabel} • {roleLabel}</p>
             {driver ? <p className="mt-2 text-sm text-slate-700">Driver profile: {driver.display_name}</p> : null}
+            <div className="mt-3 inline-flex items-center rounded-full border border-cyan-200 bg-cyan-50 px-3 py-1 text-xs font-semibold uppercase tracking-[0.12em] text-cyan-900">
+              Instructions {instructionFeed.unreadCount}
+            </div>
           </header>
 
           {error ? (
@@ -251,6 +363,57 @@ export function DriverMobileDashboard() {
 
           {!isLoading && !isLoadingTasks && driver ? (
             <div className="mt-4 space-y-4">
+              <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                <h2 className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-700">Operational Instructions</h2>
+
+                {isLoadingInstructions ? (
+                  <p className="mt-3 text-sm text-slate-500">Loading instructions...</p>
+                ) : null}
+
+                {!isLoadingInstructions && instructionFeed.newestUnread ? (
+                  <article className="mt-3 rounded-xl border border-cyan-200 bg-cyan-50 p-3">
+                    <p className="text-xs font-semibold uppercase tracking-[0.14em] text-cyan-900">New Instruction</p>
+                    <p className="mt-2 text-sm font-semibold text-slate-900">{instructionFeed.newestUnread.instruction}</p>
+                    <p className="mt-1 text-xs text-slate-600">
+                      {formatTimestamp(instructionFeed.newestUnread.createdAt)}
+                      {instructionFeed.newestUnread.trailerNumber ? ` • ${instructionFeed.newestUnread.trailerNumber}` : ""}
+                    </p>
+                    <div className="mt-3 flex justify-end">
+                      <button
+                        type="button"
+                        onClick={() => void handleMarkInstructionRead(instructionFeed.newestUnread?.id ?? "")}
+                        disabled={instructionActionId === instructionFeed.newestUnread.id}
+                        className="rounded-xl bg-slate-900 px-3 py-2 text-xs font-semibold text-white disabled:bg-slate-400"
+                      >
+                        {instructionActionId === instructionFeed.newestUnread.id ? "Marking..." : "Mark Read"}
+                      </button>
+                    </div>
+                  </article>
+                ) : null}
+
+                {!isLoadingInstructions && !instructionFeed.newestUnread ? (
+                  <p className="mt-3 text-sm text-slate-500">No unread instructions.</p>
+                ) : null}
+
+                <div className="mt-3 border-t border-slate-200 pt-3">
+                  <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-600">Recent History</p>
+                  {instructionFeed.recent.length === 0 ? (
+                    <p className="mt-2 text-sm text-slate-500">No instruction history yet.</p>
+                  ) : (
+                    <div className="mt-2 space-y-2">
+                      {instructionFeed.recent.slice(0, 6).map((item) => (
+                        <article key={item.id} className="rounded-lg border border-slate-200 bg-slate-50 p-2">
+                          <p className="text-sm text-slate-900">{item.instruction}</p>
+                          <p className="mt-1 text-xs text-slate-600">
+                            {formatTimestamp(item.createdAt)} • {item.readAt ? `Read ${formatTimestamp(item.readAt)}` : "Unread"}
+                          </p>
+                        </article>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </section>
+
               {groupedTasks.map((group) => (
                 <section key={group.key} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
                   <div className="mb-3 flex items-center justify-between">
