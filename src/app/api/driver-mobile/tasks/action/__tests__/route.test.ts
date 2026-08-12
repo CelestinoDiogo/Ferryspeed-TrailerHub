@@ -153,4 +153,27 @@ describe("POST /api/driver-mobile/tasks/action", () => {
       temperatureC: 2.5,
     });
   });
+
+  it("accepts acknowledged payload for owned booking", async () => {
+    const { POST } = await importRoute();
+    const response = await POST(
+      makeRequest({
+        bookingId: "11111111-1111-4111-8111-111111111111",
+        action: "ACKNOWLEDGED",
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(applyDriverTaskActionMock).toHaveBeenCalledWith({
+      supabase: {},
+      user: {
+        id: "11111111-1111-4111-8111-111111111111",
+        email: "driver@example.com",
+        user_metadata: { full_name: "Driver One" },
+      },
+      bookingId: "11111111-1111-4111-8111-111111111111",
+      action: "ACKNOWLEDGED",
+      temperatureC: undefined,
+    });
+  });
 });

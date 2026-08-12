@@ -1,5 +1,6 @@
 import type { SupabaseClient, User } from "@supabase/supabase-js";
 import { describe, expect, it, vi } from "vitest";
+import { createTrailerActivity } from "@/lib/trailer-activity";
 import { applyDriverTaskAction, loadDriverMobileTasksForUser } from "@/lib/driver-mobile-service";
 import type { Database } from "@/lib/database.types";
 
@@ -40,6 +41,8 @@ type BookingRow = {
   demurrage_daily_rate: number | null;
   demurrage_currency: string | null;
   demurrage_notes: string | null;
+  driver_acknowledged_at?: string | null;
+  driver_acknowledged_by?: string | null;
   temperature_required?: boolean;
   collected_temperature_c?: number | null;
 };
@@ -334,7 +337,78 @@ describe("driver mobile service", () => {
     expect(result.driver?.id).toBe("driver-a");
     expect(result.tasks).toHaveLength(1);
     expect(result.tasks[0]?.bookingId).toBe("booking-a");
+    expect(result.tasks[0]?.nextAction).toBe("ACKNOWLEDGED");
     expect(result.tasks[0]?.temperature.required).toBe(false);
+  });
+
+  it("acknowledges owned booking once and keeps subsequent acknowledgements idempotent", async () => {
+    const driver: DriverRow = {
+      id: "driver-a",
+      user_id: "user-a",
+      display_name: "Driver A",
+      phone: null,
+      active: true,
+      created_at: "2026-08-11T00:00:00.000Z",
+      updated_at: "2026-08-11T00:00:00.000Z",
+    };
+
+    const booking: BookingRow = {
+      id: "booking-a",
+      trailer_id: "trailer-a",
+      driver_id: "driver-a",
+      delivery_date: "2026-08-11",
+      delivery_time: null,
+      customer: "Customer A",
+      consignee: null,
+      delivery_location: "Dock A",
+      booking_reference: "BK-A",
+      escort_required: false,
+      status: "scheduled",
+      notes: null,
+      created_at: "2026-08-11T00:00:00.000Z",
+      updated_at: "2026-08-11T00:00:00.000Z",
+      delivered_at: null,
+      waiting_collection_since: null,
+      collection_due_date: null,
+      collected_at: null,
+      demurrage_free_days: null,
+      demurrage_daily_rate: null,
+      demurrage_currency: null,
+      demurrage_notes: null,
+      driver_acknowledged_at: null,
+      driver_acknowledged_by: null,
+      temperature_required: false,
+      collected_temperature_c: null,
+    };
+
+    const { supabase, trailerEventsInsert } = createMockSupabase({
+      driver,
+      bookings: [booking],
+      trailers: [{ id: "trailer-a", trailer_number: "FS1001" }],
+    });
+
+    const createTrailerActivityMock = vi.mocked(createTrailerActivity);
+    createTrailerActivityMock.mockClear();
+
+    const first = await applyDriverTaskAction({
+      supabase,
+      user: makeUser("user-a"),
+      bookingId: "booking-a",
+      action: "ACKNOWLEDGED",
+    });
+
+    const second = await applyDriverTaskAction({
+      supabase,
+      user: makeUser("user-a"),
+      bookingId: "booking-a",
+      action: "ACKNOWLEDGED",
+    });
+
+    expect(first.driver_acknowledged_at).toBeTruthy();
+    expect(second.driver_acknowledged_at).toBe(first.driver_acknowledged_at);
+    expect(second.driver_acknowledged_by).toBe("user-a");
+    expect(trailerEventsInsert).toHaveBeenCalledTimes(1);
+    expect(createTrailerActivityMock).toHaveBeenCalledTimes(1);
   });
 
   it("rejects updates for booking outside authenticated driver ownership", async () => {
@@ -424,6 +498,8 @@ describe("driver mobile service", () => {
       demurrage_daily_rate: null,
       demurrage_currency: null,
       demurrage_notes: null,
+      driver_acknowledged_at: "2026-08-11T09:00:00.000Z",
+      driver_acknowledged_by: "user-a",
       temperature_required: false,
       collected_temperature_c: null,
     };
@@ -503,6 +579,119 @@ describe("driver mobile service", () => {
     ).rejects.toThrow("Temperature reading is required before marking this booking as collected.");
   });
 
+  it("blocks lifecycle action before acknowledgement is recorded", async () => {
+    const driver: DriverRow = {
+      id: "driver-a",
+      user_id: "user-a",
+      display_name: "Driver A",
+      phone: null,
+      active: true,
+      created_at: "2026-08-11T00:00:00.000Z",
+      updated_at: "2026-08-11T00:00:00.000Z",
+    };
+
+    const { supabase } = createMockSupabase({
+      driver,
+      bookings: [
+        {
+          id: "booking-a",
+          trailer_id: "trailer-a",
+          driver_id: "driver-a",
+          delivery_date: "2026-08-11",
+          delivery_time: null,
+          customer: "Customer A",
+          consignee: null,
+          delivery_location: "Dock A",
+          booking_reference: "BK-A",
+          escort_required: false,
+          status: "ready",
+          notes: null,
+          created_at: "2026-08-11T00:00:00.000Z",
+          updated_at: "2026-08-11T00:00:00.000Z",
+          delivered_at: null,
+          waiting_collection_since: null,
+          collection_due_date: null,
+          collected_at: null,
+          demurrage_free_days: null,
+          demurrage_daily_rate: null,
+          demurrage_currency: null,
+          demurrage_notes: null,
+          driver_acknowledged_at: null,
+          driver_acknowledged_by: null,
+          temperature_required: false,
+          collected_temperature_c: null,
+        },
+      ],
+      trailers: [{ id: "trailer-a", trailer_number: "FS1001" }],
+    });
+
+    await expect(
+      applyDriverTaskAction({
+        supabase,
+        user: makeUser("user-a"),
+        bookingId: "booking-a",
+        action: "COLLECTED",
+      }),
+    ).rejects.toThrow("Task must be acknowledged before lifecycle status updates.");
+  });
+
+  it("allows collected action without temperature for non-temperature bookings", async () => {
+    const driver: DriverRow = {
+      id: "driver-a",
+      user_id: "user-a",
+      display_name: "Driver A",
+      phone: null,
+      active: true,
+      created_at: "2026-08-11T00:00:00.000Z",
+      updated_at: "2026-08-11T00:00:00.000Z",
+    };
+
+    const { supabase } = createMockSupabase({
+      driver,
+      bookings: [
+        {
+          id: "booking-a",
+          trailer_id: "trailer-a",
+          driver_id: "driver-a",
+          delivery_date: "2026-08-11",
+          delivery_time: null,
+          customer: "Customer A",
+          consignee: null,
+          delivery_location: "Dock A",
+          booking_reference: "BK-A",
+          escort_required: false,
+          status: "ready",
+          notes: null,
+          created_at: "2026-08-11T00:00:00.000Z",
+          updated_at: "2026-08-11T00:00:00.000Z",
+          delivered_at: null,
+          waiting_collection_since: null,
+          collection_due_date: null,
+          collected_at: null,
+          demurrage_free_days: null,
+          demurrage_daily_rate: null,
+          demurrage_currency: null,
+          demurrage_notes: null,
+          driver_acknowledged_at: "2026-08-11T09:00:00.000Z",
+          driver_acknowledged_by: "user-a",
+          temperature_required: false,
+          collected_temperature_c: null,
+        },
+      ],
+      trailers: [{ id: "trailer-a", trailer_number: "FS1001" }],
+    });
+
+    const updated = await applyDriverTaskAction({
+      supabase,
+      user: makeUser("user-a"),
+      bookingId: "booking-a",
+      action: "COLLECTED",
+    });
+
+    expect(updated.status).toBe("on_delivery");
+    expect(updated.collected_temperature_c).toBeNull();
+  });
+
   it("rejects delivered action when prior state is not on_delivery", async () => {
     const driver: DriverRow = {
       id: "driver-a",
@@ -540,6 +729,8 @@ describe("driver mobile service", () => {
           demurrage_daily_rate: null,
           demurrage_currency: null,
           demurrage_notes: null,
+          driver_acknowledged_at: "2026-08-11T09:00:00.000Z",
+          driver_acknowledged_by: "user-a",
           temperature_required: false,
           collected_temperature_c: null,
         },

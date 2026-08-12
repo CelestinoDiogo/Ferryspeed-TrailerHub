@@ -38,6 +38,8 @@ const makeTask = (overrides?: Record<string, unknown>) => ({
   collectedAt: null,
   waitingCollectionSince: null,
   collectedTemperatureC: null,
+  driverAcknowledgedAt: null,
+  driverAcknowledgedBy: null,
   temperature: {
     required: false,
   },
@@ -92,6 +94,35 @@ describe("DriverMobileDashboard", () => {
     expect(screen.getByText("FS-A")).toBeInTheDocument();
     expect(screen.getByText("FS-B")).toBeInTheDocument();
     expect(screen.getByText("FS-C")).toBeInTheDocument();
+  });
+
+  it("shows acknowledge/read as the primary action for unacknowledged tasks", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            driver: { id: "driver-a", display_name: "Driver One", user_id: "user-a" },
+            tasks: [
+              makeTask({
+                bookingId: "ack-a",
+                trailerNumber: "FS-ACK",
+                status: "scheduled",
+                nextAction: "ACKNOWLEDGED",
+                driverAcknowledgedAt: null,
+                driverAcknowledgedBy: null,
+              }),
+            ],
+          }),
+          { status: 200 },
+        ),
+      ),
+    );
+
+    render(<DriverMobileDashboard />);
+
+    expect(await screen.findByText("FS-ACK")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Acknowledge / Read" })).toBeInTheDocument();
   });
 
   it("shows temperature input only for temperature-controlled tasks", async () => {

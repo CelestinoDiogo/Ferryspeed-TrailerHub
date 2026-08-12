@@ -16,7 +16,7 @@ export default function OfflinePage() {
 
         <div className="rounded-3xl border border-white/10 bg-slate-950/40 p-4 text-sm text-slate-200">
           <p>Previously loaded Master Mobile screens may still show limited local state.</p>
-          <p className="mt-2">Queued actions will sync automatically when connectivity returns.</p>
+          <p className="mt-2">Driver and operational status actions require an online connection and are not queued offline yet.</p>
           <p className="mt-2 text-slate-400">Do not assume server data shown while offline is current.</p>
         </div>
 

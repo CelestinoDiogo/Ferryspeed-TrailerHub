@@ -7,14 +7,14 @@ type RouteSupabase = SupabaseClient<Database>;
 type DeliveryBookingRow = Database["public"]["Tables"]["delivery_bookings"]["Row"];
 
 const driverBookingSelect =
-  "id, trailer_id, driver_id, delivery_date, delivery_time, customer, consignee, delivery_location, booking_reference, escort_required, status, notes, created_at, updated_at, delivered_at, waiting_collection_since, collection_due_date, collected_at, demurrage_free_days, demurrage_daily_rate, demurrage_currency, demurrage_notes, temperature_required, collected_temperature_c";
+  "id, trailer_id, driver_id, delivery_date, delivery_time, customer, consignee, delivery_location, booking_reference, escort_required, status, notes, created_at, updated_at, delivered_at, waiting_collection_since, collection_due_date, collected_at, demurrage_free_days, demurrage_daily_rate, demurrage_currency, demurrage_notes, driver_acknowledged_at, driver_acknowledged_by, temperature_required, collected_temperature_c";
 
 type TrailerRow = Pick<
   Database["public"]["Tables"]["trailers"]["Row"],
   "id" | "trailer_number"
 >;
 
-export type DriverTaskAction = "COLLECTED" | "DELIVERED";
+export type DriverTaskAction = "ACKNOWLEDGED" | "COLLECTED" | "DELIVERED";
 export type DriverTaskGroup = "current" | "upcoming" | "completed";
 
 export type DriverMobileTask = {
@@ -34,6 +34,8 @@ export type DriverMobileTask = {
   collectedAt: string | null;
   waitingCollectionSince: string | null;
   collectedTemperatureC: number | null;
+  driverAcknowledgedAt: string | null;
+  driverAcknowledgedBy: string | null;
   temperature: {
     required: boolean;
   };
@@ -75,7 +77,7 @@ const toDriverTaskGroup = (status: string): DriverTaskGroup => {
   return "current";
 };
 
-const toDriverNextAction = (status: string): DriverTaskAction | null => {
+const toDriverLifecycleAction = (status: string): Exclude<DriverTaskAction, "ACKNOWLEDGED"> | null => {
   const normalized = normalizeStatus(status);
 
   if (normalized === "scheduled" || normalized === "ready" || normalized === "waiting_collection") {
@@ -87,6 +89,19 @@ const toDriverNextAction = (status: string): DriverTaskAction | null => {
   }
 
   return null;
+};
+
+const toDriverNextAction = (booking: DeliveryBookingRow): DriverTaskAction | null => {
+  const lifecycleAction = toDriverLifecycleAction(booking.status);
+  if (!lifecycleAction) {
+    return null;
+  }
+
+  if (!booking.driver_acknowledged_at) {
+    return "ACKNOWLEDGED";
+  }
+
+  return lifecycleAction;
 };
 
 const buildTransition = (booking: DeliveryBookingRow, action: DriverTaskAction, nowIso: string): DriverTransition => {
@@ -151,11 +166,13 @@ const toTask = (booking: DeliveryBookingRow, trailerNumber: string): DriverMobil
     deliveryDate: booking.delivery_date,
     deliveryTime: booking.delivery_time,
     group: toDriverTaskGroup(booking.status),
-    nextAction: toDriverNextAction(booking.status),
+    nextAction: toDriverNextAction(booking),
     deliveredAt: booking.delivered_at,
     collectedAt: booking.collected_at,
     waitingCollectionSince: booking.waiting_collection_since,
     collectedTemperatureC: booking.collected_temperature_c,
+    driverAcknowledgedAt: booking.driver_acknowledged_at,
+    driverAcknowledgedBy: booking.driver_acknowledged_by,
     temperature: {
       required: Boolean(booking.temperature_required),
     },
@@ -240,10 +257,82 @@ export async function applyDriverTaskAction(input: {
   }
 
   const row = booking as DeliveryBookingRow;
+  if (input.action === "ACKNOWLEDGED") {
+    if (row.driver_acknowledged_at) {
+      return row;
+    }
+
+    const nowIso = new Date().toISOString();
+    const patch: Database["public"]["Tables"]["delivery_bookings"]["Update"] = {
+      driver_acknowledged_at: nowIso,
+      driver_acknowledged_by: input.user.id,
+      updated_at: nowIso,
+    };
+
+    const { data: acknowledgedBooking, error: acknowledgeError } = await input.supabase
+      .from("delivery_bookings")
+      .update(patch)
+      .eq("id", row.id)
+      .eq("driver_id", driver.id)
+      .select(driverBookingSelect)
+      .maybeSingle();
+
+    if (acknowledgeError || !acknowledgedBooking) {
+      throw new Error(acknowledgeError?.message || "Unable to acknowledge task.");
+    }
+
+    const operatorName = resolveOperatorName(input.user);
+    const trailerNumber = await resolveTrailerNumberForBooking(input.supabase, row);
+    const eventMetadata = {
+      previous_status: row.status,
+      next_status: row.status,
+      driver_id: driver.id,
+      user_id: input.user.id,
+      action: "ACKNOWLEDGED",
+      acknowledged_at: nowIso,
+    };
+
+    const { error: insertEventError } = await input.supabase.from("trailer_events").insert({
+      trailer_id: row.trailer_id,
+      trailer_number: trailerNumber,
+      event_type: "driver_task_acknowledged",
+      event_description: "Driver acknowledged assigned delivery task.",
+      old_value: { driver_acknowledged_at: null },
+      new_value: eventMetadata,
+      created_by: operatorName,
+    });
+
+    if (insertEventError) {
+      throw new Error(insertEventError.message || "Unable to create driver acknowledgment trailer event.");
+    }
+
+    await createTrailerActivity({
+      supabaseClient: input.supabase,
+      trailerId: row.trailer_id,
+      trailerNumber,
+      eventType: "driver_task_acknowledged",
+      eventTitle: "Driver acknowledged task",
+      eventDescription: `Delivery booking ${row.booking_reference ?? row.id} acknowledged by assigned driver.`,
+      sourceModule: "delivery",
+      sourceRecordId: row.id,
+      previousStatus: row.status,
+      newStatus: row.status,
+      metadata: eventMetadata,
+      performedBy: operatorName,
+      createdAt: nowIso,
+    });
+
+    return acknowledgedBooking as DeliveryBookingRow;
+  }
+
   if (input.action === "COLLECTED" && row.temperature_required) {
     if (typeof input.temperatureC !== "number" || !Number.isFinite(input.temperatureC)) {
       throw new Error("Temperature reading is required before marking this booking as collected.");
     }
+  }
+
+  if (!row.driver_acknowledged_at) {
+    throw new Error("Task must be acknowledged before lifecycle status updates.");
   }
 
   const nowIso = new Date().toISOString();

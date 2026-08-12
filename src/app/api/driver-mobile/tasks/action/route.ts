@@ -12,7 +12,7 @@ export const runtime = "nodejs";
 
 const requestSchema = z.object({
   bookingId: z.string().uuid(),
-  action: z.enum(["COLLECTED", "DELIVERED"]),
+  action: z.enum(["ACKNOWLEDGED", "COLLECTED", "DELIVERED"]),
   temperatureC: z.number().finite().min(-60).max(60).optional(),
 });
 

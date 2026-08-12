@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import { isStandaloneDisplay, resolvePostLoginPath } from "@/lib/pwa/install-state";
@@ -33,6 +33,32 @@ function LoginContent() {
     [returnTo],
   );
 
+  const resolveRoleAwarePostLoginPath = useCallback(async () => {
+    const safeReturnTo = returnTo?.trim();
+    if (safeReturnTo && safeReturnTo.startsWith("/")) {
+      return safeReturnTo;
+    }
+
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (user?.id) {
+      const { data: roleRow } = await supabase
+        .from("app_user_roles")
+        .select("role_key, is_active")
+        .eq("user_id", user.id)
+        .maybeSingle();
+
+      const roleKey = typeof roleRow?.role_key === "string" ? roleRow.role_key.trim().toLowerCase() : "";
+      if (roleKey === "driver" && roleRow?.is_active !== false) {
+        return "/dashboard/driver";
+      }
+    }
+
+    return postLoginPath;
+  }, [postLoginPath, returnTo]);
+
   const canSubmit = useMemo(() => {
     return !isCheckingSession && !isSubmitting && email.trim().length > 0 && password.length > 0;
   }, [email, isCheckingSession, isSubmitting, password]);
@@ -52,7 +78,8 @@ function LoginContent() {
       }
 
       if (data.session?.access_token) {
-        router.replace(postLoginPath);
+        const targetPath = await resolveRoleAwarePostLoginPath();
+        router.replace(targetPath);
         router.refresh();
         return;
       }
@@ -68,8 +95,11 @@ function LoginContent() {
       }
 
       if (event === "SIGNED_IN" && session?.access_token) {
-        router.replace(postLoginPath);
-        router.refresh();
+        void (async () => {
+          const targetPath = await resolveRoleAwarePostLoginPath();
+          router.replace(targetPath);
+          router.refresh();
+        })();
       }
     });
 
@@ -79,7 +109,7 @@ function LoginContent() {
       active = false;
       subscription.unsubscribe();
     };
-  }, [postLoginPath, router]);
+  }, [postLoginPath, returnTo, resolveRoleAwarePostLoginPath, router]);
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -113,7 +143,8 @@ function LoginContent() {
         return;
       }
 
-      router.replace(postLoginPath);
+      const targetPath = await resolveRoleAwarePostLoginPath();
+      router.replace(targetPath);
       router.refresh();
     } catch {
       setError(UNEXPECTED_SIGN_IN_MESSAGE);

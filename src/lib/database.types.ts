@@ -297,6 +297,8 @@ export type Database = {
           demurrage_daily_rate: number | null;
           demurrage_currency: string | null;
           demurrage_notes: string | null;
+          driver_acknowledged_at: string | null;
+          driver_acknowledged_by: string | null;
           temperature_required: boolean;
           collected_temperature_c: number | null;
         };

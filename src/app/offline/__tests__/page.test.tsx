@@ -10,7 +10,7 @@ describe("OfflinePage", () => {
     render(<OfflinePage />);
 
     expect(screen.getByRole("heading", { name: "You are offline" })).toBeInTheDocument();
-    expect(screen.getByText("Queued actions will sync automatically when connectivity returns.")).toBeInTheDocument();
+    expect(screen.getByText("Driver and operational status actions require an online connection and are not queued offline yet.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Open Master Mobile" })).toHaveAttribute("href", "/dashboard/mobile");
   });

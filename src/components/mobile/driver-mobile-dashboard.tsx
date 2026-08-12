@@ -31,7 +31,13 @@ const toStatusLabel = (value: string) => {
     .join(" ");
 };
 
-const toActionLabel = (action: DriverTaskAction) => (action === "COLLECTED" ? "Mark Collected" : "Mark Delivered");
+const toActionLabel = (action: DriverTaskAction) => {
+  if (action === "ACKNOWLEDGED") {
+    return "Acknowledge / Read";
+  }
+
+  return action === "COLLECTED" ? "Mark Collected" : "Mark Delivered";
+};
 
 const formatDeliveryDate = (date: string, time: string | null) => {
   const value = time ? `${date}T${time}` : `${date}T00:00:00`;
@@ -39,6 +45,24 @@ const formatDeliveryDate = (date: string, time: string | null) => {
 
   if (Number.isNaN(parsed.getTime())) {
     return date;
+  }
+
+  return parsed.toLocaleString("en-GB", {
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+};
+
+const formatTimestamp = (value: string | null) => {
+  if (!value) {
+    return "No";
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
   }
 
   return parsed.toLocaleString("en-GB", {
@@ -254,6 +278,10 @@ export function DriverMobileDashboard() {
                             <dl className="mt-3 grid grid-cols-1 gap-1 text-sm text-slate-700">
                               <div>
                                 <dt className="inline font-medium">Delivery:</dt> <dd className="inline">{formatDeliveryDate(task.deliveryDate, task.deliveryTime)}</dd>
+                              </div>
+                              <div>
+                                <dt className="inline font-medium">Acknowledged:</dt>{" "}
+                                <dd className="inline">{formatTimestamp(task.driverAcknowledgedAt)}</dd>
                               </div>
                               <div>
                                 <dt className="inline font-medium">Location:</dt> <dd className="inline">{task.location || "-"}</dd>
