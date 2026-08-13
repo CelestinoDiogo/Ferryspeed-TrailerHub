@@ -7,6 +7,7 @@ export type DriverMobileQueuedAction = {
   id: string;
   bookingId: string;
   action: DriverTaskAction;
+  linkedInstructionIds: string[];
   temperatureC: number | null;
   createdAt: string;
   retryCount: number;
@@ -86,11 +87,15 @@ export const coerceDriverMobileQueuedAction = (value: unknown): DriverMobileQueu
   const temperatureC = typeof row.temperatureC === "number" && Number.isFinite(row.temperatureC)
     ? row.temperatureC
     : null;
+  const linkedInstructionIds = Array.isArray(row.linkedInstructionIds)
+    ? row.linkedInstructionIds.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    : [];
 
   return {
     id: toStringOrNull(row.id) ?? `driver-mobile-action-${nowIso}-${Math.random().toString(16).slice(2)}`,
     bookingId,
     action,
+    linkedInstructionIds,
     temperatureC,
     createdAt: toIsoString(row.createdAt, nowIso),
     retryCount: toRetryCount(row.retryCount),
@@ -104,6 +109,7 @@ export const coerceDriverMobileQueuedAction = (value: unknown): DriverMobileQueu
 export const createDriverMobileQueuedAction = (input: {
   bookingId: string;
   action: DriverTaskAction;
+  linkedInstructionIds?: string[];
   temperatureC?: number | null;
 }): DriverMobileQueuedAction => {
   const nowIso = new Date().toISOString();
@@ -112,6 +118,7 @@ export const createDriverMobileQueuedAction = (input: {
     id: globalThis.crypto?.randomUUID?.() ?? `driver-mobile-action-${nowIso}-${Math.random().toString(16).slice(2)}`,
     bookingId: input.bookingId,
     action: input.action,
+    linkedInstructionIds: (input.linkedInstructionIds ?? []).filter((item) => item.trim().length > 0),
     temperatureC: typeof input.temperatureC === "number" && Number.isFinite(input.temperatureC) ? input.temperatureC : null,
     createdAt: nowIso,
     retryCount: 0,

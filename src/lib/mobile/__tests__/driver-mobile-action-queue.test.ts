@@ -59,10 +59,12 @@ describe("driver mobile action queue", () => {
     const item = createDriverMobileQueuedAction({
       bookingId: "booking-a",
       action: "ACKNOWLEDGED",
+      linkedInstructionIds: ["instruction-a"],
     });
 
     saveDriverMobileActionQueue([item]);
     expect(loadDriverMobileActionQueue()).toEqual([item]);
+    expect(loadDriverMobileActionQueue()[0]?.linkedInstructionIds).toEqual(["instruction-a"]);
 
     window.localStorage.setItem(STORAGE_KEY, "{");
     expect(loadDriverMobileActionQueue()).toEqual([]);

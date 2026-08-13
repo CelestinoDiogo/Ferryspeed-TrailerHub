@@ -6,6 +6,7 @@ import { LogOut } from "lucide-react";
 import { PermissionGuard } from "@/components/auth/permission-guard";
 import { toRoleLabel, type RoleKey } from "@/lib/auth/roles";
 import { useCurrentUser } from "@/lib/auth/use-current-user";
+import { useOperationalRealtime } from "@/lib/realtime/operational-realtime";
 import { supabase } from "@/lib/supabase";
 import { type DriverMobileTask, type DriverTaskAction } from "@/lib/driver-mobile-service";
 import {
@@ -34,6 +35,25 @@ type DriverTaskResponse = {
     user_id: string;
   } | null;
   tasks: DriverMobileTask[];
+};
+
+type DriverInstructionRecord = {
+  id: string;
+  deliveryBookingId: string | null;
+  trailerId: string | null;
+  trailerNumber: string | null;
+  instruction: string;
+  priority: "normal" | "high" | "critical";
+  senderDisplayName: string | null;
+  createdAt: string;
+  readAt: string | null;
+  isRead: boolean;
+};
+
+type DriverInstructionFeed = {
+  unreadCount: number;
+  newestUnread: DriverInstructionRecord | null;
+  recent: DriverInstructionRecord[];
 };
 
 const toStatusLabel = (value: string) =>
@@ -96,6 +116,30 @@ const actionLabel = (action: DriverTaskAction) => {
   return "ENTREGUE / DELIVERED";
 };
 
+const toInstructionPriorityTone = (priority: DriverInstructionRecord["priority"]) => {
+  if (priority === "critical") {
+    return "border-rose-300 bg-rose-50 text-rose-900";
+  }
+
+  if (priority === "high") {
+    return "border-amber-300 bg-amber-50 text-amber-900";
+  }
+
+  return "border-cyan-300 bg-cyan-50 text-cyan-900";
+};
+
+const matchesInstructionToTask = (instruction: DriverInstructionRecord, task: DriverMobileTask) => {
+  if (instruction.deliveryBookingId && instruction.deliveryBookingId === task.bookingId) {
+    return true;
+  }
+
+  if (instruction.trailerId && instruction.trailerId === task.trailerId) {
+    return true;
+  }
+
+  return false;
+};
+
 const queuedActionMessage = (queuedAction: DriverMobileQueuedAction | null) => {
   if (!queuedAction) {
     return null;
@@ -141,19 +185,31 @@ export function DriverMobileJobsDashboard() {
   const [serverTasks, setServerTasks] = useState<DriverMobileTask[]>([]);
   const [queuedActions, setQueuedActions] = useState<DriverMobileQueuedAction[]>(() => loadDriverMobileActionQueue());
   const [isLoadingTasks, setIsLoadingTasks] = useState(true);
+  const [instructionFeed, setInstructionFeed] = useState<DriverInstructionFeed>({
+    unreadCount: 0,
+    newestUnread: null,
+    recent: [],
+  });
+  const [isLoadingInstructions, setIsLoadingInstructions] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [isSigningOut, setIsSigningOut] = useState(false);
+  const [instructionActionId, setInstructionActionId] = useState<string | null>(null);
   const [temperatureByBookingId, setTemperatureByBookingId] = useState<Record<string, string>>({});
   const [isOnline, setIsOnline] = useState(() => (typeof window === "undefined" ? true : window.navigator.onLine));
   const queueSyncingRef = useRef(false);
   const actionLocksRef = useRef(new Set<string>());
   const queuedActionsRef = useRef(queuedActions);
+  const instructionFeedRef = useRef(instructionFeed);
 
   useEffect(() => {
     queuedActionsRef.current = queuedActions;
     saveDriverMobileActionQueue(queuedActions);
   }, [queuedActions]);
+
+  useEffect(() => {
+    instructionFeedRef.current = instructionFeed;
+  }, [instructionFeed]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -210,11 +266,64 @@ export function DriverMobileJobsDashboard() {
     }
   }, []);
 
+  const loadInstructions = useCallback(async (withLoading = true) => {
+    if (withLoading) {
+      setIsLoadingInstructions(true);
+    }
+
+    try {
+      const token = await getSessionToken();
+      const response = await fetch("/api/driver-mobile/instructions?limit=20", {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      const payload = (await response.json().catch(() => ({}))) as Partial<DriverInstructionFeed> & { error?: string };
+      if (!response.ok) {
+        throw new Error(payload.error || "Unable to load operational instructions.");
+      }
+
+      const recent = Array.isArray(payload.recent) ? payload.recent : [];
+      setInstructionFeed({
+        unreadCount: typeof payload.unreadCount === "number" ? payload.unreadCount : recent.filter((item) => !item.readAt).length,
+        newestUnread: payload.newestUnread ?? recent.find((item) => !item.readAt) ?? null,
+        recent,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unable to load operational instructions.";
+      setError(message === SESSION_EXPIRED_MESSAGE ? SESSION_EXPIRED_MESSAGE : message);
+      setInstructionFeed({
+        unreadCount: 0,
+        newestUnread: null,
+        recent: [],
+      });
+    } finally {
+      if (withLoading) {
+        setIsLoadingInstructions(false);
+      }
+    }
+  }, []);
+
   useEffect(() => {
     // Initial fetch runs once on mount to populate assigned jobs.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void loadTasks();
   }, [loadTasks]);
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      void loadInstructions();
+    }, 0);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [loadInstructions]);
+
+  useOperationalRealtime(["dashboard"], () => {
+    void loadTasks(false);
+    void loadInstructions(false);
+  }, { debounceMs: 700 });
 
   const clearActionLock = useCallback((bookingId: string) => {
     actionLocksRef.current.delete(bookingId);
@@ -243,6 +352,29 @@ export function DriverMobileJobsDashboard() {
     return payload;
   }, []);
 
+  const markInstructionRead = useCallback(async (instructionId: string) => {
+    const token = await getSessionToken();
+    const response = await fetch("/api/driver-mobile/instructions/read", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ instructionId }),
+    });
+
+    const payload = (await response.json().catch(() => ({}))) as { error?: string };
+    if (!response.ok) {
+      throw new Error(payload.error || "Unable to acknowledge instruction.");
+    }
+  }, []);
+
+  const markLinkedInstructionsRead = useCallback(async (instructionIds: string[]) => {
+    for (const instructionId of instructionIds) {
+      await markInstructionRead(instructionId);
+    }
+  }, [markInstructionRead]);
+
   const submitQueuedAction = useCallback(async (queuedAction: DriverMobileQueuedAction, source: "direct" | "queue") => {
     if (source === "queue") {
       if (queueSyncingRef.current) {
@@ -269,11 +401,16 @@ export function DriverMobileJobsDashboard() {
         nextRetryAt: null,
       });
 
+      if (queuedAction.action === "ACKNOWLEDGED" && queuedAction.linkedInstructionIds.length > 0) {
+        await markLinkedInstructionsRead(queuedAction.linkedInstructionIds);
+      }
+
       setQueuedActions((current) => removeDriverMobileQueuedAction(current, queuedAction.id));
       setSuccess(`${source === "queue" ? "Completed" : `${queuedAction.action === "ACKNOWLEDGED" ? "Acknowledged" : "Updated"}`} - ${queuedAction.bookingId.slice(0, 8)}`);
       setError(null);
       clearActionLock(queuedAction.bookingId);
       await loadTasks(false);
+      await loadInstructions(false);
     } catch (err) {
       if (isDriverMobileNetworkFailure(err)) {
         const nextRetryCount = queuedAction.retryCount + 1;
@@ -323,7 +460,7 @@ export function DriverMobileJobsDashboard() {
         queueSyncingRef.current = false;
       }
     }
-  }, [clearActionLock, isOnline, loadTasks, postAction]);
+  }, [clearActionLock, isOnline, loadInstructions, loadTasks, markLinkedInstructionsRead, postAction]);
 
   useEffect(() => {
     if (!isOnline) {
@@ -374,9 +511,14 @@ export function DriverMobileJobsDashboard() {
       return;
     }
 
+    const linkedInstructionIds = instructionFeedRef.current.recent
+      .filter((instruction) => matchesInstructionToTask(instruction, task) && !instruction.readAt)
+      .map((instruction) => instruction.id);
+
     const queuedAction = createDriverMobileQueuedAction({
       bookingId: task.bookingId,
       action: task.nextAction,
+      linkedInstructionIds,
       temperatureC: requiresTemperature && Number.isFinite(parsedTemperature) ? parsedTemperature : null,
     });
 
@@ -387,6 +529,33 @@ export function DriverMobileJobsDashboard() {
     setTemperatureByBookingId((current) => ({ ...current, [task.bookingId]: "" }));
     void submitQueuedAction(queuedAction, "direct");
   }, [submitQueuedAction, temperatureByBookingId]);
+
+  const handleAcknowledgeInstruction = useCallback(async (instruction: DriverInstructionRecord) => {
+    if (instructionActionId) {
+      return;
+    }
+
+    const linkedTask = serverTasks.find((task) => matchesInstructionToTask(instruction, task)) ?? null;
+    if (linkedTask && linkedTask.nextAction === "ACKNOWLEDGED") {
+      await handleAction(linkedTask);
+      return;
+    }
+
+    setInstructionActionId(instruction.id);
+    setError(null);
+    setSuccess(null);
+
+    try {
+      await markInstructionRead(instruction.id);
+      setSuccess("Instruction acknowledged.");
+      await loadInstructions(false);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unable to acknowledge instruction.";
+      setError(message === SESSION_EXPIRED_MESSAGE ? SESSION_EXPIRED_MESSAGE : message);
+    } finally {
+      setInstructionActionId(null);
+    }
+  }, [handleAction, instructionActionId, loadInstructions, markInstructionRead, serverTasks]);
 
   const handleRetryQueuedAction = useCallback(async (queuedAction: DriverMobileQueuedAction) => {
     if (actionLocksRef.current.has(queuedAction.bookingId)) {
@@ -414,9 +583,67 @@ export function DriverMobileJobsDashboard() {
 
   const tasks = useMemo(() => applyDriverMobileQueuedActions(serverTasks, queuedActions), [queuedActions, serverTasks]);
 
+  const acknowledgedInstructionIds = useMemo(() => {
+    return new Set(
+      queuedActions
+        .filter((item) => item.action === "ACKNOWLEDGED" && (item.state === "pending" || item.state === "syncing"))
+        .flatMap((item) => item.linkedInstructionIds),
+    );
+  }, [queuedActions]);
+
+  const effectiveInstructions = useMemo<DriverInstructionFeed>(() => {
+    const recent = instructionFeed.recent.map((instruction) => {
+      if (!instruction.readAt && acknowledgedInstructionIds.has(instruction.id)) {
+        return {
+          ...instruction,
+          readAt: new Date().toISOString(),
+          isRead: true,
+        };
+      }
+
+      return {
+        ...instruction,
+        isRead: Boolean(instruction.readAt),
+      };
+    });
+
+    return {
+      unreadCount: recent.filter((instruction) => !instruction.readAt).length,
+      newestUnread: recent.find((instruction) => !instruction.readAt) ?? null,
+      recent,
+    };
+  }, [acknowledgedInstructionIds, instructionFeed]);
+
   const queuedActionByBookingId = useMemo(() => {
     return new Map(queuedActions.map((item) => [item.bookingId, item]));
   }, [queuedActions]);
+
+  const linkedInstructionsByBookingId = useMemo(() => {
+    const map = new Map<string, DriverInstructionRecord[]>();
+
+    effectiveInstructions.recent.forEach((instruction) => {
+      const key = instruction.deliveryBookingId ?? instruction.trailerId;
+      if (!key) {
+        return;
+      }
+
+      const current = map.get(key) ?? [];
+      current.push(instruction);
+      map.set(key, current);
+    });
+
+    map.forEach((items, key) => {
+      map.set(key, [...items].sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime()));
+    });
+
+    return map;
+  }, [effectiveInstructions]);
+
+  const standaloneInstructions = useMemo(() => {
+    return effectiveInstructions.recent
+      .filter((instruction) => !instruction.deliveryBookingId)
+      .sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime());
+  }, [effectiveInstructions]);
 
   const grouped = useMemo(() => {
     const toDo = tasks.filter((task) =>
@@ -504,6 +731,8 @@ export function DriverMobileJobsDashboard() {
             const collectionAging = task.collectionAging;
             const completedAt = task.deliveredAt ?? task.collectedAt;
             const queueMessage = queuedActionMessage(queuedAction);
+            const linkedInstructions = linkedInstructionsByBookingId.get(task.bookingId) ?? linkedInstructionsByBookingId.get(task.trailerId) ?? [];
+            const activeInstruction = linkedInstructions[0] ?? null;
 
             return (
               <article key={task.bookingId} className="rounded-xl border border-slate-200 bg-slate-50/80 p-3">
@@ -523,6 +752,34 @@ export function DriverMobileJobsDashboard() {
                   <p><span className="font-medium">Acknowledged:</span> {task.driverAcknowledgedAt ? formatCompletedTime(task.driverAcknowledgedAt) : "No"}</p>
                   {completedAt ? <p><span className="font-medium">Completed:</span> {formatCompletedTime(completedAt)}</p> : null}
                 </div>
+
+                {activeInstruction ? (
+                  <div className={`mt-3 rounded-xl border px-3 py-3 ${toInstructionPriorityTone(activeInstruction.priority)}`}>
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.16em]">Instruction</p>
+                    <p className="mt-1 text-sm font-semibold">{activeInstruction.instruction}</p>
+                    <p className="mt-1 text-xs">
+                      Sent {formatCompletedTime(activeInstruction.createdAt)}
+                      {activeInstruction.readAt ? ` • Acknowledged ${formatCompletedTime(activeInstruction.readAt)}` : " • Acknowledge pending"}
+                    </p>
+                    {!activeInstruction.readAt && task.nextAction === "ACKNOWLEDGED" ? (
+                      <p className="mt-2 text-xs font-medium">Acknowledge this job to confirm the instruction.</p>
+                    ) : null}
+                    {!activeInstruction.readAt && task.nextAction !== "ACKNOWLEDGED" ? (
+                      <div className="mt-2 flex justify-end">
+                        <button
+                          type="button"
+                          disabled={instructionActionId === activeInstruction.id}
+                          onClick={() => {
+                            void handleAcknowledgeInstruction(activeInstruction);
+                          }}
+                          className="rounded-lg bg-slate-900 px-3 py-2 text-xs font-semibold text-white disabled:bg-slate-400"
+                        >
+                          {instructionActionId === activeInstruction.id ? "Acknowledging..." : "ACKNOWLEDGE"}
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
 
                 {showAging && collectionAging ? (
                   <div className={`mt-3 rounded-xl border px-3 py-2 text-xs font-semibold ${agingTone(collectionAging.level)}`}>
@@ -632,6 +889,51 @@ export function DriverMobileJobsDashboard() {
 
           {!isLoading && !isLoadingTasks && driver ? (
             <div className="mt-4 space-y-4">
+              <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                <div className="flex items-center justify-between gap-3">
+                  <h2 className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-700">Operational Instructions</h2>
+                  <span className="rounded-full border border-cyan-200 bg-cyan-50 px-2 py-1 text-xs font-semibold text-cyan-900">
+                    {effectiveInstructions.unreadCount} unread
+                  </span>
+                </div>
+
+                {isLoadingInstructions ? <p className="mt-3 text-sm text-slate-500">Loading instructions...</p> : null}
+
+                {!isLoadingInstructions && standaloneInstructions.length === 0 && !effectiveInstructions.newestUnread ? (
+                  <p className="mt-3 text-sm text-slate-500">No standalone instructions right now.</p>
+                ) : null}
+
+                {!isLoadingInstructions && standaloneInstructions.length > 0 ? (
+                  <div className="mt-3 space-y-3">
+                    {standaloneInstructions.slice(0, 4).map((instruction) => (
+                      <article key={instruction.id} className={`rounded-xl border px-3 py-3 ${toInstructionPriorityTone(instruction.priority)}`}>
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.16em]">Instruction Only</p>
+                        <p className="mt-1 text-sm font-semibold">{instruction.instruction}</p>
+                        <p className="mt-1 text-xs">
+                          Sent {formatCompletedTime(instruction.createdAt)}
+                          {instruction.trailerNumber ? ` • ${instruction.trailerNumber}` : ""}
+                          {instruction.readAt ? ` • Acknowledged ${formatCompletedTime(instruction.readAt)}` : " • Acknowledge pending"}
+                        </p>
+                        {!instruction.readAt ? (
+                          <div className="mt-3 flex justify-end">
+                            <button
+                              type="button"
+                              disabled={instructionActionId === instruction.id}
+                              onClick={() => {
+                                void handleAcknowledgeInstruction(instruction);
+                              }}
+                              className="rounded-xl bg-slate-900 px-3 py-2 text-xs font-semibold text-white disabled:bg-slate-400"
+                            >
+                              {instructionActionId === instruction.id ? "Acknowledging..." : "ACKNOWLEDGE"}
+                            </button>
+                          </div>
+                        ) : null}
+                      </article>
+                    ))}
+                  </div>
+                ) : null}
+              </section>
+
               {renderSection("To Do", grouped.toDo)}
               {renderSection("In Progress", grouped.inProgress)}
               {renderSection("Completed Today", grouped.completedToday)}
