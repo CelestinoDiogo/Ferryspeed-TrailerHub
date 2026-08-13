@@ -56,6 +56,18 @@ type DriverInstructionFeed = {
   recent: DriverInstructionRecord[];
 };
 
+type OverlayAlertSeverity = "yellow" | "red";
+
+type OverlayAlertCandidate = {
+  key: string;
+  kind: "instruction" | "task";
+  severity: OverlayAlertSeverity;
+  createdAt: string;
+  label: "NEW INSTRUCTION" | "NEW MESSAGE" | "NEW ASSIGNMENT";
+  instruction: DriverInstructionRecord | null;
+  task: DriverMobileTask | null;
+};
+
 const toStatusLabel = (value: string) =>
   value
     .split("_")
@@ -160,6 +172,38 @@ const queuedActionMessage = (queuedAction: DriverMobileQueuedAction | null) => {
   return "Could not finish";
 };
 
+const INSTRUCTION_ACK_QUEUE_KEY = "trailerhub.driver-mobile.instruction-ack-queue.v1";
+
+const loadPendingInstructionAcks = () => {
+  if (typeof window === "undefined") {
+    return [] as string[];
+  }
+
+  const raw = window.localStorage.getItem(INSTRUCTION_ACK_QUEUE_KEY);
+  if (!raw) {
+    return [] as string[];
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) {
+      return [] as string[];
+    }
+
+    return parsed.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+  } catch {
+    return [] as string[];
+  }
+};
+
+const savePendingInstructionAcks = (ids: string[]) => {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.localStorage.setItem(INSTRUCTION_ACK_QUEUE_KEY, JSON.stringify(ids));
+};
+
 const supportsVibration = () => {
   if (typeof window === "undefined") {
     return false;
@@ -224,6 +268,8 @@ export function DriverMobileJobsDashboard() {
   const [attentionAlert, setAttentionAlert] = useState<string | null>(null);
   const [isSigningOut, setIsSigningOut] = useState(false);
   const [instructionActionId, setInstructionActionId] = useState<string | null>(null);
+  const [pendingInstructionAckIds, setPendingInstructionAckIds] = useState<string[]>(() => loadPendingInstructionAcks());
+  const [failedInstructionAckIds, setFailedInstructionAckIds] = useState<string[]>([]);
   const [temperatureByBookingId, setTemperatureByBookingId] = useState<Record<string, string>>({});
   const [isOnline, setIsOnline] = useState(() => (typeof window === "undefined" ? true : window.navigator.onLine));
   const queueSyncingRef = useRef(false);
@@ -241,6 +287,10 @@ export function DriverMobileJobsDashboard() {
     queuedActionsRef.current = queuedActions;
     saveDriverMobileActionQueue(queuedActions);
   }, [queuedActions]);
+
+  useEffect(() => {
+    savePendingInstructionAcks(pendingInstructionAckIds);
+  }, [pendingInstructionAckIds]);
 
   useEffect(() => {
     instructionFeedRef.current = instructionFeed;
@@ -287,7 +337,7 @@ export function DriverMobileJobsDashboard() {
       window.removeEventListener("online", handleOnline);
       window.removeEventListener("offline", handleOffline);
     };
-  }, [raiseAttentionAlert]);
+  }, []);
 
   const loadTasks = useCallback(async (withLoading = true) => {
     if (withLoading) {
@@ -471,6 +521,16 @@ export function DriverMobileJobsDashboard() {
     }
   }, [markInstructionRead]);
 
+  const upsertPendingInstructionAck = useCallback((instructionId: string) => {
+    setPendingInstructionAckIds((current) => (current.includes(instructionId) ? current : [...current, instructionId]));
+    setFailedInstructionAckIds((current) => current.filter((item) => item !== instructionId));
+  }, []);
+
+  const clearPendingInstructionAck = useCallback((instructionId: string) => {
+    setPendingInstructionAckIds((current) => current.filter((item) => item !== instructionId));
+    setFailedInstructionAckIds((current) => current.filter((item) => item !== instructionId));
+  }, []);
+
   const submitQueuedAction = useCallback(async (queuedAction: DriverMobileQueuedAction, source: "direct" | "queue") => {
     if (source === "queue") {
       if (queueSyncingRef.current) {
@@ -576,6 +636,47 @@ export function DriverMobileJobsDashboard() {
     return () => window.clearTimeout(timeoutId);
   }, [isOnline, queuedActions, submitQueuedAction]);
 
+  useEffect(() => {
+    if (!isOnline || pendingInstructionAckIds.length === 0) {
+      return;
+    }
+
+    const nextInstructionId = pendingInstructionAckIds[0];
+    let cancelled = false;
+
+    const syncInstructionAck = async () => {
+      try {
+        await markInstructionRead(nextInstructionId);
+
+        if (cancelled) {
+          return;
+        }
+
+        clearPendingInstructionAck(nextInstructionId);
+        await loadInstructions(false);
+      } catch (err) {
+        if (cancelled) {
+          return;
+        }
+
+        if (isDriverMobileNetworkFailure(err)) {
+          return;
+        }
+
+        setPendingInstructionAckIds((current) => current.filter((item) => item !== nextInstructionId));
+        setFailedInstructionAckIds((current) => (current.includes(nextInstructionId) ? current : [...current, nextInstructionId]));
+        const message = err instanceof Error ? err.message : "Unable to acknowledge instruction.";
+        setError(message === SESSION_EXPIRED_MESSAGE ? SESSION_EXPIRED_MESSAGE : message);
+      }
+    };
+
+    void syncInstructionAck();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [clearPendingInstructionAck, isOnline, loadInstructions, markInstructionRead, pendingInstructionAckIds]);
+
   const handleSignOut = useCallback(async () => {
     if (isSigningOut) {
       return;
@@ -631,6 +732,10 @@ export function DriverMobileJobsDashboard() {
       return;
     }
 
+    if (pendingInstructionAckIds.includes(instruction.id)) {
+      return;
+    }
+
     const linkedTask = serverTasks.find((task) => matchesInstructionToTask(instruction, task)) ?? null;
     if (linkedTask && linkedTask.nextAction === "ACKNOWLEDGED") {
       await handleAction(linkedTask);
@@ -642,16 +747,42 @@ export function DriverMobileJobsDashboard() {
     setSuccess(null);
 
     try {
+      if (!isOnline) {
+        upsertPendingInstructionAck(instruction.id);
+        setSuccess("Acknowledged - waiting for connection");
+        return;
+      }
+
       await markInstructionRead(instruction.id);
       setSuccess("Instruction acknowledged.");
+      clearPendingInstructionAck(instruction.id);
       await loadInstructions(false);
     } catch (err) {
+      if (isDriverMobileNetworkFailure(err)) {
+        upsertPendingInstructionAck(instruction.id);
+        setSuccess("Acknowledged - waiting for connection");
+        setError(null);
+        return;
+      }
+
       const message = err instanceof Error ? err.message : "Unable to acknowledge instruction.";
+      setFailedInstructionAckIds((current) => (current.includes(instruction.id) ? current : [...current, instruction.id]));
       setError(message === SESSION_EXPIRED_MESSAGE ? SESSION_EXPIRED_MESSAGE : message);
     } finally {
       setInstructionActionId(null);
     }
-  }, [handleAction, instructionActionId, loadInstructions, markInstructionRead, serverTasks]);
+  }, [clearPendingInstructionAck, handleAction, instructionActionId, isOnline, loadInstructions, markInstructionRead, pendingInstructionAckIds, serverTasks, upsertPendingInstructionAck]);
+
+  const handleRetryInstructionAcknowledge = useCallback((instructionId: string) => {
+    if (!isOnline) {
+      setError("Connection is still unavailable.");
+      return;
+    }
+
+    upsertPendingInstructionAck(instructionId);
+    setSuccess("Retrying instruction acknowledgement...");
+    setError(null);
+  }, [isOnline, upsertPendingInstructionAck]);
 
   const handleRetryQueuedAction = useCallback(async (queuedAction: DriverMobileQueuedAction) => {
     if (actionLocksRef.current.has(queuedAction.bookingId)) {
@@ -681,11 +812,14 @@ export function DriverMobileJobsDashboard() {
 
   const acknowledgedInstructionIds = useMemo(() => {
     return new Set(
-      queuedActions
-        .filter((item) => item.action === "ACKNOWLEDGED" && (item.state === "pending" || item.state === "syncing"))
-        .flatMap((item) => item.linkedInstructionIds),
+      [
+        ...queuedActions
+          .filter((item) => item.action === "ACKNOWLEDGED" && (item.state === "pending" || item.state === "syncing"))
+          .flatMap((item) => item.linkedInstructionIds),
+        ...pendingInstructionAckIds,
+      ],
     );
-  }, [queuedActions]);
+  }, [pendingInstructionAckIds, queuedActions]);
 
   const effectiveInstructions = useMemo<DriverInstructionFeed>(() => {
     const recent = instructionFeed.recent.map((instruction) => {
@@ -788,6 +922,66 @@ export function DriverMobileJobsDashboard() {
       };
     });
   }, [linkedInstructionsByBookingId, queuedActionByBookingId, tasks]);
+
+  const overlayAlertCandidates = useMemo<OverlayAlertCandidate[]>(() => {
+    const candidates: OverlayAlertCandidate[] = [];
+
+    const unreadInstructions = effectiveInstructions.recent
+      .filter((instruction) => !instruction.readAt)
+      .sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime());
+
+    unreadInstructions.forEach((instruction) => {
+      const linkedTask = tasks.find((task) => matchesInstructionToTask(instruction, task)) ?? null;
+
+      // Defensive UI scoping: ignore unread instruction payloads bound to unknown task context.
+      if (!linkedTask && (instruction.deliveryBookingId || instruction.trailerId)) {
+        return;
+      }
+
+      const severity: OverlayAlertSeverity = instruction.priority === "high" || instruction.priority === "critical" ? "red" : "yellow";
+      candidates.push({
+        key: `instruction:${instruction.id}`,
+        kind: "instruction",
+        severity,
+        createdAt: instruction.createdAt,
+        label: linkedTask ? "NEW INSTRUCTION" : "NEW MESSAGE",
+        instruction,
+        task: linkedTask,
+      });
+    });
+
+    tasks
+      .filter((task) => task.nextAction === "ACKNOWLEDGED" && !task.driverAcknowledgedAt)
+      .forEach((task) => {
+        const hasUnreadInstruction = unreadInstructions.some((instruction) => matchesInstructionToTask(instruction, task));
+        if (hasUnreadInstruction) {
+          return;
+        }
+
+        candidates.push({
+          key: `task:${task.bookingId}`,
+          kind: "task",
+          severity: "yellow",
+          createdAt: `${task.deliveryDate}T${task.deliveryTime ?? "00:00:00"}`,
+          label: "NEW ASSIGNMENT",
+          instruction: null,
+          task,
+        });
+      });
+
+    return candidates.sort((left, right) => {
+      const severityRank = (value: OverlayAlertSeverity) => (value === "red" ? 0 : 1);
+      const severityDiff = severityRank(left.severity) - severityRank(right.severity);
+      if (severityDiff !== 0) {
+        return severityDiff;
+      }
+
+      return new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime();
+    });
+  }, [effectiveInstructions.recent, tasks]);
+
+  const activeOverlayAlert = overlayAlertCandidates[0] ?? null;
+  const remainingOverlayAlerts = Math.max(0, overlayAlertCandidates.length - 1);
 
   const grouped = useMemo(() => {
     const sorted = [...taskAttentionMeta].sort((left, right) => {
@@ -1046,6 +1240,49 @@ export function DriverMobileJobsDashboard() {
     </section>
   );
 
+  const overlayInstruction = activeOverlayAlert?.instruction ?? null;
+  const overlayTask = activeOverlayAlert?.task ?? null;
+  const isOverlayInstructionPending = overlayInstruction ? pendingInstructionAckIds.includes(overlayInstruction.id) : false;
+  const isOverlayInstructionRetry = overlayInstruction ? failedInstructionAckIds.includes(overlayInstruction.id) : false;
+
+  const overlayTone = activeOverlayAlert?.severity === "red"
+    ? {
+        backdrop: "bg-rose-950/82",
+        panel: "border-rose-400 bg-rose-100 text-rose-950",
+        badge: "border-rose-700 bg-rose-600 text-white",
+        watermark: "text-rose-300/30",
+        title: "CRITICAL",
+      }
+    : {
+        backdrop: "bg-slate-950/72",
+        panel: "border-amber-300 bg-amber-50 text-amber-950",
+        badge: "border-amber-600 bg-amber-500 text-slate-950",
+        watermark: "text-amber-300/30",
+        title: "ATTENTION",
+      };
+
+  const handleOverlayAcknowledge = useCallback(async () => {
+    if (!activeOverlayAlert) {
+      return;
+    }
+
+    if (activeOverlayAlert.kind === "task" && activeOverlayAlert.task) {
+      await handleAction(activeOverlayAlert.task);
+      return;
+    }
+
+    if (!activeOverlayAlert.instruction) {
+      return;
+    }
+
+    if (isOverlayInstructionRetry) {
+      handleRetryInstructionAcknowledge(activeOverlayAlert.instruction.id);
+      return;
+    }
+
+    await handleAcknowledgeInstruction(activeOverlayAlert.instruction);
+  }, [activeOverlayAlert, handleAction, handleAcknowledgeInstruction, handleRetryInstructionAcknowledge, isOverlayInstructionRetry]);
+
   return (
     <PermissionGuard
       roleKey={mobileRoleKey}
@@ -1146,6 +1383,63 @@ export function DriverMobileJobsDashboard() {
               {renderSection("To Do", grouped.toDo)}
               {renderSection("In Progress", grouped.inProgress)}
               {renderSection("Completed Today", grouped.completedToday)}
+            </div>
+          ) : null}
+
+          {!isLoading && !isLoadingTasks && driver && activeOverlayAlert && overlayTone ? (
+            <div className={`fixed inset-0 z-[95] flex items-center justify-center px-4 py-6 ${overlayTone.backdrop}`} role="dialog" aria-modal="true" aria-label="Operational alert overlay">
+              <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+                <p className={`select-none text-[min(26vw,11rem)] font-black uppercase tracking-[0.14em] ${overlayTone.watermark} rotate-[-18deg]`}>
+                  {overlayTone.title}
+                </p>
+              </div>
+
+              <section className={`relative w-full max-w-lg rounded-3xl border-2 p-5 shadow-[0_24px_80px_rgba(15,23,42,0.48)] ${overlayTone.panel}`}>
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className={`inline-flex rounded-full border px-2 py-1 text-[11px] font-black uppercase tracking-[0.16em] ${overlayTone.badge}`}>
+                      {overlayTone.title}
+                    </p>
+                    <h2 className="mt-3 text-2xl font-black uppercase tracking-[0.12em]">{activeOverlayAlert.label}</h2>
+                  </div>
+                  {remainingOverlayAlerts > 0 ? (
+                    <span className="rounded-full border border-current/30 px-2 py-1 text-xs font-semibold">
+                      {remainingOverlayAlerts} more alerts
+                    </span>
+                  ) : null}
+                </div>
+
+                <div className="mt-4 space-y-2 text-sm">
+                  {overlayInstruction ? <p className="text-base font-bold">{overlayInstruction.instruction}</p> : <p className="text-base font-bold">New assignment requires acknowledgement.</p>}
+                  {overlayTask ? <p><span className="font-semibold">Trailer:</span> {overlayTask.trailerNumber}</p> : null}
+                  {overlayTask?.bookingReference ? <p><span className="font-semibold">Reference:</span> {overlayTask.bookingReference}</p> : null}
+                  {overlayTask?.location ? <p><span className="font-semibold">Location:</span> {overlayTask.location}</p> : null}
+                  {overlayInstruction ? <p><span className="font-semibold">Received:</span> {formatCompletedTime(overlayInstruction.createdAt)}</p> : null}
+                </div>
+
+                {isOverlayInstructionPending ? (
+                  <div className="mt-4 rounded-2xl border border-amber-300 bg-amber-100 px-3 py-2 text-sm font-semibold">
+                    ACKNOWLEDGED - WAITING FOR CONNECTION
+                  </div>
+                ) : null}
+
+                {isOverlayInstructionRetry ? (
+                  <div className="mt-4 rounded-2xl border border-rose-300 bg-rose-100 px-3 py-2 text-sm font-semibold">
+                    Could not confirm acknowledgement. RETRY required.
+                  </div>
+                ) : null}
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    void handleOverlayAcknowledge();
+                  }}
+                  disabled={isOverlayInstructionPending || (overlayTask ? Boolean(queuedActionByBookingId.get(overlayTask.bookingId)) : false)}
+                  className="mt-5 w-full rounded-2xl bg-slate-950 px-4 py-4 text-base font-black uppercase tracking-[0.12em] text-white disabled:cursor-not-allowed disabled:bg-slate-500"
+                >
+                  {isOverlayInstructionRetry ? "RETRY" : "OPEN / ACKNOWLEDGE"}
+                </button>
+              </section>
             </div>
           ) : null}
         </div>

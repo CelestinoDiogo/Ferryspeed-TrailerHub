@@ -133,6 +133,393 @@ describe("DriverMobileJobsDashboard", () => {
     });
   });
 
+  it("does not show overlay for normal active job without unread alerts", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+
+        if (url.includes("/api/driver-mobile/tasks") && method === "GET") {
+          return new Response(JSON.stringify({
+            driver: { id: "driver-a", display_name: "Driver One", user_id: "user-a" },
+            tasks: [makeTask({ bookingId: "normal", trailerNumber: "FS-NORMAL", status: "on_delivery", nextAction: "DELIVERED", driverAcknowledgedAt: "2026-08-13T08:00:00.000Z" })],
+          }), { status: 200 });
+        }
+
+        if (url.includes("/api/driver-mobile/instructions") && method === "GET") {
+          return new Response(JSON.stringify(buildInstructionFeed([])), { status: 200 });
+        }
+
+        return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+      }),
+    );
+
+    render(<DriverMobileJobsDashboard />);
+
+    expect(await screen.findByRole("heading", { name: "FS-NORMAL" })).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Operational alert overlay" })).not.toBeInTheDocument();
+  });
+
+  it("shows yellow overlay for unread normal instruction", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+
+        if (url.includes("/api/driver-mobile/tasks") && method === "GET") {
+          return new Response(JSON.stringify({
+            driver: { id: "driver-a", display_name: "Driver One", user_id: "user-a" },
+            tasks: [makeTask({ bookingId: "task-a", trailerId: "trailer-a", trailerNumber: "FS-100", nextAction: "COLLECTED", driverAcknowledgedAt: "2026-08-13T08:00:00.000Z", status: "ready" })],
+          }), { status: 200 });
+        }
+
+        if (url.includes("/api/driver-mobile/instructions") && method === "GET") {
+          return new Response(JSON.stringify(buildInstructionFeed([
+            makeInstruction({ id: "instruction-normal", deliveryBookingId: "task-a", trailerId: "trailer-a", priority: "normal", instruction: "Report to Gate 3" }),
+          ])), { status: 200 });
+        }
+
+        if (url.includes("/api/driver-mobile/instructions/read") && method === "POST") {
+          return new Response(JSON.stringify({ ok: true }), { status: 200 });
+        }
+
+        return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+      }),
+    );
+
+    render(<DriverMobileJobsDashboard />);
+
+    const overlay = await screen.findByRole("dialog", { name: "Operational alert overlay" });
+    expect(within(overlay).getAllByText("ATTENTION").length).toBeGreaterThan(0);
+    expect(within(overlay).getByText("NEW INSTRUCTION")).toBeInTheDocument();
+  });
+
+  it("shows red overlay for high or critical instruction", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+
+        if (url.includes("/api/driver-mobile/tasks") && method === "GET") {
+          return new Response(JSON.stringify({
+            driver: { id: "driver-a", display_name: "Driver One", user_id: "user-a" },
+            tasks: [makeTask({ bookingId: "task-critical", trailerId: "trailer-critical", trailerNumber: "FS-RED", nextAction: "COLLECTED", driverAcknowledgedAt: "2026-08-13T08:00:00.000Z", status: "ready" })],
+          }), { status: 200 });
+        }
+
+        if (url.includes("/api/driver-mobile/instructions") && method === "GET") {
+          return new Response(JSON.stringify(buildInstructionFeed([
+            makeInstruction({ id: "instruction-critical", deliveryBookingId: "task-critical", trailerId: "trailer-critical", priority: "critical", instruction: "Stop movement and call supervisor" }),
+          ])), { status: 200 });
+        }
+
+        return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+      }),
+    );
+
+    render(<DriverMobileJobsDashboard />);
+
+    const overlay = await screen.findByRole("dialog", { name: "Operational alert overlay" });
+    expect(within(overlay).getAllByText("CRITICAL").length).toBeGreaterThan(0);
+    expect(within(overlay).getByText("NEW INSTRUCTION")).toBeInTheDocument();
+  });
+
+  it("prioritizes red overlay ahead of yellow and shows remaining count", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+
+        if (url.includes("/api/driver-mobile/tasks") && method === "GET") {
+          return new Response(JSON.stringify({
+            driver: { id: "driver-a", display_name: "Driver One", user_id: "user-a" },
+            tasks: [
+              makeTask({ bookingId: "task-yellow", trailerId: "trailer-yellow", trailerNumber: "FS-YEL", nextAction: "COLLECTED", driverAcknowledgedAt: "2026-08-13T08:00:00.000Z", status: "ready" }),
+              makeTask({ bookingId: "task-red", trailerId: "trailer-red", trailerNumber: "FS-RED", nextAction: "COLLECTED", driverAcknowledgedAt: "2026-08-13T08:00:00.000Z", status: "ready" }),
+            ],
+          }), { status: 200 });
+        }
+
+        if (url.includes("/api/driver-mobile/instructions") && method === "GET") {
+          return new Response(JSON.stringify(buildInstructionFeed([
+            makeInstruction({ id: "instruction-yellow", deliveryBookingId: "task-yellow", trailerId: "trailer-yellow", priority: "normal", createdAt: "2026-08-12T10:00:00.000Z", instruction: "Normal instruction" }),
+            makeInstruction({ id: "instruction-red", deliveryBookingId: "task-red", trailerId: "trailer-red", priority: "critical", createdAt: "2026-08-12T12:00:00.000Z", instruction: "Critical instruction" }),
+          ])), { status: 200 });
+        }
+
+        return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+      }),
+    );
+
+    render(<DriverMobileJobsDashboard />);
+
+    const overlay = await screen.findByRole("dialog", { name: "Operational alert overlay" });
+    expect(within(overlay).getAllByText("CRITICAL").length).toBeGreaterThan(0);
+    expect(within(overlay).getByText(/1 more alerts/)).toBeInTheDocument();
+    expect(within(overlay).queryByText("Normal instruction")).not.toBeInTheDocument();
+  });
+
+  it("acknowledges current overlay then shows next pending alert", async () => {
+    const readCalls: string[] = [];
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+
+        if (url.includes("/api/driver-mobile/tasks") && method === "GET") {
+          return new Response(JSON.stringify({
+            driver: { id: "driver-a", display_name: "Driver One", user_id: "user-a" },
+            tasks: [
+              makeTask({ bookingId: "task-first", trailerId: "trailer-first", trailerNumber: "FS-001", nextAction: "COLLECTED", driverAcknowledgedAt: "2026-08-13T08:00:00.000Z", status: "ready" }),
+              makeTask({ bookingId: "task-second", trailerId: "trailer-second", trailerNumber: "FS-002", nextAction: "COLLECTED", driverAcknowledgedAt: "2026-08-13T08:00:00.000Z", status: "ready" }),
+            ],
+          }), { status: 200 });
+        }
+
+        if (url.includes("/api/driver-mobile/instructions") && method === "GET") {
+          const firstRead = readCalls.includes("instruction-first");
+          const secondRead = readCalls.includes("instruction-second");
+          return new Response(JSON.stringify(buildInstructionFeed([
+            makeInstruction({ id: "instruction-first", deliveryBookingId: "task-first", trailerId: "trailer-first", createdAt: "2026-08-12T09:00:00.000Z", instruction: "First instruction", readAt: firstRead ? "2026-08-13T10:00:00.000Z" : null }),
+            makeInstruction({ id: "instruction-second", deliveryBookingId: "task-second", trailerId: "trailer-second", createdAt: "2026-08-12T10:00:00.000Z", instruction: "Second instruction", readAt: secondRead ? "2026-08-13T10:01:00.000Z" : null }),
+          ])), { status: 200 });
+        }
+
+        if (url.includes("/api/driver-mobile/instructions/read") && method === "POST") {
+          const body = JSON.parse(String(init?.body ?? "{}"));
+          readCalls.push(body.instructionId);
+          return new Response(JSON.stringify({ ok: true }), { status: 200 });
+        }
+
+        return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+      }),
+    );
+
+    render(<DriverMobileJobsDashboard />);
+
+    const overlay = await screen.findByRole("dialog", { name: "Operational alert overlay" });
+    expect(within(overlay).getByText("First instruction")).toBeInTheDocument();
+
+    fireEvent.click(within(overlay).getByRole("button", { name: "OPEN / ACKNOWLEDGE" }));
+
+    await waitFor(() => {
+      const nextOverlay = screen.getByRole("dialog", { name: "Operational alert overlay" });
+      expect(within(nextOverlay).getByText("Second instruction")).toBeInTheDocument();
+    });
+  });
+
+  it("does not resurrect acknowledged overlay after refresh", async () => {
+    let isRead = false;
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+
+        if (url.includes("/api/driver-mobile/tasks") && method === "GET") {
+          return new Response(JSON.stringify({
+            driver: { id: "driver-a", display_name: "Driver One", user_id: "user-a" },
+            tasks: [makeTask({ bookingId: "task-refresh", trailerId: "trailer-refresh", trailerNumber: "FS-REF", nextAction: "COLLECTED", driverAcknowledgedAt: "2026-08-13T08:00:00.000Z", status: "ready" })],
+          }), { status: 200 });
+        }
+
+        if (url.includes("/api/driver-mobile/instructions") && method === "GET") {
+          return new Response(JSON.stringify(buildInstructionFeed([
+            makeInstruction({ id: "instruction-refresh", deliveryBookingId: "task-refresh", trailerId: "trailer-refresh", instruction: "Refresh-me", readAt: isRead ? "2026-08-13T10:05:00.000Z" : null }),
+          ])), { status: 200 });
+        }
+
+        if (url.includes("/api/driver-mobile/instructions/read") && method === "POST") {
+          isRead = true;
+          return new Response(JSON.stringify({ ok: true }), { status: 200 });
+        }
+
+        return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+      }),
+    );
+
+    render(<DriverMobileJobsDashboard />);
+
+    const overlay = await screen.findByRole("dialog", { name: "Operational alert overlay" });
+    fireEvent.click(within(overlay).getByRole("button", { name: "OPEN / ACKNOWLEDGE" }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog", { name: "Operational alert overlay" })).not.toBeInTheDocument();
+    });
+
+    realtimeState.callback?.();
+
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog", { name: "Operational alert overlay" })).not.toBeInTheDocument();
+    });
+  });
+
+  it("keeps a single overlay during realtime duplicate updates", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+
+        if (url.includes("/api/driver-mobile/tasks") && method === "GET") {
+          return new Response(JSON.stringify({
+            driver: { id: "driver-a", display_name: "Driver One", user_id: "user-a" },
+            tasks: [makeTask({ bookingId: "task-dup", trailerId: "trailer-dup", trailerNumber: "FS-DUP", nextAction: "COLLECTED", driverAcknowledgedAt: "2026-08-13T08:00:00.000Z", status: "ready" })],
+          }), { status: 200 });
+        }
+
+        if (url.includes("/api/driver-mobile/instructions") && method === "GET") {
+          return new Response(JSON.stringify(buildInstructionFeed([
+            makeInstruction({ id: "instruction-dup", deliveryBookingId: "task-dup", trailerId: "trailer-dup", instruction: "Duplicate stream" }),
+          ])), { status: 200 });
+        }
+
+        return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+      }),
+    );
+
+    render(<DriverMobileJobsDashboard />);
+    expect(await screen.findByRole("dialog", { name: "Operational alert overlay" })).toBeInTheDocument();
+
+    realtimeState.callback?.();
+    realtimeState.callback?.();
+
+    await waitFor(() => {
+      expect(screen.getAllByRole("dialog", { name: "Operational alert overlay" })).toHaveLength(1);
+    });
+  });
+
+  it("shows waiting-for-connection state for offline instruction acknowledgement", async () => {
+    setOnlineState(false);
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+
+        if (url.includes("/api/driver-mobile/tasks") && method === "GET") {
+          return new Response(JSON.stringify({
+            driver: { id: "driver-a", display_name: "Driver One", user_id: "user-a" },
+            tasks: [makeTask({ bookingId: "task-offline", trailerId: "trailer-offline", trailerNumber: "FS-OFFLINE", nextAction: "COLLECTED", driverAcknowledgedAt: "2026-08-13T08:00:00.000Z", status: "ready" })],
+          }), { status: 200 });
+        }
+
+        if (url.includes("/api/driver-mobile/instructions") && method === "GET") {
+          return new Response(JSON.stringify(buildInstructionFeed([
+            makeInstruction({ id: "instruction-offline", deliveryBookingId: "task-offline", trailerId: "trailer-offline", instruction: "Offline ack" }),
+          ])), { status: 200 });
+        }
+
+        if (url.includes("/api/driver-mobile/instructions/read") && method === "POST") {
+          throw new Error("Failed to fetch");
+        }
+
+        return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+      }),
+    );
+
+    render(<DriverMobileJobsDashboard />);
+
+    const overlay = await screen.findByRole("dialog", { name: "Operational alert overlay" });
+    fireEvent.click(within(overlay).getByRole("button", { name: "OPEN / ACKNOWLEDGE" }));
+
+    await waitFor(() => {
+      expect(window.localStorage.getItem("trailerhub.driver-mobile.instruction-ack-queue.v1")).toContain("instruction-offline");
+    });
+  });
+
+  it("surfaces RETRY after instruction acknowledgement sync failure", async () => {
+    setOnlineState(false);
+    let shouldFail = false;
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+
+        if (url.includes("/api/driver-mobile/tasks") && method === "GET") {
+          return new Response(JSON.stringify({
+            driver: { id: "driver-a", display_name: "Driver One", user_id: "user-a" },
+            tasks: [makeTask({ bookingId: "task-retry", trailerId: "trailer-retry", trailerNumber: "FS-RETRY", nextAction: "COLLECTED", driverAcknowledgedAt: "2026-08-13T08:00:00.000Z", status: "ready" })],
+          }), { status: 200 });
+        }
+
+        if (url.includes("/api/driver-mobile/instructions") && method === "GET") {
+          return new Response(JSON.stringify(buildInstructionFeed([
+            makeInstruction({ id: "instruction-retry", deliveryBookingId: "task-retry", trailerId: "trailer-retry", instruction: "Retry path" }),
+          ])), { status: 200 });
+        }
+
+        if (url.includes("/api/driver-mobile/instructions/read") && method === "POST") {
+          if (window.navigator.onLine === false) {
+            throw new Error("Failed to fetch");
+          }
+
+          if (shouldFail) {
+            return new Response(JSON.stringify({ error: "Forbidden" }), { status: 403 });
+          }
+
+          return new Response(JSON.stringify({ ok: true }), { status: 200 });
+        }
+
+        return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+      }),
+    );
+
+    render(<DriverMobileJobsDashboard />);
+
+    const overlay = await screen.findByRole("dialog", { name: "Operational alert overlay" });
+    fireEvent.click(within(overlay).getByRole("button", { name: "OPEN / ACKNOWLEDGE" }));
+
+    shouldFail = true;
+    setOnlineState(true);
+    window.dispatchEvent(new Event("online"));
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "RETRY" })).toBeInTheDocument();
+    });
+  });
+
+  it("ignores unread instruction context unrelated to current driver task list", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+
+        if (url.includes("/api/driver-mobile/tasks") && method === "GET") {
+          return new Response(JSON.stringify({
+            driver: { id: "driver-a", display_name: "Driver One", user_id: "user-a" },
+            tasks: [makeTask({ bookingId: "task-own", trailerId: "trailer-own", trailerNumber: "FS-OWN", nextAction: "COLLECTED", driverAcknowledgedAt: "2026-08-13T08:00:00.000Z", status: "ready" })],
+          }), { status: 200 });
+        }
+
+        if (url.includes("/api/driver-mobile/instructions") && method === "GET") {
+          return new Response(JSON.stringify(buildInstructionFeed([
+            makeInstruction({ id: "instruction-other", deliveryBookingId: "another-booking", trailerId: "another-trailer", trailerNumber: "FS-OTHER", instruction: "Other driver message" }),
+          ])), { status: 200 });
+        }
+
+        return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+      }),
+    );
+
+    render(<DriverMobileJobsDashboard />);
+
+    expect(await screen.findByRole("heading", { name: "FS-OWN" })).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Operational alert overlay" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Other driver message")).not.toBeInTheDocument();
+  });
+
   it("marks new unacknowledged work as attention with a top summary", async () => {
     vi.stubGlobal(
       "fetch",
@@ -157,7 +544,7 @@ describe("DriverMobileJobsDashboard", () => {
 
     render(<DriverMobileJobsDashboard />);
 
-    expect(await screen.findByText("FS-NEW")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "FS-NEW" })).toBeInTheDocument();
     expect(screen.getAllByText("NEW").length).toBeGreaterThan(0);
     expect(screen.getByText(/NEED ATTENTION/)).toBeInTheDocument();
   });
@@ -191,8 +578,8 @@ describe("DriverMobileJobsDashboard", () => {
 
     render(<DriverMobileJobsDashboard />);
 
-    expect(await screen.findByText("FS-TODO")).toBeInTheDocument();
-    expect(await screen.findByText("Collect trailer FS-TODO")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "FS-TODO" })).toBeInTheDocument();
+    expect((await screen.findAllByText("Collect trailer FS-TODO")).length).toBeGreaterThan(0);
     expect(screen.getByText("Acknowledge this job to confirm the instruction.")).toBeInTheDocument();
     expect(screen.getByText("Operational Instructions")).toBeInTheDocument();
     expect(screen.getAllByText("To Do").length).toBeGreaterThan(0);
@@ -236,8 +623,8 @@ describe("DriverMobileJobsDashboard", () => {
 
     render(<DriverMobileJobsDashboard />);
 
-    expect(await screen.findByText("FS1234")).toBeInTheDocument();
-    expect(await screen.findByText("Collect trailer FS1234")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "FS1234" })).toBeInTheDocument();
+    expect((await screen.findAllByText("Collect trailer FS1234")).length).toBeGreaterThan(0);
     fireEvent.click(screen.getByRole("button", { name: "ACKNOWLEDGE" }));
 
     await waitFor(() => {
@@ -287,7 +674,9 @@ describe("DriverMobileJobsDashboard", () => {
 
     render(<DriverMobileJobsDashboard />);
 
-    expect(await screen.findByText("Report to quay")).toBeInTheDocument();
+    const instructionsHeading = await screen.findByRole("heading", { name: "Operational Instructions" });
+    const instructionsSection = instructionsHeading.closest("section") as HTMLElement;
+    expect(await within(instructionsSection).findByText("Report to quay")).toBeInTheDocument();
     expect(screen.getByText(/NEED ATTENTION/)).toBeInTheDocument();
     fireEvent.click(screen.getAllByRole("button", { name: "ACKNOWLEDGE" })[0]);
 
@@ -322,7 +711,7 @@ describe("DriverMobileJobsDashboard", () => {
 
     render(<DriverMobileJobsDashboard />);
 
-    expect(await screen.findByText("FS-TEMP")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "FS-TEMP" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "RECOLHIDA / COLLECTED" }));
 
     await waitFor(() => {
@@ -358,8 +747,9 @@ describe("DriverMobileJobsDashboard", () => {
 
     render(<DriverMobileJobsDashboard />);
 
-    expect(await screen.findByText("FS-PRIO")).toBeInTheDocument();
-    expect(screen.getByText("CRITICAL")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "FS-PRIO" })).toBeInTheDocument();
+    const attentionSection = screen.getByRole("heading", { name: "Needs Attention" }).closest("section") as HTMLElement;
+    expect(within(attentionSection).getByText("CRITICAL")).toBeInTheDocument();
   });
 
   it("keeps collection ageing color thresholds unchanged", async () => {
@@ -390,7 +780,7 @@ describe("DriverMobileJobsDashboard", () => {
 
     render(<DriverMobileJobsDashboard />);
 
-    expect(await screen.findByText("FS-GREEN")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "FS-GREEN" })).toBeInTheDocument();
     expect(screen.getByText(/Under 24h/).className).toContain("border-emerald-300");
     expect(screen.getByText(/24-48h/).className).toContain("border-orange-300");
     expect(screen.getByText(/Over 48h/).className).toContain("border-rose-300");
@@ -423,7 +813,7 @@ describe("DriverMobileJobsDashboard", () => {
 
     render(<DriverMobileJobsDashboard />);
 
-    expect(await screen.findByText("FS-OVERDUE")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "FS-OVERDUE" })).toBeInTheDocument();
     const attentionSection = screen.getByRole("heading", { name: "Needs Attention" }).closest("section") as HTMLElement;
     const articles = within(attentionSection).getAllByRole("article");
     expect(within(articles[0]).getByText("FS-OVERDUE")).toBeInTheDocument();
@@ -457,7 +847,7 @@ describe("DriverMobileJobsDashboard", () => {
 
     render(<DriverMobileJobsDashboard />);
 
-    expect(await screen.findByText("FS-SEND")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "FS-SEND" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "RECOLHIDA / COLLECTED" }));
 
     await waitFor(() => {
@@ -500,7 +890,7 @@ describe("DriverMobileJobsDashboard", () => {
 
     render(<DriverMobileJobsDashboard />);
 
-    expect(await screen.findByText("FS-REJECT")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "FS-REJECT" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "RECOLHIDA / COLLECTED" }));
 
     await waitFor(() => {
@@ -509,7 +899,9 @@ describe("DriverMobileJobsDashboard", () => {
     });
 
     expect(getCount).toBeGreaterThan(1);
-    expect(readQueuedActions()).toEqual([]);
+    await waitFor(() => {
+      expect(readQueuedActions()).toEqual([]);
+    });
   });
 
   it("queues offline collected actions and preserves temperature for retry", async () => {
@@ -542,7 +934,7 @@ describe("DriverMobileJobsDashboard", () => {
 
     render(<DriverMobileJobsDashboard />);
 
-    expect(await screen.findByText("FS-OFF")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "FS-OFF" })).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Collection reading (C)"), { target: { value: "2.5" } });
     fireEvent.click(screen.getByRole("button", { name: "RECOLHIDA / COLLECTED" }));
 
@@ -589,8 +981,8 @@ describe("DriverMobileJobsDashboard", () => {
 
     render(<DriverMobileJobsDashboard />);
 
-    expect(await screen.findByText("FS-ACK")).toBeInTheDocument();
-    expect(await screen.findByText("Call office before collection")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "FS-ACK" })).toBeInTheDocument();
+    expect((await screen.findAllByText(/Call office before collection/)).length).toBeGreaterThan(0);
     fireEvent.click(screen.getByRole("button", { name: "ACKNOWLEDGE" }));
 
     await waitFor(() => {
@@ -640,7 +1032,7 @@ describe("DriverMobileJobsDashboard", () => {
 
     render(<DriverMobileJobsDashboard />);
 
-    expect(await screen.findByText("FS-RETRY")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "FS-RETRY" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "RECOLHIDA / COLLECTED" }));
 
     await waitFor(() => {
@@ -704,7 +1096,7 @@ describe("DriverMobileJobsDashboard", () => {
 
     render(<DriverMobileJobsDashboard />);
 
-    expect(await screen.findByText("FS-DONE")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "FS-DONE" })).toBeInTheDocument();
 
     await waitFor(() => {
       expect(readQueuedActions()).toEqual([]);
@@ -752,7 +1144,7 @@ describe("DriverMobileJobsDashboard", () => {
 
     render(<DriverMobileJobsDashboard />);
 
-    expect(await screen.findByText("FS-FAIL")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "FS-FAIL" })).toBeInTheDocument();
     expect(screen.getByText("RETRY NEEDED")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
   });
@@ -784,14 +1176,14 @@ describe("DriverMobileJobsDashboard", () => {
 
     render(<DriverMobileJobsDashboard />);
 
-    expect(await screen.findByText("FS-BASE")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "FS-BASE" })).toBeInTheDocument();
     expect(screen.queryByText("FS-NEWRT")).not.toBeInTheDocument();
 
     taskVersion = 2;
     expect(realtimeState.callback).toBeTruthy();
     realtimeState.callback?.();
 
-    expect(await screen.findByText("FS-NEWRT")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "FS-NEWRT" })).toBeInTheDocument();
     expect(screen.getByText(/New job assigned - PRO123/)).toBeInTheDocument();
   });
 
@@ -820,7 +1212,7 @@ describe("DriverMobileJobsDashboard", () => {
     );
 
     render(<DriverMobileJobsDashboard />);
-    expect(await screen.findByText("FS-SAME")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "FS-SAME" })).toBeInTheDocument();
 
     realtimeState.callback?.();
     realtimeState.callback?.();
