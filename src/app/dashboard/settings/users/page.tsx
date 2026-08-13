@@ -221,9 +221,9 @@ export default function SettingsUsersPage() {
                               : "rounded-lg border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-amber-700"
                           }
                         >
-                          {row.driverLinked ? "Linked" : "Not linked"}
+                          {row.driverLinked ? (row.roleKey === "driver" ? "Linked" : "Linked · not used for preview") : "Not linked"}
                         </span>
-                        <button
+                        {row.roleKey === "driver" ? <button
                           type="button"
                           disabled={savingUserId === row.userId || row.driverLinked || !row.roleKey}
                           onClick={() => {
@@ -232,7 +232,7 @@ export default function SettingsUsersPage() {
                           className="rounded-xl border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400"
                         >
                           {row.driverLinked ? "Linked" : "Link profile"}
-                        </button>
+                        </button> : null}
                       </div>
                     </td>
                     <td className="px-4 py-3">

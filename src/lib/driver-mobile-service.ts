@@ -242,6 +242,14 @@ export async function loadDriverMobileTasksForUser(supabase: RouteSupabase, user
     };
   }
 
+  return loadDriverMobileTasksForDriver(supabase, driver);
+}
+
+export async function loadDriverMobileTasksForDriver(
+  supabase: RouteSupabase,
+  driver: Pick<DriverRow, "id" | "display_name" | "user_id">,
+): Promise<DriverMobileTaskPayload> {
+
   const { data: bookings, error: bookingsError } = await supabase
     .from("delivery_bookings")
     .select(driverBookingSelect)

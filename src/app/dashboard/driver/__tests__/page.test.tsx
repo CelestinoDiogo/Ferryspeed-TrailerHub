@@ -5,14 +5,14 @@ import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import DashboardDriverPage from "@/app/dashboard/driver/page";
 
-vi.mock("@/components/mobile/driver-mobile-jobs-dashboard", () => ({
-  DriverMobileJobsDashboard: () => <div data-testid="driver-mobile-jobs-dashboard">Driver Mobile Jobs Dashboard</div>,
+vi.mock("@/components/mobile/driver-mobile-entry", () => ({
+  DriverMobileEntry: () => <div data-testid="driver-mobile-entry">Driver Mobile Entry</div>,
 }));
 
 describe("DashboardDriverPage", () => {
-  it("renders the driver mobile jobs dashboard component", () => {
+  it("renders the role-aware Driver Mobile entry", () => {
     render(<DashboardDriverPage />);
 
-    expect(screen.getByTestId("driver-mobile-jobs-dashboard")).toBeInTheDocument();
+    expect(screen.getByTestId("driver-mobile-entry")).toBeInTheDocument();
   });
 });

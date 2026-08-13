@@ -1,7 +1,7 @@
 import type { SupabaseClient, User } from "@supabase/supabase-js";
 import { describe, expect, it, vi } from "vitest";
 import { createTrailerActivity } from "@/lib/trailer-activity";
-import { applyDriverTaskAction, loadDriverMobileTasksForUser } from "@/lib/driver-mobile-service";
+import { applyDriverTaskAction, loadDriverMobileTasksForDriver, loadDriverMobileTasksForUser } from "@/lib/driver-mobile-service";
 import type { Database } from "@/lib/database.types";
 
 vi.mock("@/lib/trailer-activity", () => ({
@@ -366,6 +366,11 @@ describe("driver mobile service", () => {
     expect(result.tasks[0]?.consignee).toBeNull();
     expect(result.tasks[0]?.nextAction).toBe("ACKNOWLEDGED");
     expect(result.tasks[0]?.temperature.required).toBe(false);
+
+    const previewResult = await loadDriverMobileTasksForDriver(supabase, driver);
+    expect(previewResult.tasks).toHaveLength(1);
+    expect(previewResult.tasks[0]?.bookingId).toBe("booking-a");
+    expect(previewResult.tasks.some((task) => task.bookingId === "booking-b")).toBe(false);
   });
 
   it("classifies waiting_collection work as collection tasks", async () => {

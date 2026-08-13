@@ -27,6 +27,34 @@ export async function loadActiveDriverForUser(supabase: SupabaseClient<Database>
   return (data ?? null) as DriverRow | null;
 }
 
+export async function loadDriverById(supabase: SupabaseClient<Database>, driverId: string) {
+  const { data, error } = await supabase
+    .from("drivers")
+    .select("id, user_id, display_name, phone, active, created_at, updated_at")
+    .eq("id", driverId)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(error.message || "Unable to load Driver profile.");
+  }
+
+  return (data ?? null) as DriverRow | null;
+}
+
+export async function listActiveDrivers(supabase: SupabaseClient<Database>) {
+  const { data, error } = await supabase
+    .from("drivers")
+    .select("id, display_name, active")
+    .eq("active", true)
+    .order("display_name", { ascending: true });
+
+  if (error) {
+    throw new Error(error.message || "Unable to load active Drivers.");
+  }
+
+  return (data ?? []) as Array<Pick<DriverRow, "id" | "display_name" | "active">>;
+}
+
 export async function listAssignedDeliveryBookingsForDriver(supabase: SupabaseClient<Database>, driverId: string) {
   const { data, error } = await supabase
     .from("delivery_bookings")

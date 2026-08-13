@@ -105,16 +105,16 @@ describe("SettingsUsersPage", () => {
     );
   });
 
-  it("allows explicit driver profile linking for existing role assignments", async () => {
+  it("allows explicit driver profile linking for existing Driver role assignments", async () => {
     fetchRbacJsonMock.mockImplementation(async (input: string, init?: RequestInit) => {
       if (input === "/api/settings/users" && (!init || init.method === undefined || init.method === "GET")) {
         return {
           users: [
             {
-              userId: "user-admin",
-              email: "admin@example.com",
-              displayName: "Admin",
-              roleKey: "administrator",
+              userId: "user-driver",
+              email: "driver@example.com",
+              displayName: "Driver",
+              roleKey: "driver",
               isActive: true,
               lastSignInAt: "2026-08-12T00:00:00.000Z",
               driverLinked: false,
@@ -126,14 +126,14 @@ describe("SettingsUsersPage", () => {
       if (input === "/api/settings/users" && init?.method === "PATCH") {
         return {
           user: {
-            user_id: "user-admin",
-            role_key: "administrator",
+            user_id: "user-driver",
+            role_key: "driver",
             is_active: true,
           },
           auditEvent: {
-            userId: "user-admin",
-            previousRole: "administrator",
-            newRole: "administrator",
+            userId: "user-driver",
+            previousRole: "driver",
+            newRole: "driver",
             previousIsActive: true,
             newIsActive: true,
             changedBy: "admin-a",
@@ -159,8 +159,8 @@ describe("SettingsUsersPage", () => {
       expect.objectContaining({
         method: "PATCH",
         body: JSON.stringify({
-          userId: "user-admin",
-          roleKey: "administrator",
+          userId: "user-driver",
+          roleKey: "driver",
           isActive: true,
           linkDriverProfile: true,
         }),

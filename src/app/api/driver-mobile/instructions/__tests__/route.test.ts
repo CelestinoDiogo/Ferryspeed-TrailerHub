@@ -5,7 +5,9 @@ const createAuthenticatedRouteSupabaseClientMock = vi.fn();
 const requireAuthenticatedRouteUserMock = vi.fn();
 const bootstrapCurrentUserRoleMock = vi.fn();
 const requireRbacPermissionMock = vi.fn();
+const resolveDriverMobileReadContextMock = vi.fn();
 const listDriverOperationalInstructionsForUserMock = vi.fn();
+const listDriverOperationalInstructionsForPreviewMock = vi.fn();
 
 class SupabaseRouteAuthError extends Error {
   status: number;
@@ -27,6 +29,17 @@ class RbacPermissionError extends Error {
   }
 }
 
+class DriverMobileIdentityError extends Error {
+  status: number;
+  code: string;
+
+  constructor(message: string, code: string, status = 400) {
+    super(message);
+    this.status = status;
+    this.code = code;
+  }
+}
+
 vi.mock("@/lib/supabase-route-client", () => ({
   SupabaseRouteAuthError,
   getRouteBearerToken: getRouteBearerTokenMock,
@@ -42,6 +55,15 @@ vi.mock("@/lib/rbac/route", () => ({
 
 vi.mock("@/lib/driver-operational-instructions", () => ({
   listDriverOperationalInstructionsForUser: listDriverOperationalInstructionsForUserMock,
+}));
+
+vi.mock("@/lib/driver-mobile-preview-instructions", () => ({
+  listDriverOperationalInstructionsForPreview: listDriverOperationalInstructionsForPreviewMock,
+}));
+
+vi.mock("@/lib/driver-mobile-identity", () => ({
+  DriverMobileIdentityError,
+  resolveDriverMobileReadContext: resolveDriverMobileReadContextMock,
 }));
 
 const importRoute = async () => import("@/app/api/driver-mobile/instructions/route");
@@ -66,6 +88,11 @@ describe("GET /api/driver-mobile/instructions", () => {
     });
     bootstrapCurrentUserRoleMock.mockResolvedValue(undefined);
     requireRbacPermissionMock.mockResolvedValue(undefined);
+    resolveDriverMobileReadContextMock.mockResolvedValue({
+      roleKey: "driver",
+      isPreview: false,
+      driver: { id: "driver-a", display_name: "Driver One", user_id: "11111111-1111-4111-8111-111111111111" },
+    });
     listDriverOperationalInstructionsForUserMock.mockResolvedValue({
       driver: {
         id: "driver-a",
@@ -111,6 +138,18 @@ describe("GET /api/driver-mobile/instructions", () => {
     await expect(response.json()).resolves.toEqual({ error: "Invalid instructions query." });
   });
 
+  it("returns structured invalid-preview response for malformed Driver id", async () => {
+    const { GET } = await importRoute();
+    const response = await GET(makeRequest("?previewDriverId=invalid"));
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: "The selected Driver is invalid.",
+      code: "PREVIEW_DRIVER_INVALID",
+    });
+    expect(resolveDriverMobileReadContextMock).not.toHaveBeenCalled();
+  });
+
   it("returns structured inactive-profile denial", async () => {
     requireRbacPermissionMock.mockImplementationOnce(() => {
       throw new RbacPermissionError("Your application profile is inactive.", 403, "RBAC_PROFILE_INACTIVE");
@@ -138,5 +177,31 @@ describe("GET /api/driver-mobile/instructions", () => {
       "11111111-1111-4111-8111-111111111111",
       { limit: 20 },
     );
+  });
+
+  it("reads instructions only for the selected preview Driver", async () => {
+    const previewDriver = { id: "driver-b", display_name: "Driver B", user_id: "driver-user-b" };
+    resolveDriverMobileReadContextMock.mockResolvedValueOnce({ roleKey: "supervisor", isPreview: true, driver: previewDriver });
+    listDriverOperationalInstructionsForPreviewMock.mockResolvedValueOnce({ driver: previewDriver, unreadCount: 0, newestUnread: null, recent: [] });
+
+    const { GET } = await importRoute();
+    const response = await GET(makeRequest("?limit=20&previewDriverId=22222222-2222-4222-8222-222222222222"));
+
+    expect(response.status).toBe(200);
+    expect(listDriverOperationalInstructionsForPreviewMock).toHaveBeenCalledWith({}, previewDriver, { limit: 20 });
+    expect(listDriverOperationalInstructionsForUserMock).not.toHaveBeenCalled();
+    await expect(response.json()).resolves.toMatchObject({ mode: "preview", readOnly: true });
+  });
+
+  it("returns structured inactive preview Driver state", async () => {
+    resolveDriverMobileReadContextMock.mockRejectedValueOnce(
+      new DriverMobileIdentityError("The selected Driver profile is inactive.", "PREVIEW_DRIVER_INACTIVE", 409),
+    );
+
+    const { GET } = await importRoute();
+    const response = await GET(makeRequest("?previewDriverId=22222222-2222-4222-8222-222222222222"));
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({ code: "PREVIEW_DRIVER_INACTIVE" });
   });
 });

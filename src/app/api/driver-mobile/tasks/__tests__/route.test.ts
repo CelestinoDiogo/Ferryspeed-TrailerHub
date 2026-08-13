@@ -5,7 +5,8 @@ const createAuthenticatedRouteSupabaseClientMock = vi.fn();
 const requireAuthenticatedRouteUserMock = vi.fn();
 const bootstrapCurrentUserRoleMock = vi.fn();
 const requireRbacPermissionMock = vi.fn();
-const loadDriverMobileTasksForUserMock = vi.fn();
+const resolveDriverMobileReadContextMock = vi.fn();
+const loadDriverMobileTasksForDriverMock = vi.fn();
 
 class SupabaseRouteAuthError extends Error {
   status: number;
@@ -27,6 +28,17 @@ class RbacPermissionError extends Error {
   }
 }
 
+class DriverMobileIdentityError extends Error {
+  status: number;
+  code: string;
+
+  constructor(message: string, code: string, status = 400) {
+    super(message);
+    this.status = status;
+    this.code = code;
+  }
+}
+
 vi.mock("@/lib/supabase-route-client", () => ({
   SupabaseRouteAuthError,
   getRouteBearerToken: getRouteBearerTokenMock,
@@ -41,7 +53,12 @@ vi.mock("@/lib/rbac/route", () => ({
 }));
 
 vi.mock("@/lib/driver-mobile-service", () => ({
-  loadDriverMobileTasksForUser: loadDriverMobileTasksForUserMock,
+  loadDriverMobileTasksForDriver: loadDriverMobileTasksForDriverMock,
+}));
+
+vi.mock("@/lib/driver-mobile-identity", () => ({
+  DriverMobileIdentityError,
+  resolveDriverMobileReadContext: resolveDriverMobileReadContextMock,
 }));
 
 const importRoute = async () => import("@/app/api/driver-mobile/tasks/route");
@@ -54,8 +71,8 @@ const makeRequest = () =>
     },
   });
 
-const makeRequestWithDriverQuery = () =>
-  new Request("http://localhost/api/driver-mobile/tasks?driverId=driver-b", {
+const makeRequestWithPreview = () =>
+  new Request("http://localhost/api/driver-mobile/tasks?previewDriverId=22222222-2222-4222-8222-222222222222", {
     method: "GET",
     headers: {
       Authorization: "Bearer test-token",
@@ -75,7 +92,16 @@ describe("GET /api/driver-mobile/tasks", () => {
     });
     bootstrapCurrentUserRoleMock.mockResolvedValue(undefined);
     requireRbacPermissionMock.mockResolvedValue(undefined);
-    loadDriverMobileTasksForUserMock.mockResolvedValue({
+    resolveDriverMobileReadContextMock.mockResolvedValue({
+      roleKey: "driver",
+      isPreview: false,
+      driver: {
+        id: "driver-a",
+        display_name: "Driver One",
+        user_id: "11111111-1111-4111-8111-111111111111",
+      },
+    });
+    loadDriverMobileTasksForDriverMock.mockResolvedValue({
       driver: {
         id: "driver-a",
         display_name: "Driver One",
@@ -122,7 +148,7 @@ describe("GET /api/driver-mobile/tasks", () => {
   });
 
   it("returns scoped task payload for the authenticated driver", async () => {
-    loadDriverMobileTasksForUserMock.mockResolvedValue({
+    loadDriverMobileTasksForDriverMock.mockResolvedValue({
       driver: {
         id: "driver-a",
         display_name: "Driver One",
@@ -164,11 +190,49 @@ describe("GET /api/driver-mobile/tasks", () => {
     expect(requireRbacPermissionMock).toHaveBeenCalledWith({}, "11111111-1111-4111-8111-111111111111", "driver_mobile", "view");
   });
 
-  it("ignores any client-supplied driver query and still resolves tasks from the authenticated user", async () => {
+  it("passes explicit preview selection through the server identity boundary", async () => {
+    resolveDriverMobileReadContextMock.mockResolvedValueOnce({
+      roleKey: "administrator",
+      isPreview: true,
+      driver: { id: "driver-b", display_name: "Driver B", user_id: "driver-user-b" },
+    });
+
     const { GET } = await importRoute();
-    const response = await GET(makeRequestWithDriverQuery());
+    const response = await GET(makeRequestWithPreview());
 
     expect(response.status).toBe(200);
-    expect(loadDriverMobileTasksForUserMock).toHaveBeenCalledWith({}, "11111111-1111-4111-8111-111111111111");
+    expect(resolveDriverMobileReadContextMock).toHaveBeenCalledWith(
+      {},
+      "11111111-1111-4111-8111-111111111111",
+      "22222222-2222-4222-8222-222222222222",
+    );
+    expect(loadDriverMobileTasksForDriverMock).toHaveBeenCalledWith({}, expect.objectContaining({ id: "driver-b" }));
+    await expect(response.json()).resolves.toMatchObject({ mode: "preview", readOnly: true });
+  });
+
+  it("returns structured preview-selection state", async () => {
+    resolveDriverMobileReadContextMock.mockRejectedValueOnce(
+      new DriverMobileIdentityError("Select a Driver to preview Driver Mobile.", "PREVIEW_DRIVER_REQUIRED"),
+    );
+
+    const { GET } = await importRoute();
+    const response = await GET(makeRequest());
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: "Select a Driver to preview Driver Mobile.",
+      code: "PREVIEW_DRIVER_REQUIRED",
+    });
+  });
+
+  it("rejects a malformed preview Driver identifier before data access", async () => {
+    const { GET } = await importRoute();
+    const response = await GET(new Request("http://localhost/api/driver-mobile/tasks?previewDriverId=invalid", {
+      headers: { Authorization: "Bearer test-token" },
+    }));
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ code: "PREVIEW_DRIVER_INVALID" });
+    expect(resolveDriverMobileReadContextMock).not.toHaveBeenCalled();
   });
 });
