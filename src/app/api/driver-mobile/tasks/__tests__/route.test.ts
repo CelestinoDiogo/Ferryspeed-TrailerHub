@@ -5,6 +5,7 @@ const createAuthenticatedRouteSupabaseClientMock = vi.fn();
 const requireAuthenticatedRouteUserMock = vi.fn();
 const bootstrapCurrentUserRoleMock = vi.fn();
 const requireRbacPermissionMock = vi.fn();
+const requireDriverMobileReadAccessMock = vi.fn();
 const resolveDriverMobileReadContextMock = vi.fn();
 const loadDriverMobileTasksForDriverMock = vi.fn();
 
@@ -61,6 +62,10 @@ vi.mock("@/lib/driver-mobile-identity", () => ({
   resolveDriverMobileReadContext: resolveDriverMobileReadContextMock,
 }));
 
+vi.mock("@/lib/driver-mobile-read-access", () => ({
+  requireDriverMobileReadAccess: requireDriverMobileReadAccessMock,
+}));
+
 const importRoute = async () => import("@/app/api/driver-mobile/tasks/route");
 
 const makeRequest = () =>
@@ -92,6 +97,7 @@ describe("GET /api/driver-mobile/tasks", () => {
     });
     bootstrapCurrentUserRoleMock.mockResolvedValue(undefined);
     requireRbacPermissionMock.mockResolvedValue(undefined);
+    requireDriverMobileReadAccessMock.mockResolvedValue({ role_key: "driver", is_active: true });
     resolveDriverMobileReadContextMock.mockResolvedValue({
       roleKey: "driver",
       isPreview: false,
@@ -124,7 +130,7 @@ describe("GET /api/driver-mobile/tasks", () => {
   });
 
   it("returns 403 when role permission is denied", async () => {
-    requireRbacPermissionMock.mockImplementation(() => {
+    requireDriverMobileReadAccessMock.mockImplementation(() => {
       throw new RbacPermissionError("You do not have permission to perform this action.", 403);
     });
 
@@ -136,7 +142,7 @@ describe("GET /api/driver-mobile/tasks", () => {
   });
 
   it("returns 403 with inactive-profile code when application profile is inactive", async () => {
-    requireRbacPermissionMock.mockImplementation(() => {
+    requireDriverMobileReadAccessMock.mockImplementation(() => {
       throw new RbacPermissionError("Your application profile is inactive.", 403, "RBAC_PROFILE_INACTIVE");
     });
 
@@ -187,7 +193,7 @@ describe("GET /api/driver-mobile/tasks", () => {
       driver: { id: "driver-a" },
       tasks: [{ bookingId: "booking-a", trailerNumber: "FS1234" }],
     });
-    expect(requireRbacPermissionMock).toHaveBeenCalledWith({}, "11111111-1111-4111-8111-111111111111", "driver_mobile", "view");
+    expect(requireDriverMobileReadAccessMock).toHaveBeenCalledWith({}, "11111111-1111-4111-8111-111111111111");
   });
 
   it("passes explicit preview selection through the server identity boundary", async () => {

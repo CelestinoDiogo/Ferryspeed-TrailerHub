@@ -1,6 +1,7 @@
-import { bootstrapCurrentUserRole, RbacPermissionError, requireRbacPermission } from "@/lib/rbac/route";
+import { bootstrapCurrentUserRole, RbacPermissionError } from "@/lib/rbac/route";
 import { listActiveDrivers } from "@/lib/driver-access";
-import { loadCurrentUserRole } from "@/lib/rbac/service";
+import { DriverMobileIdentityError } from "@/lib/driver-mobile-identity";
+import { requireDriverMobileReadAccess } from "@/lib/driver-mobile-read-access";
 import {
   createAuthenticatedRouteSupabaseClient,
   getRouteBearerToken,
@@ -16,11 +17,9 @@ export async function GET(request: Request) {
     const supabase = createAuthenticatedRouteSupabaseClient(request);
     const user = await requireAuthenticatedRouteUser(supabase, accessToken);
     await bootstrapCurrentUserRole(supabase, user);
-    await requireRbacPermission(supabase, user.id, "driver_mobile", "view");
-
-    const role = await loadCurrentUserRole(supabase, user.id);
+    const role = await requireDriverMobileReadAccess(supabase, user.id);
     if (role?.role_key !== "administrator" && role?.role_key !== "supervisor") {
-      return Response.json({ error: "Driver preview is available only to Administrators and Supervisors.", code: "PREVIEW_NOT_ALLOWED" }, { status: 403 });
+      throw new DriverMobileIdentityError("Driver preview is available only to Administrators and Supervisors.", "PREVIEW_NOT_ALLOWED", 403);
     }
 
     const drivers = await listActiveDrivers(supabase);
@@ -31,6 +30,10 @@ export async function GET(request: Request) {
     }
 
     if (error instanceof RbacPermissionError) {
+      return Response.json({ error: error.message, code: error.code }, { status: error.status });
+    }
+
+    if (error instanceof DriverMobileIdentityError) {
       return Response.json({ error: error.message, code: error.code }, { status: error.status });
     }
 

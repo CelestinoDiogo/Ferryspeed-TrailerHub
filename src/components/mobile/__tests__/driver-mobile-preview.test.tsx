@@ -45,7 +45,21 @@ describe("DriverMobilePreview", () => {
     expect(screen.getByText("Select a Driver to preview")).toBeInTheDocument();
     expect(screen.queryByText("Driver profile required")).not.toBeInTheDocument();
     expect(await screen.findByRole("option", { name: "Driver A" })).toBeInTheDocument();
+    expect(screen.queryByText("You do not have permission to perform this action.")).not.toBeInTheDocument();
     expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/tasks"))).toBe(false);
+    expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/instructions"))).toBe(false);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders a real selector authorization failure as an error", async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
+      error: "You do not have permission to perform this action.",
+      code: "RBAC_PERMISSION_DENIED",
+    }), { status: 403 }));
+
+    render(<DriverMobilePreview roleKey="administrator" />);
+
+    expect(await screen.findByText("You do not have permission to perform this action.")).toBeInTheDocument();
   });
 
   it("loads only the explicitly selected Driver and clearly labels read-only preview", async () => {

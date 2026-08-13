@@ -5,6 +5,7 @@ const createAuthenticatedRouteSupabaseClientMock = vi.fn();
 const requireAuthenticatedRouteUserMock = vi.fn();
 const bootstrapCurrentUserRoleMock = vi.fn();
 const requireRbacPermissionMock = vi.fn();
+const requireDriverMobileReadAccessMock = vi.fn();
 const resolveDriverMobileReadContextMock = vi.fn();
 const listDriverOperationalInstructionsForUserMock = vi.fn();
 const listDriverOperationalInstructionsForPreviewMock = vi.fn();
@@ -66,6 +67,10 @@ vi.mock("@/lib/driver-mobile-identity", () => ({
   resolveDriverMobileReadContext: resolveDriverMobileReadContextMock,
 }));
 
+vi.mock("@/lib/driver-mobile-read-access", () => ({
+  requireDriverMobileReadAccess: requireDriverMobileReadAccessMock,
+}));
+
 const importRoute = async () => import("@/app/api/driver-mobile/instructions/route");
 
 const makeRequest = (query = "") =>
@@ -88,6 +93,7 @@ describe("GET /api/driver-mobile/instructions", () => {
     });
     bootstrapCurrentUserRoleMock.mockResolvedValue(undefined);
     requireRbacPermissionMock.mockResolvedValue(undefined);
+    requireDriverMobileReadAccessMock.mockResolvedValue({ role_key: "driver", is_active: true });
     resolveDriverMobileReadContextMock.mockResolvedValue({
       roleKey: "driver",
       isPreview: false,
@@ -151,7 +157,7 @@ describe("GET /api/driver-mobile/instructions", () => {
   });
 
   it("returns structured inactive-profile denial", async () => {
-    requireRbacPermissionMock.mockImplementationOnce(() => {
+    requireDriverMobileReadAccessMock.mockImplementationOnce(() => {
       throw new RbacPermissionError("Your application profile is inactive.", 403, "RBAC_PROFILE_INACTIVE");
     });
 

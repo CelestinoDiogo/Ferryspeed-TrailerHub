@@ -1,4 +1,4 @@
-import { bootstrapCurrentUserRole, RbacPermissionError, requireRbacPermission } from "@/lib/rbac/route";
+import { bootstrapCurrentUserRole, RbacPermissionError } from "@/lib/rbac/route";
 import { z } from "zod";
 import {
   createAuthenticatedRouteSupabaseClient,
@@ -7,6 +7,7 @@ import {
   SupabaseRouteAuthError,
 } from "@/lib/supabase-route-client";
 import { DriverMobileIdentityError, resolveDriverMobileReadContext } from "@/lib/driver-mobile-identity";
+import { requireDriverMobileReadAccess } from "@/lib/driver-mobile-read-access";
 import { loadDriverMobileTasksForDriver } from "@/lib/driver-mobile-service";
 
 export const runtime = "nodejs";
@@ -17,7 +18,7 @@ export async function GET(request: Request) {
     const supabase = createAuthenticatedRouteSupabaseClient(request);
     const user = await requireAuthenticatedRouteUser(supabase, accessToken);
     await bootstrapCurrentUserRole(supabase, user);
-    await requireRbacPermission(supabase, user.id, "driver_mobile", "view");
+    await requireDriverMobileReadAccess(supabase, user.id);
 
     const previewDriverIdParam = new URL(request.url).searchParams.get("previewDriverId");
     const previewDriverId = previewDriverIdParam

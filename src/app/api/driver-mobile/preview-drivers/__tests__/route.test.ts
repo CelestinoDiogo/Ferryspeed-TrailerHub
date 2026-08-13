@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { requireAuthenticatedRouteUserMock, loadCurrentUserRoleMock, listActiveDriversMock } = vi.hoisted(() => ({
+const { requireAuthenticatedRouteUserMock, requireDriverMobileReadAccessMock, listActiveDriversMock } = vi.hoisted(() => ({
   requireAuthenticatedRouteUserMock: vi.fn(),
-  loadCurrentUserRoleMock: vi.fn(),
+  requireDriverMobileReadAccessMock: vi.fn(),
   listActiveDriversMock: vi.fn(),
 }));
 
@@ -25,8 +25,19 @@ vi.mock("@/lib/rbac/route", () => ({
   bootstrapCurrentUserRole: vi.fn(),
   requireRbacPermission: vi.fn(),
 }));
-vi.mock("@/lib/rbac/service", () => ({ loadCurrentUserRole: loadCurrentUserRoleMock }));
 vi.mock("@/lib/driver-access", () => ({ listActiveDrivers: listActiveDriversMock }));
+vi.mock("@/lib/driver-mobile-read-access", () => ({ requireDriverMobileReadAccess: requireDriverMobileReadAccessMock }));
+vi.mock("@/lib/driver-mobile-identity", () => ({
+  DriverMobileIdentityError: class extends Error {
+    status: number;
+    code: string;
+    constructor(message: string, code: string, status: number) {
+      super(message);
+      this.status = status;
+      this.code = code;
+    }
+  },
+}));
 
 const importRoute = () => import("@/app/api/driver-mobile/preview-drivers/route");
 const request = () => new Request("http://localhost/api/driver-mobile/preview-drivers", { headers: { Authorization: "Bearer token" } });
@@ -39,7 +50,7 @@ describe("GET /api/driver-mobile/preview-drivers", () => {
   });
 
   it.each(["administrator", "supervisor"])("returns minimal active Driver fields for %s", async (roleKey) => {
-    loadCurrentUserRoleMock.mockResolvedValue({ role_key: roleKey, is_active: true });
+    requireDriverMobileReadAccessMock.mockResolvedValue({ role_key: roleKey, is_active: true });
     const { GET } = await importRoute();
     const response = await GET(request());
 
@@ -48,7 +59,7 @@ describe("GET /api/driver-mobile/preview-drivers", () => {
   });
 
   it("does not expose the Driver list to Driver roles", async () => {
-    loadCurrentUserRoleMock.mockResolvedValue({ role_key: "driver", is_active: true });
+    requireDriverMobileReadAccessMock.mockResolvedValue({ role_key: "driver", is_active: true });
     const { GET } = await importRoute();
     const response = await GET(request());
 

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { bootstrapCurrentUserRole, RbacPermissionError, requireRbacPermission } from "@/lib/rbac/route";
+import { bootstrapCurrentUserRole, RbacPermissionError } from "@/lib/rbac/route";
 import {
   createAuthenticatedRouteSupabaseClient,
   getRouteBearerToken,
@@ -7,6 +7,7 @@ import {
   SupabaseRouteAuthError,
 } from "@/lib/supabase-route-client";
 import { DriverMobileIdentityError, resolveDriverMobileReadContext } from "@/lib/driver-mobile-identity";
+import { requireDriverMobileReadAccess } from "@/lib/driver-mobile-read-access";
 import { listDriverOperationalInstructionsForPreview } from "@/lib/driver-mobile-preview-instructions";
 import { listDriverOperationalInstructionsForUser } from "@/lib/driver-operational-instructions";
 
@@ -23,7 +24,7 @@ export async function GET(request: Request) {
     const supabase = createAuthenticatedRouteSupabaseClient(request);
     const user = await requireAuthenticatedRouteUser(supabase, accessToken);
     await bootstrapCurrentUserRole(supabase, user);
-    await requireRbacPermission(supabase, user.id, "driver_mobile", "view");
+    await requireDriverMobileReadAccess(supabase, user.id);
 
     const params = new URL(request.url).searchParams;
     const query = querySchema.parse({
