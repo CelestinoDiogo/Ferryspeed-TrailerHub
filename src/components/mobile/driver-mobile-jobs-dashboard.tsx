@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { LogOut } from "lucide-react";
 import { PermissionGuard } from "@/components/auth/permission-guard";
@@ -8,6 +8,23 @@ import { toRoleLabel, type RoleKey } from "@/lib/auth/roles";
 import { useCurrentUser } from "@/lib/auth/use-current-user";
 import { supabase } from "@/lib/supabase";
 import { type DriverMobileTask, type DriverTaskAction } from "@/lib/driver-mobile-service";
+import {
+  applyDriverMobileQueuedActions,
+  createDriverMobileQueuedAction,
+  findDriverMobileQueuedAction,
+  getNextPendingDriverMobileQueuedAction,
+  getPendingDriverMobileQueueDelayMs,
+  isDriverMobileActionSatisfied,
+  isDriverMobileNetworkFailure,
+  loadDriverMobileActionQueue,
+  reconcileDriverMobileQueuedActions,
+  removeDriverMobileQueuedAction,
+  saveDriverMobileActionQueue,
+  toDriverMobileQueuedFailure,
+  upsertDriverMobileQueuedAction,
+  updateDriverMobileQueuedAction,
+  type DriverMobileQueuedAction,
+} from "@/lib/mobile/driver-mobile-action-queue";
 import { getSessionToken, SESSION_EXPIRED_MESSAGE } from "@/lib/voice/session";
 
 type DriverTaskResponse = {
@@ -79,6 +96,26 @@ const actionLabel = (action: DriverTaskAction) => {
   return "ENTREGUE / DELIVERED";
 };
 
+const queuedActionMessage = (queuedAction: DriverMobileQueuedAction | null) => {
+  if (!queuedAction) {
+    return null;
+  }
+
+  if (queuedAction.state === "syncing") {
+    return "Sending...";
+  }
+
+  if (queuedAction.state === "pending") {
+    return "Saved - waiting for connection";
+  }
+
+  if (queuedAction.state === "failed") {
+    return "Could not finish. Retry";
+  }
+
+  return "Could not finish";
+};
+
 const agingTone = (level: DriverMobileTask["collectionAging"] extends infer T
   ? T extends { level: infer L }
     ? L
@@ -101,13 +138,39 @@ export function DriverMobileJobsDashboard() {
   const mobileRoleKey = roleKey as RoleKey | null;
 
   const [driver, setDriver] = useState<DriverTaskResponse["driver"]>(null);
-  const [tasks, setTasks] = useState<DriverMobileTask[]>([]);
+  const [serverTasks, setServerTasks] = useState<DriverMobileTask[]>([]);
+  const [queuedActions, setQueuedActions] = useState<DriverMobileQueuedAction[]>(() => loadDriverMobileActionQueue());
   const [isLoadingTasks, setIsLoadingTasks] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [isSigningOut, setIsSigningOut] = useState(false);
-  const [actionBookingId, setActionBookingId] = useState<string | null>(null);
   const [temperatureByBookingId, setTemperatureByBookingId] = useState<Record<string, string>>({});
+  const [isOnline, setIsOnline] = useState(() => (typeof window === "undefined" ? true : window.navigator.onLine));
+  const queueSyncingRef = useRef(false);
+  const actionLocksRef = useRef(new Set<string>());
+  const queuedActionsRef = useRef(queuedActions);
+
+  useEffect(() => {
+    queuedActionsRef.current = queuedActions;
+    saveDriverMobileActionQueue(queuedActions);
+  }, [queuedActions]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+    };
+  }, []);
 
   const loadTasks = useCallback(async (withLoading = true) => {
     if (withLoading) {
@@ -129,13 +192,17 @@ export function DriverMobileJobsDashboard() {
         throw new Error(payload.error || "Unable to load assigned jobs.");
       }
 
+      const nextTasks = Array.isArray(payload.tasks) ? payload.tasks : [];
       setDriver(payload.driver ?? null);
-      setTasks(Array.isArray(payload.tasks) ? payload.tasks : []);
+      setServerTasks(nextTasks);
+      setQueuedActions((current) => reconcileDriverMobileQueuedActions(current, nextTasks));
+      return nextTasks;
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unable to load assigned jobs.";
       setError(message);
       setDriver(null);
-      setTasks([]);
+      setServerTasks([]);
+      return [] as DriverMobileTask[];
     } finally {
       if (withLoading) {
         setIsLoadingTasks(false);
@@ -148,6 +215,133 @@ export function DriverMobileJobsDashboard() {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void loadTasks();
   }, [loadTasks]);
+
+  const clearActionLock = useCallback((bookingId: string) => {
+    actionLocksRef.current.delete(bookingId);
+  }, []);
+
+  const postAction = useCallback(async (queuedAction: DriverMobileQueuedAction) => {
+    const token = await getSessionToken();
+    const response = await fetch("/api/driver-mobile/tasks/action", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        bookingId: queuedAction.bookingId,
+        action: queuedAction.action,
+        temperatureC: typeof queuedAction.temperatureC === "number" ? queuedAction.temperatureC : undefined,
+      }),
+    });
+
+    const payload = (await response.json().catch(() => ({}))) as { error?: string };
+    if (!response.ok) {
+      throw new Error(payload.error || "Unable to update job status.");
+    }
+
+    return payload;
+  }, []);
+
+  const submitQueuedAction = useCallback(async (queuedAction: DriverMobileQueuedAction, source: "direct" | "queue") => {
+    if (source === "queue") {
+      if (queueSyncingRef.current) {
+        return;
+      }
+
+      queueSyncingRef.current = true;
+    }
+
+    const attemptAt = new Date().toISOString();
+
+    setQueuedActions((current) => updateDriverMobileQueuedAction(current, queuedAction.id, {
+      state: "syncing",
+      lastError: null,
+      lastAttemptAt: attemptAt,
+      nextRetryAt: null,
+    }));
+
+    try {
+      await postAction({
+        ...queuedAction,
+        state: "syncing",
+        lastAttemptAt: attemptAt,
+        nextRetryAt: null,
+      });
+
+      setQueuedActions((current) => removeDriverMobileQueuedAction(current, queuedAction.id));
+      setSuccess(`${source === "queue" ? "Completed" : `${queuedAction.action === "ACKNOWLEDGED" ? "Acknowledged" : "Updated"}`} - ${queuedAction.bookingId.slice(0, 8)}`);
+      setError(null);
+      clearActionLock(queuedAction.bookingId);
+      await loadTasks(false);
+    } catch (err) {
+      if (isDriverMobileNetworkFailure(err)) {
+        const nextRetryCount = queuedAction.retryCount + 1;
+        setQueuedActions((current) => updateDriverMobileQueuedAction(current, queuedAction.id, {
+          state: "pending",
+          retryCount: nextRetryCount,
+          lastError: null,
+          lastAttemptAt: attemptAt,
+          nextRetryAt: isOnline ? new Date(Date.now() + Math.max(1000, nextRetryCount * 1000)).toISOString() : null,
+        }));
+        setSuccess("Saved - waiting for connection");
+        setError(null);
+        clearActionLock(queuedAction.bookingId);
+        return;
+      }
+
+      const refreshedTasks = await loadTasks(false);
+      const refreshedTask = refreshedTasks.find((task) => task.bookingId === queuedAction.bookingId) ?? null;
+
+      if (source === "queue" && isDriverMobileActionSatisfied(refreshedTask, queuedAction.action)) {
+        setQueuedActions((current) => removeDriverMobileQueuedAction(current, queuedAction.id));
+        setSuccess("Completed");
+        setError(null);
+        clearActionLock(queuedAction.bookingId);
+        return;
+      }
+
+      if (source === "queue") {
+        const failure = toDriverMobileQueuedFailure(err, queuedAction.retryCount);
+        setQueuedActions((current) => updateDriverMobileQueuedAction(current, queuedAction.id, {
+          state: failure.state,
+          retryCount: failure.retryCount,
+          lastError: failure.lastError,
+          lastAttemptAt: attemptAt,
+          nextRetryAt: failure.nextRetryAt,
+        }));
+      } else {
+        setQueuedActions((current) => removeDriverMobileQueuedAction(current, queuedAction.id));
+      }
+
+      const message = err instanceof Error ? err.message : "Unable to update job status.";
+      setSuccess(null);
+      setError(message === SESSION_EXPIRED_MESSAGE ? SESSION_EXPIRED_MESSAGE : message);
+      clearActionLock(queuedAction.bookingId);
+    } finally {
+      if (source === "queue") {
+        queueSyncingRef.current = false;
+      }
+    }
+  }, [clearActionLock, isOnline, loadTasks, postAction]);
+
+  useEffect(() => {
+    if (!isOnline) {
+      return;
+    }
+
+    const nextQueuedAction = getNextPendingDriverMobileQueuedAction(queuedActions);
+    if (!nextQueuedAction) {
+      return;
+    }
+
+    const retryDelayMs = getPendingDriverMobileQueueDelayMs(queuedActions);
+    const timeoutId = window.setTimeout(() => {
+      void submitQueuedAction(nextQueuedAction, "queue");
+    }, retryDelayMs);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [isOnline, queuedActions, submitQueuedAction]);
 
   const handleSignOut = useCallback(async () => {
     if (isSigningOut) {
@@ -162,7 +356,7 @@ export function DriverMobileJobsDashboard() {
   }, [isSigningOut, router]);
 
   const handleAction = useCallback(async (task: DriverMobileTask) => {
-    if (!task.nextAction || actionBookingId) {
+    if (!task.nextAction || actionLocksRef.current.has(task.bookingId) || findDriverMobileQueuedAction(queuedActionsRef.current, task.bookingId)) {
       return;
     }
 
@@ -180,40 +374,49 @@ export function DriverMobileJobsDashboard() {
       return;
     }
 
-    setActionBookingId(task.bookingId);
+    const queuedAction = createDriverMobileQueuedAction({
+      bookingId: task.bookingId,
+      action: task.nextAction,
+      temperatureC: requiresTemperature && Number.isFinite(parsedTemperature) ? parsedTemperature : null,
+    });
+
+    actionLocksRef.current.add(task.bookingId);
+    setQueuedActions((current) => upsertDriverMobileQueuedAction(current, queuedAction));
     setError(null);
     setSuccess(null);
+    setTemperatureByBookingId((current) => ({ ...current, [task.bookingId]: "" }));
+    void submitQueuedAction(queuedAction, "direct");
+  }, [submitQueuedAction, temperatureByBookingId]);
 
-    try {
-      const token = await getSessionToken();
-      const response = await fetch("/api/driver-mobile/tasks/action", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          bookingId: task.bookingId,
-          action: task.nextAction,
-          temperatureC: Number.isFinite(parsedTemperature) ? parsedTemperature : undefined,
-        }),
-      });
-
-      const payload = (await response.json().catch(() => ({}))) as { error?: string };
-      if (!response.ok) {
-        throw new Error(payload.error || "Unable to update job status.");
-      }
-
-      setSuccess(`${task.trailerNumber} updated successfully.`);
-      setTemperatureByBookingId((current) => ({ ...current, [task.bookingId]: "" }));
-      await loadTasks(false);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Unable to update job status.";
-      setError(message === SESSION_EXPIRED_MESSAGE ? SESSION_EXPIRED_MESSAGE : message);
-    } finally {
-      setActionBookingId(null);
+  const handleRetryQueuedAction = useCallback(async (queuedAction: DriverMobileQueuedAction) => {
+    if (actionLocksRef.current.has(queuedAction.bookingId)) {
+      return;
     }
-  }, [actionBookingId, loadTasks, temperatureByBookingId]);
+
+    if (!isOnline) {
+      setError("Connection is still unavailable.");
+      return;
+    }
+
+    actionLocksRef.current.add(queuedAction.bookingId);
+    setQueuedActions((current) => updateDriverMobileQueuedAction(current, queuedAction.id, {
+      state: "pending",
+      lastError: null,
+      nextRetryAt: null,
+    }));
+    await submitQueuedAction({
+      ...queuedAction,
+      state: "pending",
+      lastError: null,
+      nextRetryAt: null,
+    }, "queue");
+  }, [isOnline, submitQueuedAction]);
+
+  const tasks = useMemo(() => applyDriverMobileQueuedActions(serverTasks, queuedActions), [queuedActions, serverTasks]);
+
+  const queuedActionByBookingId = useMemo(() => {
+    return new Map(queuedActions.map((item) => [item.bookingId, item]));
+  }, [queuedActions]);
 
   const grouped = useMemo(() => {
     const toDo = tasks.filter((task) =>
@@ -294,11 +497,13 @@ export function DriverMobileJobsDashboard() {
       {items.length > 0 ? (
         <div className="space-y-3">
           {items.map((task) => {
-            const isPending = actionBookingId === task.bookingId;
+            const queuedAction = queuedActionByBookingId.get(task.bookingId) ?? null;
+            const isPending = queuedAction?.state === "syncing";
             const showTemperatureInput = task.nextAction === "COLLECTED" && task.temperature.required;
             const showAging = task.taskKind === "collection" && task.collectionAging !== null;
             const collectionAging = task.collectionAging;
             const completedAt = task.deliveredAt ?? task.collectedAt;
+            const queueMessage = queuedActionMessage(queuedAction);
 
             return (
               <article key={task.bookingId} className="rounded-xl border border-slate-200 bg-slate-50/80 p-3">
@@ -349,17 +554,33 @@ export function DriverMobileJobsDashboard() {
 
                 {task.notes ? <p className="mt-2 text-sm text-slate-600">{task.notes}</p> : null}
 
+                {queueMessage ? (
+                  <div className={`mt-3 rounded-xl border px-3 py-2 text-xs font-semibold ${queuedAction?.state === "failed" || queuedAction?.state === "conflict" ? "border-rose-200 bg-rose-50 text-rose-800" : queuedAction?.state === "pending" ? "border-amber-200 bg-amber-50 text-amber-900" : "border-cyan-200 bg-cyan-50 text-cyan-900"}`}>
+                    {queueMessage}
+                  </div>
+                ) : null}
+
                 <div className="mt-3 flex justify-end">
-                  {task.nextAction ? (
+                  {queuedAction?.state === "failed" ? (
                     <button
                       type="button"
-                      disabled={isPending || Boolean(actionBookingId)}
+                      onClick={() => {
+                        void handleRetryQueuedAction(queuedAction);
+                      }}
+                      className="w-full rounded-xl bg-amber-600 px-4 py-3 text-sm font-semibold text-white"
+                    >
+                      Retry
+                    </button>
+                  ) : task.nextAction ? (
+                    <button
+                      type="button"
+                      disabled={Boolean(queuedAction)}
                       onClick={() => {
                         void handleAction(task);
                       }}
                       className="w-full rounded-xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-400"
                     >
-                      {isPending ? "Updating..." : actionLabel(task.nextAction)}
+                      {isPending ? "Sending..." : actionLabel(task.nextAction)}
                     </button>
                   ) : (
                     <span className="text-xs font-medium uppercase tracking-[0.14em] text-slate-500">No action required</span>
@@ -396,6 +617,7 @@ export function DriverMobileJobsDashboard() {
 
           {error ? <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">{error}</div> : null}
           {success ? <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">{success}</div> : null}
+          {!isOnline ? <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">Offline. Saved actions will send when connection returns.</div> : null}
 
           {isLoading || isLoadingTasks ? (
             <div className="mt-4 rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-600">Loading assigned jobs...</div>
