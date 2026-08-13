@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DriverMobileJobsDashboard } from "@/components/mobile/driver-mobile-jobs-dashboard";
 
@@ -11,6 +11,10 @@ const { signOutMock, routerReplaceMock, routerRefreshMock } = vi.hoisted(() => (
   signOutMock: vi.fn(),
   routerReplaceMock: vi.fn(),
   routerRefreshMock: vi.fn(),
+}));
+
+const realtimeState = vi.hoisted(() => ({
+  callback: null as null | (() => void),
 }));
 
 const QUEUE_STORAGE_KEY = "trailerhub.driver-mobile.action-queue.v1";
@@ -31,7 +35,9 @@ vi.mock("@/lib/auth/use-current-user", () => ({
 }));
 
 vi.mock("@/lib/realtime/operational-realtime", () => ({
-  useOperationalRealtime: () => undefined,
+  useOperationalRealtime: (_topics: string[], callback: () => void) => {
+    realtimeState.callback = callback;
+  },
 }));
 
 vi.mock("@/lib/supabase", () => ({
@@ -118,12 +124,42 @@ describe("DriverMobileJobsDashboard", () => {
     setOnlineState(true);
     getSessionTokenMock.mockResolvedValue("token");
     signOutMock.mockResolvedValue(undefined);
+    realtimeState.callback = null;
     useCurrentUserMock.mockReturnValue({
       roleKey: "driver",
       fullName: "Driver One",
       email: "driver@example.com",
       isLoading: false,
     });
+  });
+
+  it("marks new unacknowledged work as attention with a top summary", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+
+        if (url.includes("/api/driver-mobile/tasks") && method === "GET") {
+          return new Response(JSON.stringify({
+            driver: { id: "driver-a", display_name: "Driver One", user_id: "user-a" },
+            tasks: [makeTask({ bookingId: "new-a", trailerId: "trailer-new", trailerNumber: "FS-NEW", nextAction: "ACKNOWLEDGED", driverAcknowledgedAt: null })],
+          }), { status: 200 });
+        }
+
+        if (url.includes("/api/driver-mobile/instructions") && method === "GET") {
+          return new Response(JSON.stringify(buildInstructionFeed([])), { status: 200 });
+        }
+
+        return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+      }),
+    );
+
+    render(<DriverMobileJobsDashboard />);
+
+    expect(await screen.findByText("FS-NEW")).toBeInTheDocument();
+    expect(screen.getAllByText("NEW").length).toBeGreaterThan(0);
+    expect(screen.getByText(/NEED ATTENTION/)).toBeInTheDocument();
   });
 
   it("renders grouped jobs and linked operational instruction context in the live dashboard", async () => {
@@ -209,6 +245,8 @@ describe("DriverMobileJobsDashboard", () => {
       expect(screen.getAllByText(/Acknowledged/).length).toBeGreaterThan(0);
     });
 
+    expect(screen.queryAllByText("NEW").length).toBe(0);
+
     expect(fetchMock).toHaveBeenCalledWith(
       expect.stringContaining("/api/driver-mobile/tasks/action"),
       expect.objectContaining({ method: "POST" }),
@@ -250,6 +288,7 @@ describe("DriverMobileJobsDashboard", () => {
     render(<DriverMobileJobsDashboard />);
 
     expect(await screen.findByText("Report to quay")).toBeInTheDocument();
+    expect(screen.getByText(/NEED ATTENTION/)).toBeInTheDocument();
     fireEvent.click(screen.getAllByRole("button", { name: "ACKNOWLEDGE" })[0]);
 
     await waitFor(() => {
@@ -291,6 +330,103 @@ describe("DriverMobileJobsDashboard", () => {
     });
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("surfaces critical instruction priority on linked work", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+
+        if (url.includes("/api/driver-mobile/tasks") && method === "GET") {
+          return new Response(JSON.stringify({
+            driver: { id: "driver-a", display_name: "Driver One", user_id: "user-a" },
+            tasks: [makeTask({ bookingId: "prio-a", trailerId: "trailer-prio", trailerNumber: "FS-PRIO", nextAction: "ACKNOWLEDGED" })],
+          }), { status: 200 });
+        }
+
+        if (url.includes("/api/driver-mobile/instructions") && method === "GET") {
+          return new Response(JSON.stringify(buildInstructionFeed([
+            makeInstruction({ id: "instruction-prio", deliveryBookingId: "prio-a", trailerId: "trailer-prio", trailerNumber: "FS-PRIO", priority: "critical" }),
+          ])), { status: 200 });
+        }
+
+        return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+      }),
+    );
+
+    render(<DriverMobileJobsDashboard />);
+
+    expect(await screen.findByText("FS-PRIO")).toBeInTheDocument();
+    expect(screen.getByText("CRITICAL")).toBeInTheDocument();
+  });
+
+  it("keeps collection ageing color thresholds unchanged", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+
+        if (url.includes("/api/driver-mobile/tasks") && method === "GET") {
+          return new Response(JSON.stringify({
+            driver: { id: "driver-a", display_name: "Driver One", user_id: "user-a" },
+            tasks: [
+              makeTask({ bookingId: "green", trailerNumber: "FS-GREEN", taskKind: "collection", status: "waiting_collection", nextAction: "COLLECTED", collectionAging: { level: "green", label: "Under 24h", waitingHours: 12, waitingSince: "2026-08-13T01:00:00.000Z", dueDate: null, isOverdue: false, overdueDays: null } }),
+              makeTask({ bookingId: "orange", trailerNumber: "FS-ORANGE", taskKind: "collection", status: "waiting_collection", nextAction: "COLLECTED", collectionAging: { level: "orange", label: "24-48h", waitingHours: 30, waitingSince: "2026-08-12T01:00:00.000Z", dueDate: null, isOverdue: true, overdueDays: 1 } }),
+              makeTask({ bookingId: "red", trailerNumber: "FS-RED", taskKind: "collection", status: "waiting_collection", nextAction: "COLLECTED", collectionAging: { level: "red", label: "Over 48h", waitingHours: 60, waitingSince: "2026-08-11T01:00:00.000Z", dueDate: null, isOverdue: true, overdueDays: 2 } }),
+            ],
+          }), { status: 200 });
+        }
+
+        if (url.includes("/api/driver-mobile/instructions") && method === "GET") {
+          return new Response(JSON.stringify(buildInstructionFeed([])), { status: 200 });
+        }
+
+        return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+      }),
+    );
+
+    render(<DriverMobileJobsDashboard />);
+
+    expect(await screen.findByText("FS-GREEN")).toBeInTheDocument();
+    expect(screen.getByText(/Under 24h/).className).toContain("border-emerald-300");
+    expect(screen.getByText(/24-48h/).className).toContain("border-orange-300");
+    expect(screen.getByText(/Over 48h/).className).toContain("border-rose-300");
+  });
+
+  it("sorts overdue collection attention ahead of normal work", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+
+        if (url.includes("/api/driver-mobile/tasks") && method === "GET") {
+          return new Response(JSON.stringify({
+            driver: { id: "driver-a", display_name: "Driver One", user_id: "user-a" },
+            tasks: [
+              makeTask({ bookingId: "normal", trailerNumber: "FS-NORMAL", taskKind: "delivery", nextAction: "COLLECTED", status: "ready", group: "upcoming", deliveryDate: "2026-08-13", deliveryTime: "15:00:00" }),
+              makeTask({ bookingId: "overdue", trailerNumber: "FS-OVERDUE", taskKind: "collection", status: "waiting_collection", nextAction: "COLLECTED", collectionAging: { level: "red", label: "Over 48h", waitingHours: 72, waitingSince: "2026-08-10T01:00:00.000Z", dueDate: null, isOverdue: true, overdueDays: 3 } }),
+            ],
+          }), { status: 200 });
+        }
+
+        if (url.includes("/api/driver-mobile/instructions") && method === "GET") {
+          return new Response(JSON.stringify(buildInstructionFeed([])), { status: 200 });
+        }
+
+        return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+      }),
+    );
+
+    render(<DriverMobileJobsDashboard />);
+
+    expect(await screen.findByText("FS-OVERDUE")).toBeInTheDocument();
+    const attentionSection = screen.getByRole("heading", { name: "Needs Attention" }).closest("section") as HTMLElement;
+    const articles = within(attentionSection).getAllByRole("article");
+    expect(within(articles[0]).getByText("FS-OVERDUE")).toBeInTheDocument();
   });
 
   it("disables the tapped action while sending and prevents duplicate requests", async () => {
@@ -574,5 +710,125 @@ describe("DriverMobileJobsDashboard", () => {
       expect(readQueuedActions()).toEqual([]);
       expect(screen.getByText("Completed")).toBeInTheDocument();
     });
+  });
+
+  it("shows retry attention for failed queued actions", async () => {
+    window.localStorage.setItem(QUEUE_STORAGE_KEY, JSON.stringify([
+      {
+        id: "queued-failed",
+        bookingId: "retry-failed",
+        action: "COLLECTED",
+        linkedInstructionIds: [],
+        temperatureC: null,
+        createdAt: "2026-08-13T10:00:00.000Z",
+        retryCount: 5,
+        state: "failed",
+        lastError: "Server unavailable",
+        lastAttemptAt: "2026-08-13T10:00:00.000Z",
+        nextRetryAt: null,
+      },
+    ]));
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+
+        if (url.includes("/api/driver-mobile/tasks") && method === "GET") {
+          return new Response(JSON.stringify({
+            driver: { id: "driver-a", display_name: "Driver One", user_id: "user-a" },
+            tasks: [makeTask({ bookingId: "retry-failed", trailerNumber: "FS-FAIL", status: "ready", nextAction: "COLLECTED" })],
+          }), { status: 200 });
+        }
+
+        if (url.includes("/api/driver-mobile/instructions") && method === "GET") {
+          return new Response(JSON.stringify(buildInstructionFeed([])), { status: 200 });
+        }
+
+        return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+      }),
+    );
+
+    render(<DriverMobileJobsDashboard />);
+
+    expect(await screen.findByText("FS-FAIL")).toBeInTheDocument();
+    expect(screen.getByText("RETRY NEEDED")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+  });
+
+  it("updates dashboard when realtime callback reports a new assignment", async () => {
+    let taskVersion = 1;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+
+        if (url.includes("/api/driver-mobile/tasks") && method === "GET") {
+          return new Response(JSON.stringify({
+            driver: { id: "driver-a", display_name: "Driver One", user_id: "user-a" },
+            tasks: taskVersion === 1
+              ? [makeTask({ bookingId: "base", trailerNumber: "FS-BASE" })]
+              : [makeTask({ bookingId: "base", trailerNumber: "FS-BASE" }), makeTask({ bookingId: "new-job", trailerNumber: "FS-NEWRT", bookingReference: "PRO123" })],
+          }), { status: 200 });
+        }
+
+        if (url.includes("/api/driver-mobile/instructions") && method === "GET") {
+          return new Response(JSON.stringify(buildInstructionFeed([])), { status: 200 });
+        }
+
+        return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+      }),
+    );
+
+    render(<DriverMobileJobsDashboard />);
+
+    expect(await screen.findByText("FS-BASE")).toBeInTheDocument();
+    expect(screen.queryByText("FS-NEWRT")).not.toBeInTheDocument();
+
+    taskVersion = 2;
+    expect(realtimeState.callback).toBeTruthy();
+    realtimeState.callback?.();
+
+    expect(await screen.findByText("FS-NEWRT")).toBeInTheDocument();
+    expect(screen.getByText(/New job assigned - PRO123/)).toBeInTheDocument();
+  });
+
+  it("does not repeatedly show new-work alert for the same assignment", async () => {
+    let callCount = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+
+        if (url.includes("/api/driver-mobile/tasks") && method === "GET") {
+          callCount += 1;
+          return new Response(JSON.stringify({
+            driver: { id: "driver-a", display_name: "Driver One", user_id: "user-a" },
+            tasks: [makeTask({ bookingId: "same", trailerNumber: "FS-SAME", bookingReference: "PRO123" })],
+          }), { status: 200 });
+        }
+
+        if (url.includes("/api/driver-mobile/instructions") && method === "GET") {
+          return new Response(JSON.stringify(buildInstructionFeed([])), { status: 200 });
+        }
+
+        return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+      }),
+    );
+
+    render(<DriverMobileJobsDashboard />);
+    expect(await screen.findByText("FS-SAME")).toBeInTheDocument();
+
+    realtimeState.callback?.();
+    realtimeState.callback?.();
+
+    await waitFor(() => {
+      expect(callCount).toBeGreaterThan(2);
+    });
+
+    expect(screen.queryByText(/New job assigned - PRO123/)).not.toBeInTheDocument();
   });
 });

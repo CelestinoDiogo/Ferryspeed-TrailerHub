@@ -160,6 +160,34 @@ const queuedActionMessage = (queuedAction: DriverMobileQueuedAction | null) => {
   return "Could not finish";
 };
 
+const supportsVibration = () => {
+  if (typeof window === "undefined") {
+    return false;
+  }
+
+  return typeof window.navigator?.vibrate === "function";
+};
+
+const triggerDeviceAttentionFeedback = () => {
+  if (!supportsVibration()) {
+    return;
+  }
+
+  window.navigator.vibrate([100, 60, 100]);
+};
+
+const toPriorityLabel = (priority: DriverInstructionRecord["priority"]) => {
+  if (priority === "critical") {
+    return "CRITICAL";
+  }
+
+  if (priority === "high") {
+    return "HIGH";
+  }
+
+  return "NORMAL";
+};
+
 const agingTone = (level: DriverMobileTask["collectionAging"] extends infer T
   ? T extends { level: infer L }
     ? L
@@ -193,6 +221,7 @@ export function DriverMobileJobsDashboard() {
   const [isLoadingInstructions, setIsLoadingInstructions] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [attentionAlert, setAttentionAlert] = useState<string | null>(null);
   const [isSigningOut, setIsSigningOut] = useState(false);
   const [instructionActionId, setInstructionActionId] = useState<string | null>(null);
   const [temperatureByBookingId, setTemperatureByBookingId] = useState<Record<string, string>>({});
@@ -201,6 +230,12 @@ export function DriverMobileJobsDashboard() {
   const actionLocksRef = useRef(new Set<string>());
   const queuedActionsRef = useRef(queuedActions);
   const instructionFeedRef = useRef(instructionFeed);
+  const knownTaskIdsRef = useRef(new Set<string>());
+  const knownUnreadInstructionIdsRef = useRef(new Set<string>());
+  const alertedSignalsRef = useRef(new Set<string>());
+  const hasHydratedTaskIdsRef = useRef(false);
+  const hasHydratedInstructionIdsRef = useRef(false);
+  const attentionAlertTimeoutRef = useRef<number | null>(null);
 
   useEffect(() => {
     queuedActionsRef.current = queuedActions;
@@ -210,6 +245,32 @@ export function DriverMobileJobsDashboard() {
   useEffect(() => {
     instructionFeedRef.current = instructionFeed;
   }, [instructionFeed]);
+
+  useEffect(() => {
+    return () => {
+      if (attentionAlertTimeoutRef.current !== null) {
+        window.clearTimeout(attentionAlertTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  const raiseAttentionAlert = useCallback((message: string, signalKey: string) => {
+    if (alertedSignalsRef.current.has(signalKey)) {
+      return;
+    }
+
+    alertedSignalsRef.current.add(signalKey);
+    setAttentionAlert(message);
+    triggerDeviceAttentionFeedback();
+
+    if (attentionAlertTimeoutRef.current !== null) {
+      window.clearTimeout(attentionAlertTimeoutRef.current);
+    }
+
+    attentionAlertTimeoutRef.current = window.setTimeout(() => {
+      setAttentionAlert((current) => (current === message ? null : current));
+    }, 5000);
+  }, []);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -226,7 +287,7 @@ export function DriverMobileJobsDashboard() {
       window.removeEventListener("online", handleOnline);
       window.removeEventListener("offline", handleOffline);
     };
-  }, []);
+  }, [raiseAttentionAlert]);
 
   const loadTasks = useCallback(async (withLoading = true) => {
     if (withLoading) {
@@ -249,6 +310,22 @@ export function DriverMobileJobsDashboard() {
       }
 
       const nextTasks = Array.isArray(payload.tasks) ? payload.tasks : [];
+
+      const nextTaskIds = new Set(nextTasks.map((task) => task.bookingId));
+      if (!hasHydratedTaskIdsRef.current) {
+        knownTaskIdsRef.current = nextTaskIds;
+        hasHydratedTaskIdsRef.current = true;
+      } else {
+        const previousTaskIds = knownTaskIdsRef.current;
+        const newTask = nextTasks.find((task) => !previousTaskIds.has(task.bookingId));
+        knownTaskIdsRef.current = nextTaskIds;
+
+        if (newTask) {
+          const label = newTask.bookingReference?.trim() || newTask.trailerNumber || newTask.bookingId.slice(0, 8).toUpperCase();
+          raiseAttentionAlert(`New job assigned - ${label}`, `task:${newTask.bookingId}`);
+        }
+      }
+
       setDriver(payload.driver ?? null);
       setServerTasks(nextTasks);
       setQueuedActions((current) => reconcileDriverMobileQueuedActions(current, nextTasks));
@@ -264,7 +341,7 @@ export function DriverMobileJobsDashboard() {
         setIsLoadingTasks(false);
       }
     }
-  }, []);
+  }, [raiseAttentionAlert]);
 
   const loadInstructions = useCallback(async (withLoading = true) => {
     if (withLoading) {
@@ -286,6 +363,23 @@ export function DriverMobileJobsDashboard() {
       }
 
       const recent = Array.isArray(payload.recent) ? payload.recent : [];
+      const unreadRecent = recent.filter((item) => !item.readAt);
+      const unreadIds = new Set(unreadRecent.map((item) => item.id));
+
+      if (!hasHydratedInstructionIdsRef.current) {
+        knownUnreadInstructionIdsRef.current = unreadIds;
+        hasHydratedInstructionIdsRef.current = true;
+      } else {
+        const previousUnreadIds = knownUnreadInstructionIdsRef.current;
+        const newUnreadInstruction = unreadRecent.find((item) => !previousUnreadIds.has(item.id));
+        knownUnreadInstructionIdsRef.current = unreadIds;
+
+        if (newUnreadInstruction) {
+          const label = newUnreadInstruction.trailerNumber?.trim() || newUnreadInstruction.instruction.slice(0, 24);
+          raiseAttentionAlert(`New instruction - ${label}`, `instruction:${newUnreadInstruction.id}`);
+        }
+      }
+
       setInstructionFeed({
         unreadCount: typeof payload.unreadCount === "number" ? payload.unreadCount : recent.filter((item) => !item.readAt).length,
         newestUnread: payload.newestUnread ?? recent.find((item) => !item.readAt) ?? null,
@@ -304,12 +398,14 @@ export function DriverMobileJobsDashboard() {
         setIsLoadingInstructions(false);
       }
     }
-  }, []);
+  }, [raiseAttentionAlert]);
 
   useEffect(() => {
-    // Initial fetch runs once on mount to populate assigned jobs.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    void loadTasks();
+    const timeoutId = window.setTimeout(() => {
+      void loadTasks();
+    }, 0);
+
+    return () => window.clearTimeout(timeoutId);
   }, [loadTasks]);
 
   useEffect(() => {
@@ -645,30 +741,110 @@ export function DriverMobileJobsDashboard() {
       .sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime());
   }, [effectiveInstructions]);
 
+  const taskAttentionMeta = useMemo(() => {
+    return tasks.map((task) => {
+      const queuedAction = queuedActionByBookingId.get(task.bookingId) ?? null;
+      const linkedInstructions = linkedInstructionsByBookingId.get(task.bookingId) ?? linkedInstructionsByBookingId.get(task.trailerId) ?? [];
+      const activeInstruction = linkedInstructions[0] ?? null;
+      const hasUnreadInstruction = linkedInstructions.some((instruction) => !instruction.readAt);
+      const isNewJob = task.nextAction === "ACKNOWLEDGED" && !task.driverAcknowledgedAt;
+      const isPriority = activeInstruction?.priority === "high" || activeInstruction?.priority === "critical";
+      const isUrgentPriority = activeInstruction?.priority === "critical";
+      const collectionAgingLevel = task.collectionAging?.level ?? null;
+      const isAgingAttention = task.taskKind === "collection" && collectionAgingLevel !== null && collectionAgingLevel !== "green";
+      const requiresRetry = queuedAction?.state === "failed" || queuedAction?.state === "conflict";
+      const offlinePending = queuedAction?.state === "pending";
+      const needsAttention = isNewJob || hasUnreadInstruction || isPriority || isAgingAttention || Boolean(requiresRetry) || Boolean(offlinePending);
+
+      let sortBucket = 7;
+
+      if (requiresRetry) {
+        sortBucket = 1;
+      } else if (isNewJob && isUrgentPriority) {
+        sortBucket = 2;
+      } else if (isPriority) {
+        sortBucket = 3;
+      } else if (isAgingAttention) {
+        sortBucket = 4;
+      } else if (task.group !== "completed" && (task.nextAction === "ACKNOWLEDGED" || task.nextAction === "COLLECTED")) {
+        sortBucket = 5;
+      } else if (task.group !== "completed" && task.nextAction === "DELIVERED") {
+        sortBucket = 6;
+      }
+
+      return {
+        task,
+        queuedAction,
+        linkedInstructions,
+        activeInstruction,
+        hasUnreadInstruction,
+        isNewJob,
+        isPriority,
+        isAgingAttention,
+        requiresRetry,
+        offlinePending,
+        needsAttention,
+        sortBucket,
+      };
+    });
+  }, [linkedInstructionsByBookingId, queuedActionByBookingId, tasks]);
+
   const grouped = useMemo(() => {
-    const toDo = tasks.filter((task) =>
-      task.group !== "completed" && (task.nextAction === "ACKNOWLEDGED" || task.nextAction === "COLLECTED"),
-    );
+    const sorted = [...taskAttentionMeta].sort((left, right) => {
+      if (left.sortBucket !== right.sortBucket) {
+        return left.sortBucket - right.sortBucket;
+      }
 
-    const inProgress = tasks.filter((task) =>
-      task.group !== "completed" && task.nextAction === "DELIVERED",
-    );
+      const leftSchedule = new Date(`${left.task.deliveryDate}T${left.task.deliveryTime ?? "00:00:00"}`).getTime();
+      const rightSchedule = new Date(`${right.task.deliveryDate}T${right.task.deliveryTime ?? "00:00:00"}`).getTime();
+      return leftSchedule - rightSchedule;
+    });
 
-    const completedToday = tasks.filter((task) => {
-      if (task.group !== "completed") {
+    const attention = sorted.filter((item) => item.needsAttention).map((item) => item.task);
+    const toDo = sorted.filter((item) =>
+      !item.needsAttention
+      && item.task.group !== "completed"
+      && (item.task.nextAction === "ACKNOWLEDGED" || item.task.nextAction === "COLLECTED"),
+    ).map((item) => item.task);
+
+    const inProgress = sorted.filter((item) =>
+      !item.needsAttention
+      && item.task.group !== "completed"
+      && item.task.nextAction === "DELIVERED",
+    ).map((item) => item.task);
+
+    const completedToday = sorted.filter((item) => {
+      if (item.task.group !== "completed") {
         return false;
       }
 
-      const completedAt = task.deliveredAt ?? task.collectedAt;
+      const completedAt = item.task.deliveredAt ?? item.task.collectedAt;
       return isToday(completedAt);
-    });
+    }).map((item) => item.task);
 
     return {
+      attention,
       toDo,
       inProgress,
       completedToday,
     };
-  }, [tasks]);
+  }, [taskAttentionMeta]);
+
+  const attentionSummary = useMemo(() => {
+    const pendingOfflineActions = queuedActions.filter((item) => item.state === "pending").length;
+    const failedQueuedActions = queuedActions.filter((item) => item.state === "failed" || item.state === "conflict").length;
+    const newJobsCount = taskAttentionMeta.filter((item) => item.isNewJob).length;
+    const overdueCollectionsCount = taskAttentionMeta.filter((item) => item.isAgingAttention).length;
+    const standaloneUnreadCount = standaloneInstructions.filter((instruction) => !instruction.readAt).length;
+    const totalAttention = grouped.attention.length + standaloneUnreadCount;
+
+    return {
+      totalAttention,
+      newItemsCount: newJobsCount + standaloneUnreadCount,
+      overdueCollectionsCount,
+      offlineActionsCount: pendingOfflineActions + failedQueuedActions,
+    };
+  }, [grouped.attention.length, queuedActions, standaloneInstructions, taskAttentionMeta]);
 
   const headerName = fullName ?? email ?? "Authenticated Driver";
   const roleLabel = toRoleLabel(mobileRoleKey);
@@ -724,15 +900,16 @@ export function DriverMobileJobsDashboard() {
       {items.length > 0 ? (
         <div className="space-y-3">
           {items.map((task) => {
-            const queuedAction = queuedActionByBookingId.get(task.bookingId) ?? null;
+            const attentionMeta = taskAttentionMeta.find((item) => item.task.bookingId === task.bookingId) ?? null;
+            const queuedAction = attentionMeta?.queuedAction ?? queuedActionByBookingId.get(task.bookingId) ?? null;
             const isPending = queuedAction?.state === "syncing";
             const showTemperatureInput = task.nextAction === "COLLECTED" && task.temperature.required;
             const showAging = task.taskKind === "collection" && task.collectionAging !== null;
             const collectionAging = task.collectionAging;
             const completedAt = task.deliveredAt ?? task.collectedAt;
             const queueMessage = queuedActionMessage(queuedAction);
-            const linkedInstructions = linkedInstructionsByBookingId.get(task.bookingId) ?? linkedInstructionsByBookingId.get(task.trailerId) ?? [];
-            const activeInstruction = linkedInstructions[0] ?? null;
+            const linkedInstructions = attentionMeta?.linkedInstructions ?? linkedInstructionsByBookingId.get(task.bookingId) ?? linkedInstructionsByBookingId.get(task.trailerId) ?? [];
+            const activeInstruction = attentionMeta?.activeInstruction ?? linkedInstructions[0] ?? null;
 
             return (
               <article key={task.bookingId} className="rounded-xl border border-slate-200 bg-slate-50/80 p-3">
@@ -743,7 +920,18 @@ export function DriverMobileJobsDashboard() {
                     <p className="text-sm text-slate-700">{task.customer || "No customer"}</p>
                     <p className="text-xs text-slate-500">{task.location || "No location"}</p>
                   </div>
-                  <span className="rounded-full bg-white px-2 py-1 text-xs font-medium text-slate-700">{toStatusLabel(task.status)}</span>
+                  <div className="flex flex-col items-end gap-1">
+                    <span className="rounded-full bg-white px-2 py-1 text-xs font-medium text-slate-700">{toStatusLabel(task.status)}</span>
+                    {attentionMeta?.isNewJob ? (
+                      <span className="rounded-full border border-cyan-300 bg-cyan-50 px-2 py-0.5 text-[10px] font-semibold tracking-[0.08em] text-cyan-800">NEW</span>
+                    ) : null}
+                    {attentionMeta?.requiresRetry ? (
+                      <span className="rounded-full border border-rose-300 bg-rose-50 px-2 py-0.5 text-[10px] font-semibold tracking-[0.08em] text-rose-800">RETRY NEEDED</span>
+                    ) : null}
+                    {attentionMeta?.offlinePending ? (
+                      <span className="rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 text-[10px] font-semibold tracking-[0.08em] text-amber-900">OFFLINE PENDING</span>
+                    ) : null}
+                  </div>
                 </div>
 
                 <div className="mt-3 space-y-1 text-sm text-slate-700">
@@ -755,7 +943,14 @@ export function DriverMobileJobsDashboard() {
 
                 {activeInstruction ? (
                   <div className={`mt-3 rounded-xl border px-3 py-3 ${toInstructionPriorityTone(activeInstruction.priority)}`}>
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.16em]">Instruction</p>
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.16em]">Instruction</p>
+                      {activeInstruction.priority !== "normal" ? (
+                        <span className="rounded-full border border-current px-2 py-0.5 text-[10px] font-bold tracking-[0.08em]">
+                          {toPriorityLabel(activeInstruction.priority)}
+                        </span>
+                      ) : null}
+                    </div>
                     <p className="mt-1 text-sm font-semibold">{activeInstruction.instruction}</p>
                     <p className="mt-1 text-xs">
                       Sent {formatCompletedTime(activeInstruction.createdAt)}
@@ -874,6 +1069,7 @@ export function DriverMobileJobsDashboard() {
 
           {error ? <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">{error}</div> : null}
           {success ? <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">{success}</div> : null}
+          {attentionAlert ? <div className="mt-4 rounded-2xl border border-cyan-200 bg-cyan-50 px-4 py-3 text-sm font-semibold text-cyan-900">{attentionAlert}</div> : null}
           {!isOnline ? <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">Offline. Saved actions will send when connection returns.</div> : null}
 
           {isLoading || isLoadingTasks ? (
@@ -889,6 +1085,18 @@ export function DriverMobileJobsDashboard() {
 
           {!isLoading && !isLoadingTasks && driver ? (
             <div className="mt-4 space-y-4">
+              {attentionSummary.totalAttention > 0 || attentionSummary.offlineActionsCount > 0 || attentionSummary.overdueCollectionsCount > 0 ? (
+                <section className="rounded-2xl border border-amber-200 bg-amber-50 p-4 shadow-sm">
+                  <p className="text-xs font-semibold uppercase tracking-[0.2em] text-amber-900">Needs Attention</p>
+                  <p className="mt-2 text-xl font-bold text-amber-950">{attentionSummary.totalAttention} NEED ATTENTION</p>
+                  <div className="mt-2 flex flex-wrap gap-2 text-xs font-semibold text-amber-900">
+                    {attentionSummary.newItemsCount > 0 ? <span className="rounded-full border border-amber-300 bg-white px-2 py-1">{attentionSummary.newItemsCount} NEW</span> : null}
+                    {attentionSummary.overdueCollectionsCount > 0 ? <span className="rounded-full border border-amber-300 bg-white px-2 py-1">{attentionSummary.overdueCollectionsCount} OVERDUE</span> : null}
+                    {attentionSummary.offlineActionsCount > 0 ? <span className="rounded-full border border-amber-300 bg-white px-2 py-1">{attentionSummary.offlineActionsCount} OFFLINE ACTION</span> : null}
+                  </div>
+                </section>
+              ) : null}
+
               <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
                 <div className="flex items-center justify-between gap-3">
                   <h2 className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-700">Operational Instructions</h2>
@@ -934,6 +1142,7 @@ export function DriverMobileJobsDashboard() {
                 ) : null}
               </section>
 
+              {renderSection("Needs Attention", grouped.attention)}
               {renderSection("To Do", grouped.toDo)}
               {renderSection("In Progress", grouped.inProgress)}
               {renderSection("Completed Today", grouped.completedToday)}
