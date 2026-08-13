@@ -104,4 +104,67 @@ describe("SettingsUsersPage", () => {
       expect.objectContaining({ method: "PATCH" }),
     );
   });
+
+  it("allows explicit driver profile linking for existing role assignments", async () => {
+    fetchRbacJsonMock.mockImplementation(async (input: string, init?: RequestInit) => {
+      if (input === "/api/settings/users" && (!init || init.method === undefined || init.method === "GET")) {
+        return {
+          users: [
+            {
+              userId: "user-admin",
+              email: "admin@example.com",
+              displayName: "Admin",
+              roleKey: "administrator",
+              isActive: true,
+              lastSignInAt: "2026-08-12T00:00:00.000Z",
+              driverLinked: false,
+            },
+          ],
+        };
+      }
+
+      if (input === "/api/settings/users" && init?.method === "PATCH") {
+        return {
+          user: {
+            user_id: "user-admin",
+            role_key: "administrator",
+            is_active: true,
+          },
+          auditEvent: {
+            userId: "user-admin",
+            previousRole: "administrator",
+            newRole: "administrator",
+            previousIsActive: true,
+            newIsActive: true,
+            changedBy: "admin-a",
+            changedAt: "2026-08-12T10:00:00.000Z",
+          },
+        };
+      }
+
+      throw new Error(`Unexpected request: ${input}`);
+    });
+
+    render(<SettingsUsersPage />);
+
+    const linkButton = await screen.findByRole("button", { name: "Link profile" });
+    fireEvent.click(linkButton);
+
+    await waitFor(() => {
+      expect(screen.queryByText("Driver profile linked successfully.")).not.toBeNull();
+    });
+
+    expect(fetchRbacJsonMock).toHaveBeenCalledWith(
+      "/api/settings/users",
+      expect.objectContaining({
+        method: "PATCH",
+        body: JSON.stringify({
+          userId: "user-admin",
+          roleKey: "administrator",
+          isActive: true,
+          linkDriverProfile: true,
+        }),
+      }),
+    );
+  });
 });

@@ -13,5 +13,6 @@ describe("driver mobile permissions", () => {
   it("preserves supervisor access to operational modules", () => {
     expect(canAccessModule("supervisor", "dashboard")).toBe(true);
     expect(canPerformAction("supervisor", "arrivals", "create")).toBe(true);
+    expect(canAccessModule("supervisor", "driver_mobile")).toBe(true);
   });
 });

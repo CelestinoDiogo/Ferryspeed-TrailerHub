@@ -79,6 +79,7 @@ const supervisorPermissions = createEmptyMap();
 for (const moduleKey of operationalModules) {
   supervisorPermissions[moduleKey] = new Set(["view", "create", "edit", "reconcile", "complete", "print"]);
 }
+supervisorPermissions.driver_mobile = new Set(["view"]);
 supervisorPermissions.settings = new Set(["view"]);
 
 const operatorPermissions = createEmptyMap();

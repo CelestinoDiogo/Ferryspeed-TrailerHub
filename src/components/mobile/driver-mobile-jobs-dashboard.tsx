@@ -262,6 +262,7 @@ export function DriverMobileJobsDashboard() {
     newestUnread: null,
     recent: [],
   });
+  const [driverProfileRequired, setDriverProfileRequired] = useState(false);
   const [isLoadingInstructions, setIsLoadingInstructions] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -360,6 +361,7 @@ export function DriverMobileJobsDashboard() {
       }
 
       const nextTasks = Array.isArray(payload.tasks) ? payload.tasks : [];
+      const resolvedDriver = payload.driver ?? null;
 
       const nextTaskIds = new Set(nextTasks.map((task) => task.bookingId));
       if (!hasHydratedTaskIdsRef.current) {
@@ -376,13 +378,15 @@ export function DriverMobileJobsDashboard() {
         }
       }
 
-      setDriver(payload.driver ?? null);
+      setDriver(resolvedDriver);
+      setDriverProfileRequired(!resolvedDriver);
       setServerTasks(nextTasks);
       setQueuedActions((current) => reconcileDriverMobileQueuedActions(current, nextTasks));
       return nextTasks;
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unable to load assigned jobs.";
       setError(message);
+      setDriverProfileRequired(false);
       setDriver(null);
       setServerTasks([]);
       return [] as DriverMobileTask[];
@@ -1313,7 +1317,7 @@ export function DriverMobileJobsDashboard() {
             <div className="mt-4 rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-600">Loading assigned jobs...</div>
           ) : null}
 
-          {!isLoading && !isLoadingTasks && !driver ? (
+          {!isLoading && !isLoadingTasks && !driver && driverProfileRequired ? (
             <section className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-amber-900">
               <h2 className="text-sm font-semibold uppercase tracking-[0.2em]">Driver profile required</h2>
               <p className="mt-2 text-sm">This account is not linked to an active driver record. Contact operations control to complete assignment setup.</p>

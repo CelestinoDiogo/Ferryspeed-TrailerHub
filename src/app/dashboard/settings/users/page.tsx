@@ -103,6 +103,36 @@ export default function SettingsUsersPage() {
     }
   };
 
+  const linkDriverProfile = async (row: SettingsUserListItem) => {
+    if (row.driverLinked || !row.roleKey) {
+      return;
+    }
+
+    setSavingUserId(row.userId);
+    setError(null);
+    setMessage(null);
+
+    try {
+      const payload = await fetchRbacJson<UserPatchResponse>("/api/settings/users", {
+        method: "PATCH",
+        body: JSON.stringify({
+          userId: row.userId,
+          roleKey: row.roleKey,
+          isActive: typeof row.isActive === "boolean" ? row.isActive : true,
+          linkDriverProfile: true,
+        }),
+      });
+
+      await loadUsers();
+      void payload;
+      setMessage("Driver profile linked successfully.");
+    } catch (updateError) {
+      setError(updateError instanceof Error ? updateError.message : "Unable to link driver profile.");
+    } finally {
+      setSavingUserId(null);
+    }
+  };
+
   const formatLastSignIn = (lastSignInAt: string | null) => {
     if (!lastSignInAt) {
       return "-";
@@ -139,6 +169,7 @@ export default function SettingsUsersPage() {
                 <th className="px-4 py-3 text-left font-semibold text-slate-700">User</th>
                 <th className="px-4 py-3 text-left font-semibold text-slate-700">Email</th>
                 <th className="px-4 py-3 text-left font-semibold text-slate-700">Role</th>
+                <th className="px-4 py-3 text-left font-semibold text-slate-700">Driver profile</th>
                 <th className="px-4 py-3 text-left font-semibold text-slate-700">Active</th>
                 <th className="px-4 py-3 text-left font-semibold text-slate-700">Last sign-in</th>
               </tr>
@@ -146,11 +177,11 @@ export default function SettingsUsersPage() {
             <tbody className="divide-y divide-slate-100">
               {isLoading ? (
                 <tr>
-                  <td colSpan={5} className="px-4 py-8 text-center text-slate-500">Loading users...</td>
+                  <td colSpan={6} className="px-4 py-8 text-center text-slate-500">Loading users...</td>
                 </tr>
               ) : users.length === 0 ? (
                 <tr>
-                  <td colSpan={5} className="px-4 py-8 text-center text-slate-500">No authenticated users found.</td>
+                  <td colSpan={6} className="px-4 py-8 text-center text-slate-500">No authenticated users found.</td>
                 </tr>
               ) : (
                 users.map((row) => (
@@ -180,6 +211,29 @@ export default function SettingsUsersPage() {
                           </option>
                         ))}
                       </select>
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-2">
+                        <span
+                          className={
+                            row.driverLinked
+                              ? "rounded-lg border border-emerald-200 bg-emerald-50 px-2 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-emerald-700"
+                              : "rounded-lg border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-amber-700"
+                          }
+                        >
+                          {row.driverLinked ? "Linked" : "Not linked"}
+                        </span>
+                        <button
+                          type="button"
+                          disabled={savingUserId === row.userId || row.driverLinked || !row.roleKey}
+                          onClick={() => {
+                            void linkDriverProfile(row);
+                          }}
+                          className="rounded-xl border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400"
+                        >
+                          {row.driverLinked ? "Linked" : "Link profile"}
+                        </button>
+                      </div>
                     </td>
                     <td className="px-4 py-3">
                       <button

@@ -92,7 +92,7 @@ describe("GET /api/driver-mobile/tasks", () => {
     const response = await GET(makeRequest());
 
     expect(response.status).toBe(401);
-    await expect(response.json()).resolves.toEqual({ error: "Missing Authorization header." });
+    await expect(response.json()).resolves.toEqual({ error: "Missing Authorization header.", code: "UNAUTHENTICATED" });
   });
 
   it("returns 403 when role permission is denied", async () => {
@@ -104,7 +104,7 @@ describe("GET /api/driver-mobile/tasks", () => {
     const response = await GET(makeRequest());
 
     expect(response.status).toBe(403);
-    await expect(response.json()).resolves.toEqual({ error: "You do not have permission to perform this action." });
+    await expect(response.json()).resolves.toEqual({ error: "You do not have permission to perform this action.", code: "RBAC_PERMISSION_DENIED" });
   });
 
   it("returns scoped task payload for the authenticated driver", async () => {

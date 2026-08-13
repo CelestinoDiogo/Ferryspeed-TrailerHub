@@ -204,6 +204,28 @@ describe("/api/settings/users", () => {
     });
   });
 
+  it("passes explicit driver-link requests through the validated payload", async () => {
+    const { PATCH } = await importRoute();
+    const response = await PATCH(
+      makeRequest("PATCH", {
+        userId: "22222222-2222-4222-8222-222222222222",
+        roleKey: "administrator",
+        linkDriverProfile: true,
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(updateUserRoleMock).toHaveBeenCalledWith(
+      {},
+      {
+        userId: "22222222-2222-4222-8222-222222222222",
+        roleKey: "administrator",
+        linkDriverProfile: true,
+        changedBy: "11111111-1111-4111-8111-111111111111",
+      },
+    );
+  });
+
   it("surfaces provisioning failures as clear API errors", async () => {
     updateUserRoleMock.mockRejectedValueOnce(new Error("Unable to provision driver profile."));
 

@@ -131,7 +131,7 @@ const resolveDriverDisplayName = (previousDisplayName: string | null | undefined
   return previousDisplayName?.trim() || fallbackName.trim() || "Driver";
 };
 
-const provisionDriverProfileForUser = async (
+export const ensureActiveDriverProfileForUser = async (
   supabase: SupabaseClient<Database>,
   userId: string,
   identity: UserIdentity | null,
@@ -352,7 +352,7 @@ export async function listUsersWithRoles(supabase: SupabaseClient<Database>) {
 
 export async function updateUserRole(
   supabase: SupabaseClient<Database>,
-  payload: { userId: string; roleKey: RoleKey; isActive?: boolean; changedBy: string },
+  payload: { userId: string; roleKey: RoleKey; isActive?: boolean; changedBy: string; linkDriverProfile?: boolean },
 ) {
   const { data: previous, error: previousError } = await supabase
     .from("app_user_roles")
@@ -368,8 +368,8 @@ export async function updateUserRole(
   const resolvedEmail = previous?.email ?? targetIdentity?.email ?? null;
   const resolvedDisplayName = previous?.display_name ?? targetIdentity?.displayName ?? null;
 
-  if (payload.roleKey === "driver") {
-    await provisionDriverProfileForUser(supabase, payload.userId, targetIdentity);
+  if (payload.roleKey === "driver" || payload.linkDriverProfile === true) {
+    await ensureActiveDriverProfileForUser(supabase, payload.userId, targetIdentity);
   }
 
   const rolePayload: Database["public"]["Tables"]["app_user_roles"]["Insert"] = {

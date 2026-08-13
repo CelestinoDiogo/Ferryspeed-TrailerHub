@@ -6,6 +6,7 @@ export const updateUserRoleSchema = z.object({
   userId: z.string().uuid(),
   roleKey: z.enum(roleKeys),
   isActive: z.boolean().optional(),
+  linkDriverProfile: z.boolean().optional(),
 });
 
 export const updateRoleSchema = z.object({

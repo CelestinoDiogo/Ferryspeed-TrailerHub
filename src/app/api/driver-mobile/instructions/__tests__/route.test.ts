@@ -88,7 +88,7 @@ describe("GET /api/driver-mobile/instructions", () => {
     const response = await GET(makeRequest());
 
     expect(response.status).toBe(401);
-    await expect(response.json()).resolves.toEqual({ error: "Missing Authorization header." });
+    await expect(response.json()).resolves.toEqual({ error: "Missing Authorization header.", code: "UNAUTHENTICATED" });
   });
 
   it("rejects unauthenticated requests", async () => {
@@ -98,7 +98,7 @@ describe("GET /api/driver-mobile/instructions", () => {
     const response = await GET(makeRequest());
 
     expect(response.status).toBe(401);
-    await expect(response.json()).resolves.toEqual({ error: "Authentication session is invalid." });
+    await expect(response.json()).resolves.toEqual({ error: "Authentication session is invalid.", code: "UNAUTHENTICATED" });
   });
 
   it("returns 400 for invalid query", async () => {

@@ -22,11 +22,11 @@ export async function GET(request: Request) {
     return Response.json(payload, { status: 200 });
   } catch (error) {
     if (error instanceof SupabaseRouteAuthError) {
-      return Response.json({ error: error.message }, { status: error.status });
+      return Response.json({ error: error.message, code: "UNAUTHENTICATED" }, { status: error.status });
     }
 
     if (error instanceof RbacPermissionError) {
-      return Response.json({ error: error.message }, { status: error.status });
+      return Response.json({ error: error.message, code: "RBAC_PERMISSION_DENIED" }, { status: error.status });
     }
 
     return Response.json({ error: "Unable to load driver tasks right now." }, { status: 500 });

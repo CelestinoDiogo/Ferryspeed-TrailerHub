@@ -1223,4 +1223,29 @@ describe("DriverMobileJobsDashboard", () => {
 
     expect(screen.queryByText(/New job assigned - PRO123/)).not.toBeInTheDocument();
   });
+
+  it("does not show profile-required state when API access is denied", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+
+        if (url.includes("/api/driver-mobile/tasks") && method === "GET") {
+          return new Response(JSON.stringify({ error: "You do not have permission to perform this action.", code: "RBAC_PERMISSION_DENIED" }), { status: 403 });
+        }
+
+        if (url.includes("/api/driver-mobile/instructions") && method === "GET") {
+          return new Response(JSON.stringify({ error: "You do not have permission to perform this action.", code: "RBAC_PERMISSION_DENIED" }), { status: 403 });
+        }
+
+        return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+      }),
+    );
+
+    render(<DriverMobileJobsDashboard />);
+
+    expect(await screen.findByText("You do not have permission to perform this action.")).toBeInTheDocument();
+    expect(screen.queryByText("Driver profile required")).not.toBeInTheDocument();
+  });
 });
