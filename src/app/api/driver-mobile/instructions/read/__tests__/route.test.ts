@@ -18,10 +18,12 @@ class SupabaseRouteAuthError extends Error {
 
 class RbacPermissionError extends Error {
   status: number;
+  code: string;
 
-  constructor(message: string, status = 403) {
+  constructor(message: string, status = 403, code = "RBAC_PERMISSION_DENIED") {
     super(message);
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -88,6 +90,21 @@ describe("POST /api/driver-mobile/instructions/read", () => {
 
     expect(response.status).toBe(401);
     await expect(response.json()).resolves.toEqual({ error: "Authentication session is invalid." });
+  });
+
+  it("returns structured inactive-profile denial", async () => {
+    requireRbacPermissionMock.mockImplementationOnce(() => {
+      throw new RbacPermissionError("Your application profile is inactive.", 403, "RBAC_PROFILE_INACTIVE");
+    });
+
+    const { POST } = await importRoute();
+    const response = await POST(makeRequest({ instructionId: "22222222-2222-4222-8222-222222222222" }));
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toEqual({
+      error: "Your application profile is inactive.",
+      code: "RBAC_PROFILE_INACTIVE",
+    });
   });
 
   it("returns 404 when instruction is missing", async () => {

@@ -22,11 +22,11 @@ export async function GET(request: Request) {
     return Response.json({ permissions });
   } catch (error) {
     if (error instanceof SupabaseRouteAuthError) {
-      return Response.json({ error: error.message }, { status: error.status });
+      return Response.json({ error: error.message, code: "UNAUTHENTICATED" }, { status: error.status });
     }
 
     if (error instanceof RbacPermissionError) {
-      return Response.json({ error: error.message }, { status: error.status });
+      return Response.json({ error: error.message, code: error.code }, { status: error.status });
     }
 
     return Response.json({ error: error instanceof Error ? error.message : "Unable to load permissions." }, { status: 500 });
@@ -51,11 +51,11 @@ export async function PUT(request: Request) {
     }
 
     if (error instanceof SupabaseRouteAuthError) {
-      return Response.json({ error: error.message }, { status: error.status });
+      return Response.json({ error: error.message, code: "UNAUTHENTICATED" }, { status: error.status });
     }
 
     if (error instanceof RbacPermissionError) {
-      return Response.json({ error: error.message }, { status: error.status });
+      return Response.json({ error: error.message, code: error.code }, { status: error.status });
     }
 
     return Response.json({ error: error instanceof Error ? error.message : "Unable to update permissions." }, { status: 500 });

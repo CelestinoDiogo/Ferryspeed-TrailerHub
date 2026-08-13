@@ -22,11 +22,11 @@ export async function GET(request: Request) {
     return Response.json({ roles });
   } catch (error) {
     if (error instanceof SupabaseRouteAuthError) {
-      return Response.json({ error: error.message }, { status: error.status });
+      return Response.json({ error: error.message, code: "UNAUTHENTICATED" }, { status: error.status });
     }
 
     if (error instanceof RbacPermissionError) {
-      return Response.json({ error: error.message }, { status: error.status });
+      return Response.json({ error: error.message, code: error.code }, { status: error.status });
     }
 
     return Response.json({ error: error instanceof Error ? error.message : "Unable to load roles." }, { status: 500 });
@@ -51,11 +51,11 @@ export async function PATCH(request: Request) {
     }
 
     if (error instanceof SupabaseRouteAuthError) {
-      return Response.json({ error: error.message }, { status: error.status });
+      return Response.json({ error: error.message, code: "UNAUTHENTICATED" }, { status: error.status });
     }
 
     if (error instanceof RbacPermissionError) {
-      return Response.json({ error: error.message }, { status: error.status });
+      return Response.json({ error: error.message, code: error.code }, { status: error.status });
     }
 
     return Response.json({ error: error instanceof Error ? error.message : "Unable to update role." }, { status: 500 });

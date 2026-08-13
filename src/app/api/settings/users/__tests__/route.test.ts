@@ -19,10 +19,12 @@ class SupabaseRouteAuthError extends Error {
 
 class RbacPermissionError extends Error {
   status: number;
+  code: string;
 
-  constructor(message: string, status = 403) {
+  constructor(message: string, status = 403, code = "RBAC_PERMISSION_DENIED") {
     super(message);
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -111,7 +113,7 @@ describe("/api/settings/users", () => {
     const response = await PATCH(makeRequest("PATCH", { userId: "22222222-2222-4222-8222-222222222222", roleKey: "driver" }));
 
     expect(response.status).toBe(401);
-    await expect(response.json()).resolves.toEqual({ error: "Missing Authorization header." });
+    await expect(response.json()).resolves.toEqual({ error: "Missing Authorization header.", code: "UNAUTHENTICATED" });
   });
 
   it("rejects unauthenticated list requests", async () => {
@@ -123,7 +125,7 @@ describe("/api/settings/users", () => {
     const response = await GET(makeRequest("GET"));
 
     expect(response.status).toBe(401);
-    await expect(response.json()).resolves.toEqual({ error: "Missing Authorization header." });
+    await expect(response.json()).resolves.toEqual({ error: "Missing Authorization header.", code: "UNAUTHENTICATED" });
   });
 
   it("rejects non-admin list requests", async () => {
@@ -135,7 +137,19 @@ describe("/api/settings/users", () => {
     const response = await GET(makeRequest("GET"));
 
     expect(response.status).toBe(403);
-    await expect(response.json()).resolves.toEqual({ error: "You do not have permission to perform this action." });
+    await expect(response.json()).resolves.toEqual({ error: "You do not have permission to perform this action.", code: "RBAC_PERMISSION_DENIED" });
+  });
+
+  it("returns structured inactive-profile response", async () => {
+    requireRbacPermissionMock.mockImplementationOnce(() => {
+      throw new RbacPermissionError("Your application profile is inactive.", 403, "RBAC_PROFILE_INACTIVE");
+    });
+
+    const { GET } = await importRoute();
+    const response = await GET(makeRequest("GET"));
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toEqual({ error: "Your application profile is inactive.", code: "RBAC_PROFILE_INACTIVE" });
   });
 
   it("returns merged users list for authorized callers", async () => {
@@ -168,7 +182,7 @@ describe("/api/settings/users", () => {
     const response = await PATCH(makeRequest("PATCH", { userId: "22222222-2222-4222-8222-222222222222", roleKey: "driver" }));
 
     expect(response.status).toBe(403);
-    await expect(response.json()).resolves.toEqual({ error: "You do not have permission to perform this action." });
+    await expect(response.json()).resolves.toEqual({ error: "You do not have permission to perform this action.", code: "RBAC_PERMISSION_DENIED" });
   });
 
   it("strips spoofed identity fields from the incoming payload", async () => {

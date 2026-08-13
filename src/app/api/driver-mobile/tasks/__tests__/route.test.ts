@@ -18,10 +18,12 @@ class SupabaseRouteAuthError extends Error {
 
 class RbacPermissionError extends Error {
   status: number;
+  code: string;
 
-  constructor(message: string, status = 403) {
+  constructor(message: string, status = 403, code = "RBAC_PERMISSION_DENIED") {
     super(message);
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -105,6 +107,18 @@ describe("GET /api/driver-mobile/tasks", () => {
 
     expect(response.status).toBe(403);
     await expect(response.json()).resolves.toEqual({ error: "You do not have permission to perform this action.", code: "RBAC_PERMISSION_DENIED" });
+  });
+
+  it("returns 403 with inactive-profile code when application profile is inactive", async () => {
+    requireRbacPermissionMock.mockImplementation(() => {
+      throw new RbacPermissionError("Your application profile is inactive.", 403, "RBAC_PROFILE_INACTIVE");
+    });
+
+    const { GET } = await importRoute();
+    const response = await GET(makeRequest());
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toEqual({ error: "Your application profile is inactive.", code: "RBAC_PROFILE_INACTIVE" });
   });
 
   it("returns scoped task payload for the authenticated driver", async () => {

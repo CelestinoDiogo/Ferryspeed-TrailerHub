@@ -38,7 +38,7 @@ export async function GET(request: Request) {
     }
 
     if (error instanceof RbacPermissionError) {
-      return Response.json({ error: error.message, code: "RBAC_PERMISSION_DENIED" }, { status: error.status });
+      return Response.json({ error: error.message, code: error.code }, { status: error.status });
     }
 
     if (error instanceof z.ZodError) {

@@ -26,7 +26,7 @@ export async function GET(request: Request) {
     }
 
     if (error instanceof RbacPermissionError) {
-      return Response.json({ error: error.message, code: "RBAC_PERMISSION_DENIED" }, { status: error.status });
+      return Response.json({ error: error.message, code: error.code }, { status: error.status });
     }
 
     return Response.json({ error: "Unable to load driver tasks right now." }, { status: 500 });

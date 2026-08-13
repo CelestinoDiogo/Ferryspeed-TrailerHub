@@ -254,18 +254,39 @@ export async function requirePermission(
   moduleKey: PermissionModuleKey,
   action: PermissionAction,
 ) {
+  const decision = await evaluatePermission(supabase, userId, moduleKey, action);
+  return decision.allowed;
+}
+
+export type PermissionDecision =
+  | { allowed: true }
+  | {
+      allowed: false;
+      reason: "PROFILE_MISSING" | "PROFILE_INACTIVE" | "INVALID_ROLE" | "STATIC_PERMISSION_DENIED" | "DB_PERMISSION_DENIED";
+    };
+
+export async function evaluatePermission(
+  supabase: SupabaseClient<Database>,
+  userId: string,
+  moduleKey: PermissionModuleKey,
+  action: PermissionAction,
+): Promise<PermissionDecision> {
   const userRole = await loadCurrentUserRole(supabase, userId);
 
-  if (!userRole?.role_key || userRole.is_active === false) {
-    return false;
+  if (!userRole?.role_key) {
+    return { allowed: false, reason: "PROFILE_MISSING" };
+  }
+
+  if (userRole.is_active === false) {
+    return { allowed: false, reason: "PROFILE_INACTIVE" };
   }
 
   if (!isRoleKey(userRole.role_key)) {
-    return false;
+    return { allowed: false, reason: "INVALID_ROLE" };
   }
 
   if (!hasPermission(userRole.role_key, moduleKey, action)) {
-    return false;
+    return { allowed: false, reason: "STATIC_PERMISSION_DENIED" };
   }
 
   const legacyModuleKey = toLegacyPermissionModule(moduleKey);
@@ -283,10 +304,14 @@ export async function requirePermission(
   }
 
   if (!data) {
-    return false;
+    return { allowed: false, reason: "DB_PERMISSION_DENIED" };
   }
 
-  return data[legacyActionColumn];
+  if (!data[legacyActionColumn]) {
+    return { allowed: false, reason: "DB_PERMISSION_DENIED" };
+  }
+
+  return { allowed: true };
 }
 
 export type UserRoleAuditEvent = {
@@ -364,6 +389,10 @@ export async function updateUserRole(
     throw new Error(previousError.message || "Unable to load current user role before update.");
   }
 
+  if (payload.userId === payload.changedBy && payload.isActive === false) {
+    throw new Error("You cannot deactivate your own account.");
+  }
+
   const targetIdentity = await loadTargetUserIdentity(payload.userId);
   const resolvedEmail = previous?.email ?? targetIdentity?.email ?? null;
   const resolvedDisplayName = previous?.display_name ?? targetIdentity?.displayName ?? null;
@@ -379,6 +408,25 @@ export async function updateUserRole(
     role_key: payload.roleKey,
     is_active: typeof payload.isActive === "boolean" ? payload.isActive : previous?.is_active ?? true,
   };
+
+  const wasActiveAdministrator = previous?.role_key === "administrator" && previous?.is_active === true;
+  const remainsActiveAdministrator = rolePayload.role_key === "administrator" && rolePayload.is_active === true;
+
+  if (wasActiveAdministrator && !remainsActiveAdministrator) {
+    const { count: activeAdminCount, error: activeAdminCountError } = await supabase
+      .from("app_user_roles")
+      .select("user_id", { count: "exact", head: true })
+      .eq("role_key", "administrator")
+      .eq("is_active", true);
+
+    if (activeAdminCountError) {
+      throw new Error(activeAdminCountError.message || "Unable to verify active administrator coverage.");
+    }
+
+    if ((activeAdminCount ?? 0) <= 1) {
+      throw new Error("At least one active Administrator account is required.");
+    }
+  }
 
   let data: AppUserRoleRow | null = null;
 

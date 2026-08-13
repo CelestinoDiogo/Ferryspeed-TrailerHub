@@ -4,6 +4,7 @@ import "@testing-library/jest-dom/vitest";
 import React from "react";
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { getLocalDateKey } from "@/lib/operational-readiness";
 
 const mockLoadExportAllocationsForReport = vi.fn();
 let searchParamsValue = "";
@@ -78,7 +79,7 @@ beforeEach(() => {
       customer: "Customer A",
       status: "allocated",
       priority: "normal",
-      collection_date: "2026-08-01",
+      collection_date: getLocalDateKey(),
     },
     {
       id: "a-outsourcing",
@@ -87,7 +88,7 @@ beforeEach(() => {
       customer: "Customer B",
       status: "allocated",
       priority: "normal",
-      collection_date: "2026-08-01",
+      collection_date: getLocalDateKey(),
     },
   ]);
 });

@@ -61,6 +61,14 @@ const createMockSupabase = (roleState: RoleState, driverState: DriverState) => {
     }),
   };
 
+  const appUserRoleCountChain = {
+    eq: vi.fn(() => appUserRoleCountChain),
+    then: (resolve: (value: { count: number; error: null }) => unknown) => {
+      const count = roleState.rows.filter((row) => row.role_key === "administrator" && row.is_active === true).length;
+      return Promise.resolve(resolve({ count, error: null }));
+    },
+  };
+
   const appUserRoleUpdateChain = {
     eq: vi.fn((column: string, value: unknown) => {
       if (column === "user_id") {
@@ -159,7 +167,13 @@ const createMockSupabase = (roleState: RoleState, driverState: DriverState) => {
     from: vi.fn((table: string) => {
       if (table === "app_user_roles") {
         return {
-          select: vi.fn(() => appUserRoleSelectChain),
+          select: vi.fn((_columns?: string, options?: { count?: string; head?: boolean }) => {
+            if (options?.head) {
+              return appUserRoleCountChain;
+            }
+
+            return appUserRoleSelectChain;
+          }),
           update: vi.fn((patch: Record<string, unknown>) => {
             roleState.lastUpdatePatch = patch;
             return appUserRoleUpdateChain;
@@ -331,5 +345,65 @@ describe("updateUserRole", () => {
         changedBy: "admin-a",
       }),
     ).rejects.toThrow("Driver insert failed");
+  });
+
+  it("prevents self-deactivation", async () => {
+    const roleState: RoleState = {
+      rows: [makeRoleRow({ user_id: "admin-a", role_key: "administrator", is_active: true })],
+      lastUpdatePatch: null,
+      lastInsertPayload: null,
+    };
+    const driverState: DriverState = { rows: [], lastUpdatePatch: null, lastInsertPayload: null };
+    const { supabase } = createMockSupabase(roleState, driverState);
+
+    await expect(
+      updateUserRole(supabase, {
+        userId: "admin-a",
+        roleKey: "administrator",
+        isActive: false,
+        changedBy: "admin-a",
+      }),
+    ).rejects.toThrow("You cannot deactivate your own account.");
+  });
+
+  it("prevents removing the last active administrator", async () => {
+    const roleState: RoleState = {
+      rows: [makeRoleRow({ user_id: "admin-a", role_key: "administrator", is_active: true })],
+      lastUpdatePatch: null,
+      lastInsertPayload: null,
+    };
+    const driverState: DriverState = { rows: [], lastUpdatePatch: null, lastInsertPayload: null };
+    const { supabase } = createMockSupabase(roleState, driverState);
+
+    await expect(
+      updateUserRole(supabase, {
+        userId: "admin-a",
+        roleKey: "supervisor",
+        changedBy: "admin-b",
+      }),
+    ).rejects.toThrow("At least one active Administrator account is required.");
+  });
+
+  it("allows deactivating an administrator when another active administrator remains", async () => {
+    const roleState: RoleState = {
+      rows: [
+        makeRoleRow({ user_id: "admin-a", role_key: "administrator", is_active: true }),
+        makeRoleRow({ user_id: "admin-b", role_key: "administrator", is_active: true }),
+      ],
+      lastUpdatePatch: null,
+      lastInsertPayload: null,
+    };
+    const driverState: DriverState = { rows: [], lastUpdatePatch: null, lastInsertPayload: null };
+    const { supabase } = createMockSupabase(roleState, driverState);
+
+    const result = await updateUserRole(supabase, {
+      userId: "admin-a",
+      roleKey: "administrator",
+      isActive: false,
+      changedBy: "admin-b",
+    });
+
+    expect(result.user.user_id).toBe("admin-a");
+    expect(result.user.is_active).toBe(false);
   });
 });
