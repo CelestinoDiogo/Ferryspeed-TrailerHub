@@ -2,6 +2,7 @@ import type { SupabaseClient, User } from "@supabase/supabase-js";
 import { createTrailerActivity } from "@/lib/trailer-activity";
 import type { Database } from "@/lib/database.types";
 import { loadActiveDriverForUser, type DriverRow } from "@/lib/driver-access";
+import { calculateCollectionAging, type AgingLevel } from "@/lib/collection-aging";
 
 type RouteSupabase = SupabaseClient<Database>;
 type DeliveryBookingRow = Database["public"]["Tables"]["delivery_bookings"]["Row"];
@@ -44,6 +45,15 @@ export type DriverMobileTask = {
   temperature: {
     required: boolean;
   };
+  collectionAging: {
+    level: AgingLevel;
+    label: string;
+    waitingHours: number;
+    waitingSince: string | null;
+    dueDate: string | null;
+    isOverdue: boolean;
+    overdueDays: number | null;
+  } | null;
 };
 
 export type DriverMobileTaskPayload = {
@@ -173,6 +183,15 @@ const buildTransition = (booking: DeliveryBookingRow, action: DriverTaskAction, 
 
 const toTask = (booking: DeliveryBookingRow, trailerNumber: string): DriverMobileTask => {
   const taskKind: DriverTaskKind = isCollectionTask(booking) ? "collection" : "delivery";
+  const collectionAging = taskKind === "collection"
+    ? calculateCollectionAging({
+        delivery_date: booking.delivery_date,
+        delivered_at: booking.delivered_at,
+        waiting_collection_since: booking.waiting_collection_since,
+        collection_due_date: booking.collection_due_date,
+        collected_at: booking.collected_at,
+      })
+    : null;
 
   return {
     taskId: booking.id,
@@ -200,6 +219,17 @@ const toTask = (booking: DeliveryBookingRow, trailerNumber: string): DriverMobil
     temperature: {
       required: Boolean(booking.temperature_required),
     },
+    collectionAging: collectionAging
+      ? {
+          level: collectionAging.agingLevel,
+          label: collectionAging.agingLabel,
+          waitingHours: collectionAging.waitingHours,
+          waitingSince: collectionAging.waitingSince,
+          dueDate: collectionAging.dueDate,
+          isOverdue: collectionAging.isOverdue,
+          overdueDays: collectionAging.overdueDays,
+        }
+      : null,
   };
 };
 

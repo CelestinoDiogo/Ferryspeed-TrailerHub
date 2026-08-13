@@ -1,7 +1,7 @@
 "use client";
 
-import { DriverMobileDashboard } from "@/components/mobile/driver-mobile-dashboard";
+import { DriverMobileJobsDashboard } from "@/components/mobile/driver-mobile-jobs-dashboard";
 
 export default function DashboardDriverPage() {
-  return <DriverMobileDashboard />;
+  return <DriverMobileJobsDashboard />;
 }
