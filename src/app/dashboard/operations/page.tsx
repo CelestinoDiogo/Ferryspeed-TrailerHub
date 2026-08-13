@@ -10,6 +10,7 @@ import {
 import {
   calculateCollectionAging,
   getCollectionSeverity,
+  formatCollectionDuration,
 } from "@/lib/collection-aging";
 
 // ============================================================================
@@ -388,7 +389,7 @@ const generateAlerts = (
         id: `waiting_${booking.id}`,
         severity,
         title: severity === "critical" ? "Collection Overdue" : "Waiting For Collection",
-        description: `${booking.customer || booking.consignee || "Unknown"} (${booking.trailer_number ?? "—"}) — ${aging.waitingDays} day${aging.waitingDays !== 1 ? "s" : ""} waiting. Collection status: ${aging.agingLabel}.${overdueNote}`,
+        description: `${booking.customer || booking.consignee || "Unknown"} (${booking.trailer_number ?? "—"}) — ${formatCollectionDuration(aging.waitingHours)} waiting. Collection status: ${aging.agingLabel}.${overdueNote}`,
         bookingId: booking.id,
         trailerNumber: booking.trailer_number ?? undefined,
       });
@@ -718,9 +719,9 @@ export default function OperationsPage() {
     const aging = calculateCollectionAging({ delivery_date: b.delivery_date, delivered_at: b.delivered_at, waiting_collection_since: b.waiting_collection_since, collection_due_date: b.collection_due_date });
     return aging.agingLevel === "red";
   }).length;
-  const oldestWaitingDays = allWaiting.reduce((max, b) => {
+  const oldestWaitingHours = allWaiting.reduce((max, b) => {
     const aging = calculateCollectionAging({ delivery_date: b.delivery_date, delivered_at: b.delivered_at, waiting_collection_since: b.waiting_collection_since, collection_due_date: b.collection_due_date });
-    return Math.max(max, aging.waitingDays);
+    return Math.max(max, aging.waitingHours);
   }, 0);
 
   // Calculate operational readiness counts
@@ -870,7 +871,7 @@ export default function OperationsPage() {
                 <div className="flex flex-wrap items-center gap-3">
                   <p className="text-sm font-semibold uppercase tracking-[0.3em] text-purple-400">Waiting Collection</p>
                   <span className="rounded-full border border-purple-500/30 bg-purple-500/10 px-2 py-0.5 text-xs text-purple-300">{allWaiting.length} total</span>
-                  <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-xs text-amber-300">Oldest waiting: {oldestWaitingDays}d</span>
+                  <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-xs text-amber-300">Oldest waiting: {formatCollectionDuration(oldestWaitingHours)}</span>
                   <span className="rounded-full border border-rose-500/30 bg-rose-500/10 px-2 py-0.5 text-xs text-rose-300">Attention required: {attentionRequiredCollections}</span>
                   {overdueCollections > 0 ? <span className="rounded-full border border-rose-500/30 bg-rose-500/10 px-2 py-0.5 text-xs text-rose-300">{overdueCollections} overdue</span> : null}
                   <Link href="/dashboard/deliveries?filter=waiting" className="ml-auto text-xs text-purple-400 hover:underline">View All →</Link>

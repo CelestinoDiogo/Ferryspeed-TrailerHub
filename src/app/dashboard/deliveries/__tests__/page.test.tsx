@@ -40,7 +40,7 @@ vi.mock("@/lib/supabase", () => ({
           id: "booking-a",
           trailer_id: "trailer-a",
           driver_id: "driver-a",
-          delivery_date: "2026-08-12",
+          delivery_date: "2026-08-13",
           delivery_time: "09:00:00",
           customer: "Customer A",
           consignee: null,
@@ -65,7 +65,7 @@ vi.mock("@/lib/supabase", () => ({
           id: "booking-b",
           trailer_id: "trailer-b",
           driver_id: null,
-          delivery_date: "2026-08-12",
+          delivery_date: "2026-08-13",
           delivery_time: "10:00:00",
           customer: "Customer B",
           consignee: null,
@@ -111,5 +111,9 @@ describe("DeliveriesPage", () => {
 
     expect(await screen.findByText("Driver A")).toBeInTheDocument();
     expect(screen.getByText("Unassigned")).toBeInTheDocument();
+
+    const messageLinks = await screen.findAllByRole("link", { name: "Message Driver" });
+    expect(messageLinks.length).toBeGreaterThan(0);
+    expect(messageLinks[0]).toHaveAttribute("href", expect.stringContaining("/dashboard/driver-communications?driverId=driver-a"));
   });
 });

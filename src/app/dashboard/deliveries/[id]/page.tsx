@@ -22,6 +22,7 @@ import {
 import {
   calculateCollectionAging,
   agingColours,
+  formatCollectionDuration,
 } from "@/lib/collection-aging";
 
 // ============================================================================
@@ -687,7 +688,7 @@ export default function DeliveryDetailsPage() {
 
                   <div>
                     <p className="text-xs uppercase tracking-[0.25em] text-slate-500">Days Waiting</p>
-                    <p className={`mt-1 text-sm font-bold ${agingC?.text ?? "text-white"}`}>{aging.waitingDays} day{aging.waitingDays !== 1 ? "s" : ""}</p>
+                    <p className={`mt-1 text-sm font-bold ${agingC?.text ?? "text-white"}`}>{formatCollectionDuration(aging.waitingHours)}</p>
                   </div>
 
                   {booking.collection_due_date ? (
@@ -725,7 +726,7 @@ export default function DeliveryDetailsPage() {
                   <div className="mt-3 grid gap-2 text-sm">
                     <div>
                       <p className="text-[10px] uppercase tracking-[0.25em] text-slate-500">Days Waiting</p>
-                      <p className={`mt-1 font-bold ${agingC?.text ?? "text-slate-200"}`}>{aging.waitingDays}</p>
+                      <p className={`mt-1 font-bold ${agingC?.text ?? "text-slate-200"}`}>{formatCollectionDuration(aging.waitingHours)}</p>
                     </div>
                     <div>
                       <p className="text-[10px] uppercase tracking-[0.25em] text-slate-500">Collection Notes</p>
@@ -738,6 +739,15 @@ export default function DeliveryDetailsPage() {
 
             {/* Quick actions */}
             <div className="flex flex-col gap-3 sm:flex-row">
+              {booking.driver_id ? (
+                <Link
+                  href={`/dashboard/driver-communications?driverId=${encodeURIComponent(booking.driver_id)}&deliveryBookingId=${encodeURIComponent(booking.id)}&trailerId=${encodeURIComponent(booking.trailer_id)}&trailerNumber=${encodeURIComponent(booking.trailer_number ?? "")}&bookingReference=${encodeURIComponent(booking.booking_reference ?? "")}`}
+                  className="flex-1 rounded-2xl border border-cyan-500/30 bg-cyan-500/10 px-5 py-3 text-center font-semibold text-cyan-100 hover:bg-cyan-500/20"
+                >
+                  Message Driver
+                </Link>
+              ) : null}
+
               {booking.status === "waiting_collection" ? (
                 <button
                   onClick={() => void handleMarkCollected()}

@@ -609,6 +609,69 @@ describe("driver mobile service", () => {
     expect(trailerEventsInsert).toHaveBeenCalledTimes(1);
   });
 
+  it("closes a waiting collection task when collected and records history", async () => {
+    const driver: DriverRow = {
+      id: "driver-a",
+      user_id: "user-a",
+      display_name: "Driver A",
+      phone: null,
+      active: true,
+      created_at: "2026-08-11T00:00:00.000Z",
+      updated_at: "2026-08-11T00:00:00.000Z",
+    };
+
+    const booking: BookingRow = {
+      id: "booking-a",
+      trailer_id: "trailer-a",
+      driver_id: "driver-a",
+      delivery_date: "2026-08-11",
+      delivery_time: null,
+      customer: "Customer A",
+      consignee: null,
+      delivery_location: "Dock A",
+      booking_reference: "BK-A",
+      escort_required: false,
+      status: "waiting_collection",
+      notes: null,
+      created_at: "2026-08-11T00:00:00.000Z",
+      updated_at: "2026-08-12T08:00:00.000Z",
+      delivered_at: "2026-08-11T08:00:00.000Z",
+      waiting_collection_since: "2026-08-11T08:30:00.000Z",
+      collection_due_date: "2026-08-12",
+      collected_at: null,
+      demurrage_free_days: null,
+      demurrage_daily_rate: null,
+      demurrage_currency: null,
+      demurrage_notes: null,
+      driver_acknowledged_at: "2026-08-11T09:00:00.000Z",
+      driver_acknowledged_by: "user-a",
+      temperature_required: false,
+      collected_temperature_c: null,
+    };
+
+    const { supabase, updateState, trailerEventsInsert } = createMockSupabase({
+      driver,
+      bookings: [booking],
+      trailers: [{ id: "trailer-a", trailer_number: "FS1001" }],
+    });
+
+    const createTrailerActivityMock = vi.mocked(createTrailerActivity);
+    createTrailerActivityMock.mockClear();
+
+    const updated = await applyDriverTaskAction({
+      supabase,
+      user: makeUser("user-a"),
+      bookingId: "booking-a",
+      action: "COLLECTED",
+    });
+
+    expect(updateState.patch?.status).toBe("collected");
+    expect(updateState.patch?.collected_at).toBeTruthy();
+    expect(updated.status).toBe("collected");
+    expect(trailerEventsInsert).toHaveBeenCalledTimes(1);
+    expect(createTrailerActivityMock).toHaveBeenCalledTimes(1);
+  });
+
   it("blocks collected action when booking requires temperature and reading is missing", async () => {
     const driver: DriverRow = {
       id: "driver-a",

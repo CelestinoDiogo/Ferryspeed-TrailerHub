@@ -256,11 +256,15 @@ export function TrailerDashboard() {
   const [error, setError] = useState<string | null>(null);
   const activeAlertsPromiseRef = useRef<Promise<void> | null>(null);
   const resolvedAlertsPromiseRef = useRef<Promise<void> | null>(null);
-  const dashboardMountStartRef = useRef<number>(typeof performance !== "undefined" ? performance.now() : Date.now());
+  const dashboardMountStartRef = useRef<number>(0);
   const finalRenderLoggedRef = useRef(false);
 
   const saved = searchParams.get("saved");
   const notice = saved === "1" ? "Operation saved successfully. Dashboard refreshed." : null;
+
+  useEffect(() => {
+    dashboardMountStartRef.current = typeof performance !== "undefined" ? performance.now() : Date.now();
+  }, []);
 
   const refreshOperationalAlerts = useCallback(async (mode: "initial" | "refresh") => {
     if (activeAlertsPromiseRef.current) {
@@ -598,7 +602,7 @@ export function TrailerDashboard() {
         }));
         setWaitingCollections(waitingRows);
         let attentionRequiredCount = 0;
-        let oldestDays = 0;
+        let oldestHours = 0;
         let oldestTrailer: string | null = null;
         let waitingOver24h = 0;
         waitingList.forEach((b) => {
@@ -609,14 +613,14 @@ export function TrailerDashboard() {
             collection_due_date: b["collection_due_date"] as string | null,
           });
           if (aging.agingLevel === "red") attentionRequiredCount++;
-          if (aging.waitingDays >= 1) waitingOver24h++;
-          if (aging.waitingDays > oldestDays) {
-            oldestDays = aging.waitingDays;
+          if (aging.waitingHours >= 24) waitingOver24h++;
+          if (aging.waitingHours > oldestHours) {
+            oldestHours = aging.waitingHours;
             oldestTrailer = ((b["trailers"] as Record<string, unknown> | null)?.["trailer_number"] as string | null) ?? null;
           }
         });
         setWaitingCollection24hCount(waitingOver24h);
-        setWaitingCollectionSummary({ count: waitingList.length, attentionRequiredCount, oldestTrailer, oldestDays });
+        setWaitingCollectionSummary({ count: waitingList.length, attentionRequiredCount, oldestTrailer, oldestDays: Math.floor(oldestHours / 24) });
 
         const vesselTrailerRows = (vesselTrailerData ?? []) as VesselTrailerAlertRow[];
         const awaitingInspection = vesselTrailerRows.filter(
@@ -729,7 +733,11 @@ export function TrailerDashboard() {
   }, [refreshOperationalAlerts]);
 
   useEffect(() => {
-    void loadStats();
+    const timeoutId = window.setTimeout(() => {
+      void loadStats();
+    }, 0);
+
+    return () => window.clearTimeout(timeoutId);
   }, [loadStats]);
 
   useEffect(() => {

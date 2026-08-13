@@ -378,7 +378,7 @@ export async function loadExecutiveDashboardReportData(
   });
 
   const waitingCollectionBookings = deliveryBookings.filter((booking) => normalizeText(booking.status) === "waiting_collection" || Boolean(booking.waiting_collection_since));
-  const waitingCollectionOverdue = waitingCollectionBookings.filter((booking) => calculateCollectionAging(booking).isOverdue || calculateCollectionAging(booking).waitingDays * 24 >= exportWaitingCollectionHours).length;
+  const waitingCollectionOverdue = waitingCollectionBookings.filter((booking) => calculateCollectionAging(booking).isOverdue || calculateCollectionAging(booking).waitingHours >= exportWaitingCollectionHours).length;
 
   const exportSla = {
     overdue: activeExportAllocations.filter((allocation) => isExportAllocationOverdue(allocation)).length,

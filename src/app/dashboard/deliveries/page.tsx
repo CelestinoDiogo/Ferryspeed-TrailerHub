@@ -24,6 +24,7 @@ import {
   calculateCollectionAging,
   agingColours,
   compareCollections,
+  formatCollectionDuration,
 } from "@/lib/collection-aging";
 
 type DeliveryBooking = {
@@ -589,6 +590,14 @@ function DeliveriesPageContent() {
                     </div>
 
                     <div className="flex gap-2 pt-3 border-t border-white/10">
+                      {booking.driver_id ? (
+                        <Link
+                          href={`/dashboard/driver-communications?driverId=${encodeURIComponent(booking.driver_id)}&deliveryBookingId=${encodeURIComponent(booking.id)}&trailerId=${encodeURIComponent(booking.trailer_id)}&trailerNumber=${encodeURIComponent(booking.trailer_number ?? "")}&bookingReference=${encodeURIComponent(booking.booking_reference ?? "")}`}
+                          className="flex-1 rounded-xl border border-cyan-500/30 bg-cyan-500/10 px-3 py-2 text-center text-sm font-semibold text-cyan-100 hover:bg-cyan-500/20"
+                        >
+                          Message Driver
+                        </Link>
+                      ) : null}
                       <Link
                         href={`/dashboard/deliveries/${booking.id}`}
                         className="flex-1 rounded-xl border border-white/10 bg-slate-950/80 px-3 py-2 text-center text-sm font-semibold text-white hover:bg-slate-900"
@@ -661,7 +670,7 @@ function DeliveriesPageContent() {
                             <span className={`h-1.5 w-1.5 rounded-full ${agingC.dot}`} />
                             {aging.agingLabel}
                           </span>
-                          <span className={`text-sm font-bold ${agingC.text}`}>{aging.waitingDays} day{aging.waitingDays !== 1 ? "s" : ""} waiting</span>
+                          <span className={`text-sm font-bold ${agingC.text}`}>{formatCollectionDuration(aging.waitingHours)} waiting</span>
                           {aging.isOverdue && aging.overdueDays !== null ? (
                             <span className="text-xs font-semibold text-rose-400">{aging.overdueDays}d overdue</span>
                           ) : null}
@@ -702,7 +711,7 @@ function DeliveriesPageContent() {
                         )}
                         <div>
                           <p className="text-[10px] uppercase tracking-[0.25em] text-slate-500">Days Waiting</p>
-                          <p className={`mt-0.5 font-semibold ${agingC.text}`}>{aging.waitingDays}</p>
+                          <p className={`mt-0.5 font-semibold ${agingC.text}`}>{formatCollectionDuration(aging.waitingHours)}</p>
                         </div>
                         <div>
                           <p className="text-[10px] uppercase tracking-[0.25em] text-slate-500">Collection Status</p>
