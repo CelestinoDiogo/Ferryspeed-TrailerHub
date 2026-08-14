@@ -9,6 +9,7 @@ import type { ComponentType } from "react";
 import {
   BarChart3,
   Bot,
+  ChevronDown,
   ClipboardList,
   Container,
   FileBarChart2,
@@ -65,22 +66,16 @@ const groupedItems: MenuGroup[] = [
       { label: "Driver Mobile", href: "/dashboard/driver", icon: Truck, moduleKey: "dashboard" },
       { label: "Driver Communications", href: "/dashboard/driver-communications", icon: Truck, moduleKey: "dashboard" },
       { label: "Arrivals", href: "/dashboard/search?filter=arrivals_today", icon: MapPin, moduleKey: "arrivals" },
-      { label: "Arrivals History", href: "/dashboard/arrivals", icon: MapPin, moduleKey: "arrivals" },
       { label: "Export Operations", href: "/dashboard/export-operations", icon: Upload, moduleKey: "export_operations" },
       { label: "Deliveries", href: "/dashboard/deliveries", icon: Truck, moduleKey: "arrivals" },
-      { label: "Deliveries History", href: "/dashboard/deliveries/history", icon: Truck, moduleKey: "arrivals" },
       { label: "Collections", href: "/dashboard/deliveries?filter=waiting", icon: ClipboardList, moduleKey: "arrivals" },
-      { label: "Collections History", href: "/dashboard/collections", icon: ClipboardList, moduleKey: "arrivals" },
       { label: "Departures", href: "/dashboard/departure", icon: LogOut, moduleKey: "departures" },
-      { label: "Departures History", href: "/dashboard/departures", icon: LogOut, moduleKey: "departures" },
     ],
   },
   {
     title: "YARD",
     items: [
       { label: "Compound", href: "/dashboard/compound", icon: Warehouse, moduleKey: "compound" },
-      { label: "Compound Snapshot", href: "/dashboard/compound/snapshot", icon: Warehouse, moduleKey: "compound" },
-      { label: "Compound History", href: "/dashboard/compound/history", icon: ClipboardList, moduleKey: "compound" },
       { label: "Stock Check", href: "/dashboard/compound/stock-check", icon: ClipboardList, moduleKey: "stock_check" },
       { label: "Review Discrepancies", href: "/dashboard/compound/review-discrepancies", icon: ScanSearch, moduleKey: "reconciliation" },
       { label: "Waiting for Compound", href: "/dashboard/compound/waiting", icon: ClipboardList, moduleKey: "compound" },
@@ -92,13 +87,10 @@ const groupedItems: MenuGroup[] = [
   {
     title: "INTELLIGENCE & REPORTS",
     items: [
-      { label: "Reports", href: "/dashboard/reports", icon: FileBarChart2, moduleKey: "reports" },
       { label: "Fleet / Transport", href: "/dashboard/fleet", icon: Truck, moduleKey: "fleet_transport" },
       { label: "Operations Summary", href: "/dashboard/operations", icon: FileBarChart2, moduleKey: "reports" },
       { label: "Trailer Timeline", href: "/dashboard/trailer-timeline", icon: ClipboardList, moduleKey: "timeline" },
       { label: "AI Assistant", href: "/dashboard/ai-assistant", icon: Bot, moduleKey: "ai_assistant" },
-      { label: "AI Reports", href: "/dashboard/vessel-operations?report=ai", icon: FileText, moduleKey: "reports" },
-      { label: "Print Reports", href: "/dashboard/vessel-operations?report=print", icon: Printer, moduleKey: "reports" },
     ],
   },
   {
@@ -116,12 +108,26 @@ const groupedItems: MenuGroup[] = [
   },
 ];
 
+const historyReportItems: MenuItem[] = [
+  { label: "Reports Hub", href: "/dashboard/reports", icon: FileBarChart2, moduleKey: "reports" },
+  { label: "Export Operations Report", href: "/dashboard/export-operations", icon: Upload, moduleKey: "export_operations" },
+  { label: "Arrivals Report", href: "/dashboard/arrivals", icon: MapPin, moduleKey: "arrivals" },
+  { label: "Departures Report", href: "/dashboard/departures", icon: LogOut, moduleKey: "departures" },
+  { label: "Deliveries Report", href: "/dashboard/deliveries/history", icon: Truck, moduleKey: "arrivals" },
+  { label: "Collections Report", href: "/dashboard/collections", icon: ClipboardList, moduleKey: "arrivals" },
+  { label: "Compound Snapshot", href: "/dashboard/compound/snapshot", icon: Warehouse, moduleKey: "compound" },
+  { label: "Compound Activity", href: "/dashboard/compound/history", icon: ClipboardList, moduleKey: "compound" },
+  { label: "AI Reports", href: "/dashboard/vessel-operations?report=ai", icon: FileText, moduleKey: "reports" },
+  { label: "Print Reports", href: "/dashboard/vessel-operations?report=print", icon: Printer, moduleKey: "reports" },
+];
+
 export function Sidebar({ onNavigate, mobile = false }: SidebarProps) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const { roleKey } = useCurrentUser();
   const [isSigningOut, setIsSigningOut] = useState(false);
+  const [isHistoryReportsOpen, setIsHistoryReportsOpen] = useState(false);
 
   const handleSignOut = async () => {
     if (isSigningOut) {
@@ -154,6 +160,8 @@ export function Sidebar({ onNavigate, mobile = false }: SidebarProps) {
     .filter((group) => group.items.length > 0);
 
   const canSeeDashboardItem = roleKey ? canAccessModule(roleKey, dashboardItem.moduleKey) : false;
+  const filteredHistoryReportItems = historyReportItems.filter((item) => (roleKey ? canAccessModule(roleKey, item.moduleKey) : false));
+  const isHistoryReportActive = filteredHistoryReportItems.some((item) => isItemActive(item.href));
 
   return (
     <aside
@@ -191,6 +199,24 @@ export function Sidebar({ onNavigate, mobile = false }: SidebarProps) {
 
           {filteredGroups.map((group) => (
             <SidebarSection key={group.title} title={group.title}>
+              {group.title === "INTELLIGENCE & REPORTS" && filteredHistoryReportItems.length > 0 ? (
+                <div className="space-y-1.5">
+                  <button
+                    type="button"
+                    aria-expanded={isHistoryReportsOpen || isHistoryReportActive}
+                    onClick={() => setIsHistoryReportsOpen((current) => !current)}
+                    className={`flex w-full items-center justify-between gap-3 rounded-xl px-3 py-2.5 text-left text-sm font-medium transition ${isHistoryReportActive ? "bg-emerald-500/20 text-white ring-1 ring-emerald-400/35" : "text-white/70 hover:bg-white/8 hover:text-white"}`}
+                  >
+                    <span className="flex items-center gap-3"><FileBarChart2 className="h-[18px] w-[18px]" /><span>History &amp; Reports</span></span>
+                    <ChevronDown className={`h-4 w-4 text-white/45 transition-transform ${isHistoryReportsOpen || isHistoryReportActive ? "rotate-180" : ""}`} />
+                  </button>
+                  {isHistoryReportsOpen || isHistoryReportActive ? (
+                    <div className="ml-3 space-y-1 border-l border-white/10 pl-2">
+                      {filteredHistoryReportItems.map((item) => <SidebarItem key={item.href + item.label} {...item} active={isItemActive(item.href)} onNavigate={onNavigate} />)}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
               {group.items.map((item) => {
                 const active = isItemActive(item.href);
                 return (

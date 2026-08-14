@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Sidebar } from "@/components/layout/sidebar";
 
@@ -58,6 +58,33 @@ describe("Sidebar", () => {
     expect(screen.getByRole("link", { name: /Master Mobile/i })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Driver Mobile/i })).toHaveAttribute("href", "/dashboard/driver");
     expect(screen.getByRole("link", { name: /Driver Communications/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /History & Reports/i })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("link", { name: "Reports Hub" })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Export Operations" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Deliveries" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Collections" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Departures" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Compound" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Fleet / Transport" })).toBeInTheDocument();
+  });
+
+  it("expands and collapses the consolidated History & Reports group", () => {
+    render(<Sidebar />);
+    const toggle = screen.getByRole("button", { name: /History & Reports/i });
+
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("link", { name: "Reports Hub" })).toHaveAttribute("href", "/dashboard/reports");
+    expect(screen.getByRole("link", { name: "Arrivals Report" })).toHaveAttribute("href", "/dashboard/arrivals");
+    expect(screen.getByRole("link", { name: "Departures Report" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Deliveries Report" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Collections Report" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Compound Snapshot" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Compound Activity" })).toBeInTheDocument();
+
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("link", { name: "Reports Hub" })).not.toBeInTheDocument();
   });
 
   it("keeps unauthorized role behavior by hiding dashboard navigation items", () => {
@@ -68,5 +95,6 @@ describe("Sidebar", () => {
     expect(screen.queryByRole("link", { name: /Master Mobile/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /Driver Mobile/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /Driver Communications/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /History & Reports/i })).not.toBeInTheDocument();
   });
 });
