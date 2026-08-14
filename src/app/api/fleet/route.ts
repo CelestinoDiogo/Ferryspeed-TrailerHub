@@ -1,5 +1,4 @@
 import { z } from "zod";
-import type { Database } from "@/lib/database.types";
 import { bootstrapCurrentUserRole, RbacPermissionError, requireRbacPermission } from "@/lib/rbac/route";
 import { createAuthenticatedRouteSupabaseClient, getRouteBearerToken, requireAuthenticatedRouteUser, SupabaseRouteAuthError } from "@/lib/supabase-route-client";
 
@@ -61,6 +60,12 @@ const findAssignmentWarnings = async (supabase: ReturnType<typeof createAuthenti
 export async function GET(request: Request) {
   try {
     const { supabase } = await requireFleet(request, "view");
+    const jobId = new URL(request.url).searchParams.get("jobId");
+    if (jobId) {
+      const { data, error } = await supabase.from("transport_job_events").select("id,transport_job_id,event_type,event_title,event_description,previous_driver_id,new_driver_id,previous_unit_id,new_unit_id,previous_trailer_id,new_trailer_id,previous_status,new_status,metadata,created_by_user_id,created_at").eq("transport_job_id", jobId).order("created_at", { ascending: false }).limit(100);
+      if (error) throw error;
+      return Response.json({ events: data ?? [] });
+    }
     const [units, jobs, drivers, trailers] = await Promise.all([
       supabase.from("fleet_transport_units").select("id,registration,internal_number,unit_type,active,notes,created_at,updated_at").order("registration", { ascending: true }),
       supabase.from("transport_jobs").select("id,job_reference,status,driver_id,unit_id,trailer_id,trailer_number_snapshot,customer,booking_reference,collection_address,delivery_address,collection_at,delivery_at,notes,created_at,updated_at,completed_at,cancelled_at").order("created_at", { ascending: false }),
@@ -78,7 +83,7 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
-    const { supabase } = await requireFleet(request, "create");
+    const { supabase, user } = await requireFleet(request, "create");
     const body = await request.json().catch(() => ({}));
     const entity = z.enum(["unit", "job"]).parse(body.entity);
     if (entity === "unit") {
@@ -90,7 +95,7 @@ export async function POST(request: Request) {
     const payload = jobSchema.parse(body);
     const status = payload.status ?? (payload.driverId || payload.unitId ? "assigned" : "planned");
     const warnings = await findAssignmentWarnings(supabase, payload.driverId ?? null, payload.unitId ?? null);
-    const { data, error } = await supabase.from("transport_jobs").insert({ job_reference: payload.jobReference, status, driver_id: payload.driverId ?? null, unit_id: payload.unitId ?? null, trailer_id: payload.trailerId ?? null, trailer_number_snapshot: payload.trailerNumberSnapshot ?? null, customer: payload.customer ?? null, booking_reference: payload.bookingReference ?? null, collection_address: payload.collectionAddress ?? null, delivery_address: payload.deliveryAddress ?? null, collection_at: payload.collectionAt ?? null, delivery_at: payload.deliveryAt ?? null, notes: payload.notes ?? null, completed_at: status === "completed" ? new Date().toISOString() : null, cancelled_at: status === "cancelled" ? new Date().toISOString() : null }).select().single();
+    const { data, error } = await supabase.rpc("create_transport_job_with_event", { p_payload: { job_reference: payload.jobReference, status, driver_id: payload.driverId ?? null, unit_id: payload.unitId ?? null, trailer_id: payload.trailerId ?? null, trailer_number_snapshot: payload.trailerNumberSnapshot ?? null, customer: payload.customer ?? null, booking_reference: payload.bookingReference ?? null, collection_address: payload.collectionAddress ?? null, delivery_address: payload.deliveryAddress ?? null, collection_at: payload.collectionAt ?? null, delivery_at: payload.deliveryAt ?? null, notes: payload.notes ?? null }, actor_id: user.id });
     if (error) throw error;
     return Response.json({ job: data, ...(warnings.length > 0 ? { warning: warnings.join("; ") } : {}) }, { status: 201 });
   } catch (error) {
@@ -102,7 +107,7 @@ export async function POST(request: Request) {
 
 export async function PATCH(request: Request) {
   try {
-    const { supabase } = await requireFleet(request, "edit");
+    const { supabase, user } = await requireFleet(request, "edit");
     const body = await request.json().catch(() => ({}));
     const entity = z.enum(["unit", "job"]).parse(body.entity);
     const id = z.string().uuid().parse(body.id);
@@ -114,10 +119,7 @@ export async function PATCH(request: Request) {
     }
     const payload = jobSchema.parse(body);
     const warnings = await findAssignmentWarnings(supabase, payload.driverId ?? null, payload.unitId ?? null, id);
-    const update: Database["public"]["Tables"]["transport_jobs"]["Update"] = { job_reference: payload.jobReference, ...(payload.status ? { status: payload.status } : {}), driver_id: payload.driverId ?? null, unit_id: payload.unitId ?? null, trailer_id: payload.trailerId ?? null, trailer_number_snapshot: payload.trailerNumberSnapshot ?? null, customer: payload.customer ?? null, booking_reference: payload.bookingReference ?? null, collection_address: payload.collectionAddress ?? null, delivery_address: payload.deliveryAddress ?? null, collection_at: payload.collectionAt ?? null, delivery_at: payload.deliveryAt ?? null, notes: payload.notes ?? null };
-    if (payload.status === "completed") update.completed_at = new Date().toISOString();
-    if (payload.status === "cancelled") update.cancelled_at = new Date().toISOString();
-    const { data, error } = await supabase.from("transport_jobs").update(update).eq("id", id).select().single();
+    const { data, error } = await supabase.rpc("update_transport_job_with_event", { p_job_id: id, p_payload: { job_reference: payload.jobReference, status: payload.status, driver_id: payload.driverId ?? null, unit_id: payload.unitId ?? null, trailer_id: payload.trailerId ?? null, trailer_number_snapshot: payload.trailerNumberSnapshot ?? null, customer: payload.customer ?? null, booking_reference: payload.bookingReference ?? null, collection_address: payload.collectionAddress ?? null, delivery_address: payload.deliveryAddress ?? null, collection_at: payload.collectionAt ?? null, delivery_at: payload.deliveryAt ?? null, notes: payload.notes ?? null }, actor_id: user.id });
     if (error) throw error;
     return Response.json({ job: data, ...(warnings.length > 0 ? { warning: warnings.join("; ") } : {}) });
   } catch (error) {

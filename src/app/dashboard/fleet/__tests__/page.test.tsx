@@ -39,4 +39,19 @@ describe("Fleet / Transport admin", () => {
     expect(screen.getByText("JOB-001")).toBeInTheDocument();
     expect(screen.getAllByText("Completed").length).toBeGreaterThan(1);
   });
+
+  it("loads immutable history only when the selected Job requests it", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ units: [], jobs: [{ id: "job-a", job_reference: "JOB-001", status: "planned", driver_id: null, unit_id: null, trailer_id: null, trailer_number_snapshot: null, customer: null, booking_reference: null, collection_address: null, delivery_address: null, collection_at: null, delivery_at: null, notes: null, created_at: "2026-08-14T10:00:00.000Z" }], drivers: [], trailers: [] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ events: [{ id: "event-a", event_type: "job_created", event_title: "Job created", event_description: "Initial Transport Job state recorded.", metadata: {}, created_by_user_id: null, created_at: "2026-08-14T10:00:00.000Z", previous_driver_id: null, new_driver_id: null, previous_unit_id: null, new_unit_id: null, previous_trailer_id: null, new_trailer_id: null, previous_status: null, new_status: "planned" }] }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<FleetPage />);
+    expect(await screen.findByText("JOB-001")).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "History" }));
+    expect(await screen.findByRole("heading", { name: "History: JOB-001" })).toBeInTheDocument();
+    expect(screen.getByText("Job created")).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith("/api/fleet?jobId=job-a", expect.anything());
+    expect(screen.queryByRole("button", { name: /delete|edit event|clear history/i })).not.toBeInTheDocument();
+  });
 });

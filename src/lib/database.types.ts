@@ -170,6 +170,29 @@ export type Database = {
         Update: Partial<Database["public"]["Tables"]["transport_jobs"]["Row"]>;
         Relationships: [];
       };
+      transport_job_events: {
+        Row: {
+          id: string;
+          transport_job_id: string;
+          event_type: string;
+          event_title: string;
+          event_description: string | null;
+          previous_driver_id: string | null;
+          new_driver_id: string | null;
+          previous_unit_id: string | null;
+          new_unit_id: string | null;
+          previous_trailer_id: string | null;
+          new_trailer_id: string | null;
+          previous_status: string | null;
+          new_status: string | null;
+          metadata: Json;
+          created_by_user_id: string | null;
+          created_at: string;
+        };
+        Insert: Partial<Database["public"]["Tables"]["transport_job_events"]["Row"]>;
+        Update: Partial<Database["public"]["Tables"]["transport_job_events"]["Row"]>;
+        Relationships: [];
+      };
       trailer_events: {
         Row: {
           id: string;
@@ -703,6 +726,14 @@ export type Database = {
       };
     };
     Functions: {
+      create_transport_job_with_event: {
+        Args: { p_payload: Json; actor_id: string };
+        Returns: Database["public"]["Tables"]["transport_jobs"]["Row"];
+      };
+      update_transport_job_with_event: {
+        Args: { p_job_id: string; p_payload: Json; actor_id: string };
+        Returns: Database["public"]["Tables"]["transport_jobs"]["Row"];
+      };
       move_compound_trailer: {
         Args: {
           p_trailer_id: string;

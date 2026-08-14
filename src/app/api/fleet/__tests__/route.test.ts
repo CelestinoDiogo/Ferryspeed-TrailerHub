@@ -11,13 +11,21 @@ describe("Fleet transport API contract", () => {
   });
 
   it("updates the same transport job identity for assignment and lifecycle changes", () => {
-    expect(source).toContain('from("transport_jobs").update');
-    expect(source).toContain(".eq(\"id\", id)");
+    expect(source).toContain('rpc("update_transport_job_with_event"');
+    expect(source).toContain("p_job_id: id");
     expect(source).toContain("driver_id: payload.driverId ?? null");
     expect(source).toContain("unit_id: payload.unitId ?? null");
     expect(source).toContain("trailer_id: payload.trailerId ?? null");
-    expect(source).toContain("completed_at");
-    expect(source).toContain("cancelled_at");
+    expect(source).not.toContain("previous_driver_id: payload");
+    expect(source).not.toContain("previous_unit_id: payload");
+    expect(source).not.toContain("previous_status: payload");
+  });
+
+  it("creates the initial event through the same server-authoritative path", () => {
+    expect(source).toContain('rpc("create_transport_job_with_event"');
+    expect(source).toContain("actor_id: user.id");
+    expect(source).toContain('from("transport_job_events")');
+    expect(source).toContain('limit(100)');
   });
 
   it("uses non-blocking warnings for active Driver and Unit conflicts", () => {
