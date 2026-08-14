@@ -50,6 +50,8 @@ type DriverInstructionRecord = {
   isRead: boolean;
 };
 
+type DriverResponseType = "OK" | "COMPLETED" | "ARRIVED" | "DELAYED" | "PROBLEM" | "CALL_ME";
+
 type DriverInstructionFeed = {
   unreadCount: number;
   newestUnread: DriverInstructionRecord | null;
@@ -269,6 +271,9 @@ export function DriverMobileJobsDashboard() {
   const [attentionAlert, setAttentionAlert] = useState<string | null>(null);
   const [isSigningOut, setIsSigningOut] = useState(false);
   const [instructionActionId, setInstructionActionId] = useState<string | null>(null);
+  const [responseActionId, setResponseActionId] = useState<string | null>(null);
+  const [responseNoteInstructionId, setResponseNoteInstructionId] = useState<string | null>(null);
+  const [responseNoteByInstructionId, setResponseNoteByInstructionId] = useState<Record<string, string>>({});
   const [pendingInstructionAckIds, setPendingInstructionAckIds] = useState<string[]>(() => loadPendingInstructionAcks());
   const [failedInstructionAckIds, setFailedInstructionAckIds] = useState<string[]>([]);
   const [temperatureByBookingId, setTemperatureByBookingId] = useState<Record<string, string>>({});
@@ -518,6 +523,47 @@ export function DriverMobileJobsDashboard() {
       throw new Error(payload.error || "Unable to acknowledge instruction.");
     }
   }, []);
+
+  const sendInstructionResponse = useCallback(async (instructionId: string, responseType: DriverResponseType) => {
+    if (responseActionId) {
+      return;
+    }
+
+    setResponseActionId(instructionId);
+    setError(null);
+    setSuccess(null);
+
+    try {
+      const token = await getSessionToken();
+      const response = await fetch("/api/driver-mobile/instructions/respond", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          instructionId,
+          responseType,
+          note: responseNoteByInstructionId[instructionId]?.trim() || undefined,
+        }),
+      });
+
+      const payload = (await response.json().catch(() => ({}))) as { error?: string };
+      if (!response.ok) {
+        throw new Error(payload.error || "Unable to send instruction response.");
+      }
+
+      setResponseNoteInstructionId(null);
+      setResponseNoteByInstructionId((current) => ({ ...current, [instructionId]: "" }));
+      setSuccess(`Response sent: ${responseType === "CALL_ME" ? "CALL ME" : responseType}.`);
+      await loadInstructions(false);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unable to send instruction response.";
+      setError(message === SESSION_EXPIRED_MESSAGE ? SESSION_EXPIRED_MESSAGE : message);
+    } finally {
+      setResponseActionId(null);
+    }
+  }, [loadInstructions, responseActionId, responseNoteByInstructionId]);
 
   const markLinkedInstructionsRead = useCallback(async (instructionIds: string[]) => {
     for (const instructionId of instructionIds) {
@@ -787,6 +833,57 @@ export function DriverMobileJobsDashboard() {
     setSuccess("Retrying instruction acknowledgement...");
     setError(null);
   }, [isOnline, upsertPendingInstructionAck]);
+
+  const renderInstructionResponses = (instruction: DriverInstructionRecord) => (
+    <div className="mt-3 border-t border-current/20 pt-3">
+      <p className="text-[11px] font-semibold uppercase tracking-[0.16em]">Respond to Operations</p>
+      <div className="mt-2 grid grid-cols-2 gap-2">
+        {(["OK", "COMPLETED", "ARRIVED", "DELAYED", "PROBLEM", "CALL_ME"] as DriverResponseType[]).map((responseType) => (
+          <button
+            key={responseType}
+            type="button"
+            disabled={responseActionId === instruction.id}
+            onClick={() => {
+              void sendInstructionResponse(instruction.id, responseType);
+            }}
+            className="rounded-lg border border-current/30 bg-white/70 px-2 py-2 text-xs font-bold disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {responseType === "CALL_ME" ? "CALL ME" : responseType}
+          </button>
+        ))}
+      </div>
+      {responseNoteInstructionId === instruction.id ? (
+        <div className="mt-2 flex gap-2">
+          <input
+            type="text"
+            maxLength={120}
+            value={responseNoteByInstructionId[instruction.id] ?? ""}
+            onChange={(event) => {
+              const { value } = event.target;
+              setResponseNoteByInstructionId((current) => ({ ...current, [instruction.id]: value }));
+            }}
+            placeholder="Optional note"
+            className="min-w-0 flex-1 rounded-lg border border-current/30 bg-white px-2 py-2 text-xs text-slate-900"
+          />
+          <button
+            type="button"
+            onClick={() => setResponseNoteInstructionId(null)}
+            className="rounded-lg border border-current/30 bg-white/70 px-2 py-2 text-xs font-semibold"
+          >
+            Cancel
+          </button>
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setResponseNoteInstructionId(instruction.id)}
+          className="mt-2 rounded-lg border border-current/30 bg-white/70 px-2 py-1.5 text-xs font-semibold"
+        >
+          Add note
+        </button>
+      )}
+    </div>
+  );
 
   const handleRetryQueuedAction = useCallback(async (queuedAction: DriverMobileQueuedAction) => {
     if (actionLocksRef.current.has(queuedAction.bookingId)) {
@@ -1171,6 +1268,7 @@ export function DriverMobileJobsDashboard() {
                         </button>
                       </div>
                     ) : null}
+                    {renderInstructionResponses(activeInstruction)}
                   </div>
                 ) : null}
 
@@ -1377,6 +1475,7 @@ export function DriverMobileJobsDashboard() {
                             </button>
                           </div>
                         ) : null}
+                        {renderInstructionResponses(instruction)}
                       </article>
                     ))}
                   </div>

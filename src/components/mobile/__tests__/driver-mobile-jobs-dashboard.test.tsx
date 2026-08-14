@@ -688,6 +688,60 @@ describe("DriverMobileJobsDashboard", () => {
     expect(fetchMock.mock.calls.some(([first]) => String(first).includes("/api/driver-mobile/instructions/read"))).toBe(true);
   });
 
+  it("renders live Driver response controls and maps quick responses with an optional note", async () => {
+    const instructionResponses: Array<{ instructionId: string; responseType: string; note?: string }> = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+
+      if (url.includes("/api/driver-mobile/tasks") && method === "GET") {
+        return new Response(JSON.stringify({
+          driver: { id: "driver-a", display_name: "Driver One", user_id: "user-a" },
+          tasks: [makeTask({ bookingId: "response-job", trailerId: "response-trailer", nextAction: "COLLECTED", group: "current" })],
+        }), { status: 200 });
+      }
+
+      if (url.includes("/api/driver-mobile/instructions/respond") && method === "POST") {
+        instructionResponses.push(JSON.parse(String(init?.body ?? "{}")) as { instructionId: string; responseType: string; note?: string });
+        return new Response(JSON.stringify({ ok: true, response: { id: `event-${instructionResponses.length}` } }), { status: 200 });
+      }
+
+      if (url.includes("/api/driver-mobile/instructions") && method === "GET") {
+        return new Response(JSON.stringify(buildInstructionFeed([
+          makeInstruction({ id: "instruction-response", deliveryBookingId: "response-job", trailerId: "response-trailer", instruction: "Confirm the job status" }),
+        ])), { status: 200 });
+      }
+
+      return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+    render(<DriverMobileJobsDashboard />);
+
+    const instruction = (await screen.findAllByText("Confirm the job status"))[0];
+    const card = instruction.closest("article") as HTMLElement;
+    for (const label of ["OK", "COMPLETED", "ARRIVED", "DELAYED", "PROBLEM", "CALL ME"]) {
+      expect(within(card).getByRole("button", { name: label })).toBeInTheDocument();
+    }
+
+    fireEvent.click(within(card).getByRole("button", { name: "Add note" }));
+    fireEvent.change(within(card).getByPlaceholderText("Optional note"), { target: { value: "Reached site" } });
+
+    for (const label of ["OK", "COMPLETED", "ARRIVED", "DELAYED", "PROBLEM", "CALL ME"]) {
+      fireEvent.click(within(card).getByRole("button", { name: label }));
+      await waitFor(() => expect(instructionResponses).toHaveLength(["OK", "COMPLETED", "ARRIVED", "DELAYED", "PROBLEM", "CALL ME"].indexOf(label) + 1));
+    }
+
+    expect(instructionResponses).toEqual([
+      { instructionId: "instruction-response", responseType: "OK", note: "Reached site" },
+      { instructionId: "instruction-response", responseType: "COMPLETED" },
+      { instructionId: "instruction-response", responseType: "ARRIVED" },
+      { instructionId: "instruction-response", responseType: "DELAYED" },
+      { instructionId: "instruction-response", responseType: "PROBLEM" },
+      { instructionId: "instruction-response", responseType: "CALL_ME" },
+    ]);
+  });
+
   it("blocks collected action when required temperature is missing and leaves temperature rules unchanged", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
