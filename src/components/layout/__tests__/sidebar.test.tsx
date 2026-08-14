@@ -65,7 +65,7 @@ describe("Sidebar", () => {
     expect(screen.getByRole("link", { name: "Collections" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Departures" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Compound" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Fleet / Transport" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Fleet / Transport" })).not.toBeInTheDocument();
   });
 
   it("expands and collapses the consolidated History & Reports group", () => {
