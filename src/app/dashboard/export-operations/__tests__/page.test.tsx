@@ -86,9 +86,22 @@ beforeEach(() => {
       trailer_id: "t-outsourcing",
       trailer_number: "PFC200",
       customer: "Customer B",
+      haulier: "Haulier B",
+      priority: "high",
+      booking_reference: "REF-B",
       status: "allocated",
-      priority: "normal",
       collection_date: getLocalDateKey(),
+    },
+    {
+      id: "a-third",
+      trailer_id: "t-company",
+      trailer_number: "PRO300",
+      customer: "Customer C",
+      haulier: "Haulier C",
+      priority: "urgent",
+      booking_reference: "REF-C",
+      status: "completed",
+      collection_date: "2026-08-01",
     },
   ]);
 });
@@ -116,5 +129,27 @@ describe("Export operations ownership filtering", () => {
     expect(await screen.findByText("1 allocation")).toBeInTheDocument();
     expect(screen.getAllByText("PFC200").length).toBeGreaterThan(0);
     expect(screen.queryByText("PRO100")).not.toBeInTheDocument();
+  });
+
+  it("combines multiple customers into one consolidated filtered view", async () => {
+    searchParamsValue = `history=custom&start=2026-08-01&end=${getLocalDateKey()}&customer=Customer%20A&customer=Customer%20B`;
+
+    render(<ExportOperationsPage />);
+
+    expect(await screen.findByText("2 allocations")).toBeInTheDocument();
+    expect(screen.getAllByText("PRO100").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("PFC200").length).toBeGreaterThan(0);
+    expect(screen.queryByText("PRO300")).not.toBeInTheDocument();
+  });
+
+  it("applies deterministic custom date range, priority, and haulier filters", async () => {
+    searchParamsValue = `history=custom&start=2026-08-01&end=${getLocalDateKey()}&priority=high&haulier=Haulier%20B`;
+
+    render(<ExportOperationsPage />);
+
+    expect(await screen.findByText("1 allocation")).toBeInTheDocument();
+    expect(screen.getAllByText("PFC200").length).toBeGreaterThan(0);
+    expect(screen.queryByText("PRO100")).not.toBeInTheDocument();
+    expect(screen.queryByText("PRO300")).not.toBeInTheDocument();
   });
 });

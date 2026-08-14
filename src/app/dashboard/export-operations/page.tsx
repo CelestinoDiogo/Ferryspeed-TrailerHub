@@ -287,17 +287,32 @@ const getCustomerOptions = (items: ExportAllocationRecord[]) => {
   return Array.from(seen.values()).sort((left, right) => left.localeCompare(right, "en", { sensitivity: "base" }));
 };
 
+const getDistinctOptions = (items: ExportAllocationRecord[], field: "haulier" | "priority") => {
+  const values = new Map<string, string>();
+  items.forEach((item) => {
+    const value = field === "priority" ? item.priority : item.haulier;
+    const trimmed = value?.trim();
+    if (trimmed && !values.has(normalizeText(trimmed))) {
+      values.set(normalizeText(trimmed), trimmed);
+    }
+  });
+  return Array.from(values.values()).sort((left, right) => left.localeCompare(right, "en", { sensitivity: "base" }));
+};
+
 function ExportOperationsPageContent() {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const saved = searchParams.get("saved") === "1";
-  const selectedCustomerQuery = searchParams.get("customer") ?? "";
+  const selectedCustomerQueries = searchParams.getAll("customer");
+  const selectedCustomerQuery = selectedCustomerQueries[0] ?? searchParams.get("customer") ?? "";
   const statusQuery = searchParams.get("status");
   const legacyFilterQuery = statusQuery ? null : searchParams.get("filter");
   const statusFilter = getStatusQueryValue(statusQuery ?? legacyFilterQuery ?? "all");
   const ownershipQuery = searchParams.get("ownership");
   const ownershipFilter = getOwnershipQueryValue(ownershipQuery);
+  const priorityFilter = searchParams.get("priority") ?? "all";
+  const haulierFilter = searchParams.get("haulier") ?? "all";
   const historyPresetQuery = searchParams.get("history");
   const historyStartQuery = searchParams.get("start") ?? "";
   const historyEndQuery = searchParams.get("end") ?? "";
@@ -333,20 +348,18 @@ function ExportOperationsPageContent() {
   }, [historyEndQuery, historyPresetQuery, historyStartQuery]);
 
   const updateFilters = (updates: {
-    customer?: string;
+    customers?: string[];
     status?: string;
     ownership?: OwnershipFilter;
+    priority?: string;
+    haulier?: string;
     history?: HistoryDateRangeValue;
   }) => {
     const params = new URLSearchParams(searchParams.toString());
 
-    if (updates.customer !== undefined) {
-      const value = updates.customer.trim();
-      if (value) {
-        params.set("customer", value);
-      } else {
-        params.delete("customer");
-      }
+    if (updates.customers !== undefined) {
+      params.delete("customer");
+      updates.customers.map((value) => value.trim()).filter(Boolean).forEach((value) => params.append("customer", value));
     }
 
     if (updates.status !== undefined) {
@@ -364,6 +377,16 @@ function ExportOperationsPageContent() {
       } else {
         params.delete("ownership");
       }
+    }
+
+    if (updates.priority !== undefined) {
+      if (updates.priority !== "all") params.set("priority", updates.priority);
+      else params.delete("priority");
+    }
+
+    if (updates.haulier !== undefined) {
+      if (updates.haulier !== "all") params.set("haulier", updates.haulier);
+      else params.delete("haulier");
     }
 
     if (updates.history !== undefined) {
@@ -560,39 +583,36 @@ function ExportOperationsPageContent() {
     });
   }, [allocations, historyRange, legacyFilterQuery, searchTerm, statusFilter]);
 
-  const customerOptions = useMemo(() => getCustomerOptions(baseFilteredAllocations), [baseFilteredAllocations]);
+  const customerOptions = useMemo(() => getCustomerOptions(allocations), [allocations]);
 
-  const resolvedCustomerValue = useMemo(() => {
-    const query = selectedCustomerQuery.trim();
-    if (!query) {
-      return "";
-    }
+  const priorityOptions = useMemo(() => getDistinctOptions(allocations, "priority"), [allocations]);
+  const haulierOptions = useMemo(() => getDistinctOptions(allocations, "haulier"), [allocations]);
 
-    const match = customerOptions.find((option) => normalizeText(option) === normalizeText(query));
-    return match ?? query;
-  }, [customerOptions, selectedCustomerQuery]);
+  const resolvedCustomerValues = useMemo(() => {
+    const queries = selectedCustomerQueries.length > 0 ? selectedCustomerQueries : selectedCustomerQuery ? [selectedCustomerQuery] : [];
+    return queries.map((query) => customerOptions.find((option) => normalizeText(option) === normalizeText(query)) ?? query).filter(Boolean);
+  }, [customerOptions, selectedCustomerQueries, selectedCustomerQuery]);
 
   const customerSelectOptions = useMemo(() => {
-    if (!resolvedCustomerValue) {
+    if (resolvedCustomerValues.length === 0) {
       return customerOptions;
     }
-
-    const hasMatch = customerOptions.some((option) => normalizeText(option) === normalizeText(resolvedCustomerValue));
-    if (hasMatch) {
-      return customerOptions;
-    }
-
-    return [...customerOptions, resolvedCustomerValue].sort((left, right) => left.localeCompare(right, "en", { sensitivity: "base" }));
-  }, [customerOptions, resolvedCustomerValue]);
+    return Array.from(new Set([...customerOptions, ...resolvedCustomerValues])).sort((left, right) => left.localeCompare(right, "en", { sensitivity: "base" }));
+  }, [customerOptions, resolvedCustomerValues]);
 
   const filteredAllocations = useMemo(() => {
-    const filteredByCustomer = !resolvedCustomerValue
+    const filteredByCustomer = resolvedCustomerValues.length === 0
       ? baseFilteredAllocations
-      : baseFilteredAllocations.filter((item) => normalizeText(item.customer) === normalizeText(resolvedCustomerValue));
+      : baseFilteredAllocations.filter((item) => resolvedCustomerValues.some((customer) => normalizeText(item.customer) === normalizeText(customer)));
+
+    const filteredByOptionalFields = filteredByCustomer.filter((item) =>
+      (priorityFilter === "all" || item.priority === priorityFilter)
+      && (haulierFilter === "all" || normalizeText(item.haulier) === normalizeText(haulierFilter)),
+    );
 
     const filteredByOwnership = ownershipFilter === "all"
-      ? filteredByCustomer
-      : filteredByCustomer.filter((item) => item.ownershipType === ownershipFilter);
+      ? filteredByOptionalFields
+      : filteredByOptionalFields.filter((item) => item.ownershipType === ownershipFilter);
 
     const filteredByPrefix = filteredByOwnership.filter((item) => {
       if (prefixFilter === "all") {
@@ -615,7 +635,7 @@ function ExportOperationsPageContent() {
 
       return comparePrintAllocations(left, right);
     });
-  }, [baseFilteredAllocations, ownershipFilter, prefixFilter, resolvedCustomerValue, sortBy]);
+  }, [baseFilteredAllocations, haulierFilter, ownershipFilter, prefixFilter, priorityFilter, resolvedCustomerValues, sortBy]);
 
   const prefixOptions = useMemo(() => {
     const prefixes = new Set<string>();
@@ -660,7 +680,7 @@ function ExportOperationsPageContent() {
 
   const selectedStatusLabel = getStatusLabel(statusFilter);
   const selectedDateLabel = getHistoryDateRangeLabel(historyRange);
-  const selectedCustomerLabel = resolvedCustomerValue ? resolvedCustomerValue : "All Customers";
+  const selectedCustomerLabel = resolvedCustomerValues.length > 0 ? resolvedCustomerValues.join(", ") : "All Customers";
   const selectedOwnershipLabel = ownershipFilter === "all" ? "All Ownership" : ownershipFilter === "company" ? "Company" : "Outsourcing";
   const printedAt = formatPrintedDateTime();
 
@@ -1277,19 +1297,54 @@ function ExportOperationsPageContent() {
                   onChange={(nextRange) => updateFilters({ history: nextRange })}
                   label="Collection Period"
                 />
+                <fieldset className="min-w-[220px] text-xs uppercase tracking-[0.2em] text-slate-500">
+                  <legend>Customers</legend>
+                  <div className="mt-1.5 max-h-32 space-y-1 overflow-y-auto rounded-xl border border-white/10 bg-slate-950/85 p-2 text-sm normal-case tracking-normal text-slate-100">
+                    <label className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={resolvedCustomerValues.length === 0}
+                        onChange={() => updateFilters({ customers: [] })}
+                      />
+                      All Customers
+                    </label>
+                    {customerSelectOptions.map((customer) => (
+                      <label key={customer} className="flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={resolvedCustomerValues.some((selected) => normalizeText(selected) === normalizeText(customer))}
+                          onChange={(event) => {
+                            const next = event.target.checked
+                              ? [...resolvedCustomerValues, customer]
+                              : resolvedCustomerValues.filter((selected) => normalizeText(selected) !== normalizeText(customer));
+                            updateFilters({ customers: next });
+                          }}
+                        />
+                        {customer}
+                      </label>
+                    ))}
+                  </div>
+                </fieldset>
                 <label className="text-xs uppercase tracking-[0.2em] text-slate-500">
-                  Customer
+                  Priority
                   <select
-                    value={resolvedCustomerValue}
-                    onChange={(event) => updateFilters({ customer: event.target.value })}
+                    value={priorityFilter}
+                    onChange={(event) => updateFilters({ priority: event.target.value })}
                     className="mt-1.5 h-10 rounded-xl border border-white/10 bg-slate-950/85 px-3 text-sm text-slate-100"
                   >
-                    <option value="">All Customers</option>
-                    {customerSelectOptions.map((customer) => (
-                      <option key={customer} value={customer}>
-                        {customer}
-                      </option>
-                    ))}
+                    <option value="all">All Priorities</option>
+                    {priorityOptions.map((priority) => <option key={priority} value={priority}>{getExportAllocationPriorityLabel(priority as ExportAllocationPriority)}</option>)}
+                  </select>
+                </label>
+                <label className="text-xs uppercase tracking-[0.2em] text-slate-500">
+                  Haulier
+                  <select
+                    value={haulierFilter}
+                    onChange={(event) => updateFilters({ haulier: event.target.value })}
+                    className="mt-1.5 h-10 rounded-xl border border-white/10 bg-slate-950/85 px-3 text-sm text-slate-100"
+                  >
+                    <option value="all">All Hauliers</option>
+                    {haulierOptions.map((haulier) => <option key={haulier} value={haulier}>{haulier}</option>)}
                   </select>
                 </label>
                 <label className="text-xs uppercase tracking-[0.2em] text-slate-500">
