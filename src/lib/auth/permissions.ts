@@ -13,6 +13,7 @@ export const moduleKeys = [
   "reports",
   "timeline",
   "ai_assistant",
+  "fleet_transport",
   "settings",
   "user_management",
 ] as const;
@@ -49,6 +50,7 @@ const operationalModules: PermissionModuleKey[] = [
   "reports",
   "timeline",
   "ai_assistant",
+  "fleet_transport",
 ];
 
 function createEmptyMap(): RolePermissionMap {
@@ -65,6 +67,7 @@ function createEmptyMap(): RolePermissionMap {
     reports: new Set<PermissionAction>(),
     timeline: new Set<PermissionAction>(),
     ai_assistant: new Set<PermissionAction>(),
+    fleet_transport: new Set<PermissionAction>(),
     settings: new Set<PermissionAction>(),
     user_management: new Set<PermissionAction>(),
   };
@@ -145,6 +148,7 @@ const moduleToLegacyMap: Record<PermissionModuleKey, LegacyPermissionModuleKey> 
   reports: "intelligence",
   timeline: "intelligence",
   ai_assistant: "intelligence",
+  fleet_transport: "administration",
   settings: "settings",
   user_management: "settings",
 };

@@ -130,6 +130,46 @@ export type Database = {
         Update: Partial<Database["public"]["Tables"]["company_trailers"]["Row"]>;
         Relationships: [];
       };
+      fleet_transport_units: {
+        Row: {
+          id: string;
+          registration: string;
+          internal_number: string;
+          unit_type: string;
+          active: boolean;
+          notes: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: Partial<Database["public"]["Tables"]["fleet_transport_units"]["Row"]>;
+        Update: Partial<Database["public"]["Tables"]["fleet_transport_units"]["Row"]>;
+        Relationships: [];
+      };
+      transport_jobs: {
+        Row: {
+          id: string;
+          job_reference: string;
+          status: string;
+          driver_id: string | null;
+          unit_id: string | null;
+          trailer_id: string | null;
+          trailer_number_snapshot: string | null;
+          customer: string | null;
+          booking_reference: string | null;
+          collection_address: string | null;
+          delivery_address: string | null;
+          collection_at: string | null;
+          delivery_at: string | null;
+          notes: string | null;
+          created_at: string;
+          updated_at: string;
+          completed_at: string | null;
+          cancelled_at: string | null;
+        };
+        Insert: Partial<Database["public"]["Tables"]["transport_jobs"]["Row"]>;
+        Update: Partial<Database["public"]["Tables"]["transport_jobs"]["Row"]>;
+        Relationships: [];
+      };
       trailer_events: {
         Row: {
           id: string;

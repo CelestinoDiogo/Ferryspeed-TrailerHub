@@ -25,6 +25,7 @@ const moduleLabels: Record<PermissionModuleKey, string> = {
   reports: "Reports",
   timeline: "Timeline",
   ai_assistant: "AI Assistant",
+  fleet_transport: "Fleet / Transport",
   settings: "Settings",
   user_management: "User Management",
 };
