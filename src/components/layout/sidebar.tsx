@@ -79,6 +79,8 @@ const groupedItems: MenuGroup[] = [
     title: "YARD",
     items: [
       { label: "Compound", href: "/dashboard/compound", icon: Warehouse, moduleKey: "compound" },
+      { label: "Compound Snapshot", href: "/dashboard/compound/snapshot", icon: Warehouse, moduleKey: "compound" },
+      { label: "Compound History", href: "/dashboard/compound/history", icon: ClipboardList, moduleKey: "compound" },
       { label: "Stock Check", href: "/dashboard/compound/stock-check", icon: ClipboardList, moduleKey: "stock_check" },
       { label: "Review Discrepancies", href: "/dashboard/compound/review-discrepancies", icon: ScanSearch, moduleKey: "reconciliation" },
       { label: "Waiting for Compound", href: "/dashboard/compound/waiting", icon: ClipboardList, moduleKey: "compound" },
