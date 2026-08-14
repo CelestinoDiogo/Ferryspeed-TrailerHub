@@ -65,10 +65,12 @@ const groupedItems: MenuGroup[] = [
       { label: "Driver Mobile", href: "/dashboard/driver", icon: Truck, moduleKey: "dashboard" },
       { label: "Driver Communications", href: "/dashboard/driver-communications", icon: Truck, moduleKey: "dashboard" },
       { label: "Arrivals", href: "/dashboard/search?filter=arrivals_today", icon: MapPin, moduleKey: "arrivals" },
+      { label: "Arrivals History", href: "/dashboard/arrivals", icon: MapPin, moduleKey: "arrivals" },
       { label: "Export Operations", href: "/dashboard/export-operations", icon: Upload, moduleKey: "export_operations" },
       { label: "Deliveries", href: "/dashboard/deliveries", icon: Truck, moduleKey: "arrivals" },
       { label: "Collections", href: "/dashboard/deliveries?filter=waiting", icon: ClipboardList, moduleKey: "arrivals" },
       { label: "Departures", href: "/dashboard/departure", icon: LogOut, moduleKey: "departures" },
+      { label: "Departures History", href: "/dashboard/departures", icon: LogOut, moduleKey: "departures" },
     ],
   },
   {
