@@ -31,6 +31,20 @@ type DriverInstructionRecord = {
   createdAt: string;
   readAt: string | null;
   isRead: boolean;
+  latestResponse: {
+    id: string;
+    responseType: "ok" | "completed" | "arrived" | "delayed" | "problem" | "call_me";
+    message: string | null;
+    createdAt: string;
+    isException: boolean;
+  } | null;
+  responseHistory: Array<{
+    id: string;
+    responseType: "ok" | "completed" | "arrived" | "delayed" | "problem" | "call_me";
+    message: string | null;
+    createdAt: string;
+    isException: boolean;
+  }>;
 };
 
 type DriverInstructionResponse = {
@@ -114,6 +128,22 @@ const toTaskKindLabel = (taskKind: DriverTaskKind) => {
   return taskKind === "collection" ? "Collection" : "Delivery";
 };
 
+const toResponseLabel = (value: "ok" | "completed" | "arrived" | "delayed" | "problem" | "call_me") => {
+  if (value === "call_me") {
+    return "CALL ME";
+  }
+
+  return value.toUpperCase();
+};
+
+const toResponseTone = (value: "ok" | "completed" | "arrived" | "delayed" | "problem" | "call_me") => {
+  if (value === "ok" || value === "completed" || value === "arrived") {
+    return "text-emerald-800";
+  }
+
+  return "text-rose-800";
+};
+
 const toScheduleLabel = (taskKind: DriverTaskKind) => {
   return taskKind === "collection" ? "Collection" : "Delivery";
 };
@@ -135,6 +165,9 @@ export function DriverMobileDashboard() {
   });
   const [isLoadingInstructions, setIsLoadingInstructions] = useState(true);
   const [instructionActionId, setInstructionActionId] = useState<string | null>(null);
+  const [responseActionInstructionId, setResponseActionInstructionId] = useState<string | null>(null);
+  const [exceptionDraftByInstructionId, setExceptionDraftByInstructionId] = useState<Record<string, "DELAYED" | "PROBLEM" | null>>({});
+  const [responseNoteByInstructionId, setResponseNoteByInstructionId] = useState<Record<string, string>>({});
   const [isSigningOut, setIsSigningOut] = useState(false);
 
   const mobileRoleKey = roleKey as RoleKey | null;
@@ -363,6 +396,57 @@ export function DriverMobileDashboard() {
     }
   }, [instructionActionId, loadInstructions]);
 
+  const sendQuickResponse = useCallback(async (
+    instruction: DriverInstructionRecord,
+    responseType: "OK" | "COMPLETED" | "ARRIVED" | "DELAYED" | "PROBLEM" | "CALL_ME",
+    note?: string,
+  ) => {
+    if (responseActionInstructionId) {
+      return;
+    }
+
+    setResponseActionInstructionId(instruction.id);
+    setError(null);
+    setSuccess(null);
+
+    try {
+      const token = await getSessionToken();
+      const response = await fetch("/api/driver-mobile/instructions/respond", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          instructionId: instruction.id,
+          responseType,
+          note: note?.trim() ? note.trim() : undefined,
+        }),
+      });
+
+      const payload = (await response.json().catch(() => ({}))) as { error?: string };
+      if (!response.ok) {
+        throw new Error(payload.error || "Unable to send quick response.");
+      }
+
+      setExceptionDraftByInstructionId((current) => ({
+        ...current,
+        [instruction.id]: null,
+      }));
+      setResponseNoteByInstructionId((current) => ({
+        ...current,
+        [instruction.id]: "",
+      }));
+      setSuccess(`Response sent: ${responseType.replace("_", " ")}.`);
+      await loadInstructions({ withLoading: false });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unable to send quick response.";
+      setError(message);
+    } finally {
+      setResponseActionInstructionId(null);
+    }
+  }, [loadInstructions, responseActionInstructionId]);
+
   const shellHeader = (
     <header className="rounded-3xl border border-slate-200 bg-white/95 p-4 shadow-sm">
       <div className="flex items-start justify-between gap-3">
@@ -456,7 +540,7 @@ export function DriverMobileDashboard() {
                 ) : null}
 
                 {!isLoadingInstructions && instructionFeed.newestUnread ? (
-                  <article className="mt-3 rounded-xl border border-cyan-200 bg-cyan-50 p-3">
+                    <article className={`mt-3 rounded-xl border p-3 ${instructionFeed.newestUnread.priority === "critical" ? "border-rose-400 bg-rose-50" : instructionFeed.newestUnread.priority === "high" ? "border-amber-400 bg-amber-50" : "border-cyan-200 bg-cyan-50"}`}>
                     <p className="text-xs font-semibold uppercase tracking-[0.14em] text-cyan-900">New Instruction</p>
                     <p className="mt-2 text-sm font-semibold text-slate-900">{instructionFeed.newestUnread.instruction}</p>
                     <p className="mt-1 text-xs text-slate-600">
@@ -481,6 +565,136 @@ export function DriverMobileDashboard() {
                 ) : null}
 
                 <div className="mt-3 border-t border-slate-200 pt-3">
+                  {instructionFeed.recent[0] ? (
+                    <article className={`mb-3 rounded-xl border p-3 ${instructionFeed.recent[0].priority === "critical" ? "border-rose-400 bg-rose-50" : instructionFeed.recent[0].priority === "high" ? "border-amber-400 bg-amber-50" : "border-slate-300 bg-white"}`}>
+                      <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-700">Quick Response</p>
+                      <p className="mt-2 text-sm font-semibold text-slate-900">{instructionFeed.recent[0].instruction}</p>
+                      <p className="mt-1 text-xs text-slate-600">
+                        {formatTimestamp(instructionFeed.recent[0].createdAt)}
+                        {instructionFeed.recent[0].trailerNumber ? ` • ${instructionFeed.recent[0].trailerNumber}` : ""}
+                      </p>
+                      <div className="mt-3 grid grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          disabled={responseActionInstructionId === instructionFeed.recent[0].id}
+                          onClick={() => {
+                            void sendQuickResponse(instructionFeed.recent[0], "OK");
+                          }}
+                          className="rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-3 text-sm font-semibold text-emerald-900 disabled:opacity-60"
+                        >
+                          OK
+                        </button>
+                        <button
+                          type="button"
+                          disabled={responseActionInstructionId === instructionFeed.recent[0].id}
+                          onClick={() => void sendQuickResponse(instructionFeed.recent[0], "COMPLETED")}
+                          className="rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-3 text-sm font-semibold text-emerald-900 disabled:opacity-60"
+                        >
+                          COMPLETED
+                        </button>
+                        <button
+                          type="button"
+                          disabled={responseActionInstructionId === instructionFeed.recent[0].id}
+                          onClick={() => {
+                            void sendQuickResponse(instructionFeed.recent[0], "ARRIVED");
+                          }}
+                          className="rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-3 text-sm font-semibold text-emerald-900 disabled:opacity-60"
+                        >
+                          ARRIVED
+                        </button>
+                        <button
+                          type="button"
+                          disabled={responseActionInstructionId === instructionFeed.recent[0].id}
+                          onClick={() => {
+                            setExceptionDraftByInstructionId((current) => ({ ...current, [instructionFeed.recent[0].id]: "DELAYED" }));
+                          }}
+                          className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-3 text-sm font-semibold text-amber-900 disabled:opacity-60"
+                        >
+                          DELAYED
+                        </button>
+                        <button
+                          type="button"
+                          disabled={responseActionInstructionId === instructionFeed.recent[0].id}
+                          onClick={() => {
+                            setExceptionDraftByInstructionId((current) => ({ ...current, [instructionFeed.recent[0].id]: "PROBLEM" }));
+                          }}
+                          className="rounded-xl border border-rose-300 bg-rose-50 px-3 py-3 text-sm font-semibold text-rose-900 disabled:opacity-60"
+                        >
+                          PROBLEM
+                        </button>
+                        <button
+                          type="button"
+                          disabled={responseActionInstructionId === instructionFeed.recent[0].id}
+                          onClick={() => {
+                            void sendQuickResponse(instructionFeed.recent[0], "CALL_ME");
+                          }}
+                          className="col-span-2 rounded-xl border border-rose-400 bg-rose-100 px-3 py-3 text-sm font-semibold text-rose-900 disabled:opacity-60"
+                        >
+                          CALL ME
+                        </button>
+                      </div>
+
+                      {exceptionDraftByInstructionId[instructionFeed.recent[0].id] ? (
+                        <div className="mt-3 rounded-xl border border-slate-300 bg-slate-50 p-3">
+                          <p className="text-xs font-semibold text-slate-700">
+                            {exceptionDraftByInstructionId[instructionFeed.recent[0].id]} selected. Add optional note.
+                          </p>
+                          <input
+                            type="text"
+                            maxLength={120}
+                            value={responseNoteByInstructionId[instructionFeed.recent[0].id] ?? ""}
+                            onChange={(event) => {
+                              const { value } = event.target;
+                              setResponseNoteByInstructionId((current) => ({
+                                ...current,
+                                [instructionFeed.recent[0].id]: value,
+                              }));
+                            }}
+                            placeholder="Optional note"
+                            className="mt-2 w-full rounded-lg border border-slate-300 bg-white px-2 py-2 text-sm text-slate-900"
+                          />
+                          <div className="mt-2 flex gap-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const choice = exceptionDraftByInstructionId[instructionFeed.recent[0].id];
+                                if (!choice) return;
+                                void sendQuickResponse(
+                                  instructionFeed.recent[0],
+                                  choice,
+                                  responseNoteByInstructionId[instructionFeed.recent[0].id],
+                                );
+                              }}
+                              disabled={responseActionInstructionId === instructionFeed.recent[0].id}
+                              className="rounded-lg bg-slate-900 px-3 py-2 text-xs font-semibold text-white disabled:opacity-60"
+                            >
+                              {responseActionInstructionId === instructionFeed.recent[0].id ? "Sending..." : "Send"}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setExceptionDraftByInstructionId((current) => ({ ...current, [instructionFeed.recent[0].id]: null }));
+                              }}
+                              className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      ) : null}
+
+                      {instructionFeed.recent[0].latestResponse ? (
+                        <p className={`mt-3 text-xs font-semibold ${toResponseTone(instructionFeed.recent[0].latestResponse.responseType)}`}>
+                          Last response: {toResponseLabel(instructionFeed.recent[0].latestResponse.responseType)}
+                          {instructionFeed.recent[0].latestResponse.message
+                            ? ` - ${instructionFeed.recent[0].latestResponse.message}`
+                            : ""}
+                          {` • ${formatTimestamp(instructionFeed.recent[0].latestResponse.createdAt)}`}
+                        </p>
+                      ) : null}
+                    </article>
+                  ) : null}
+
                   <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-600">Recent History</p>
                   {instructionFeed.recent.length === 0 ? (
                     <p className="mt-2 text-sm text-slate-500">No instruction history yet.</p>
@@ -489,9 +703,18 @@ export function DriverMobileDashboard() {
                       {instructionFeed.recent.slice(0, 6).map((item) => (
                         <article key={item.id} className="rounded-lg border border-slate-200 bg-slate-50 p-2">
                           <p className="text-sm text-slate-900">{item.instruction}</p>
+                          <p className={`mt-1 text-[11px] font-bold uppercase ${item.priority === "critical" ? "text-rose-700" : item.priority === "high" ? "text-amber-700" : "text-slate-600"}`}>
+                            {item.priority === "high" ? "ATTENTION" : item.priority}
+                          </p>
                           <p className="mt-1 text-xs text-slate-600">
                             {formatTimestamp(item.createdAt)} • {item.readAt ? `Read ${formatTimestamp(item.readAt)}` : "Unread"}
                           </p>
+                          {item.latestResponse ? (
+                            <p className={`mt-1 text-xs font-semibold ${toResponseTone(item.latestResponse.responseType)}`}>
+                              Driver: {toResponseLabel(item.latestResponse.responseType)}
+                              {item.latestResponse.message ? ` - ${item.latestResponse.message}` : ""}
+                            </p>
+                          ) : null}
                         </article>
                       ))}
                     </div>

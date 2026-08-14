@@ -159,4 +159,19 @@ describe("DeliveryDetailsPage", () => {
     expect((await screen.findAllByText("Assigned Driver")).length).toBeGreaterThan(0);
     expect(screen.getByText("Unassigned")).toBeInTheDocument();
   });
+
+  it("shows Message Driver action when a driver is assigned", async () => {
+    navigationState.edit = null;
+    state.booking = makeBooking({
+      driver_id: "driver-a",
+      booking_reference: "REF-A",
+      trailers: { trailer_number: "FS1001", container_number: null, compound_position: null, departure_date: null },
+    });
+
+    render(<DeliveryDetailsPage />);
+
+    const messageDriverLink = await screen.findByRole("link", { name: "Message Driver" });
+    expect(messageDriverLink).toHaveAttribute("href", expect.stringContaining("/dashboard/driver-communications?driverId=driver-a"));
+    expect(messageDriverLink).toHaveAttribute("href", expect.stringContaining("deliveryBookingId=booking-a"));
+  });
 });

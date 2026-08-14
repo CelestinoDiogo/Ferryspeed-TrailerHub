@@ -634,4 +634,162 @@ describe("DriverMobileDashboard", () => {
       expect(screen.getAllByText("Collect documents before departure").length).toBeGreaterThan(0);
     });
   });
+
+  it("renders quick response buttons and sends one-tap responses", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+
+      if (url.includes("/api/driver-mobile/tasks") && method === "GET") {
+        return new Response(
+          JSON.stringify({
+            driver: { id: "driver-a", display_name: "Driver One", user_id: "user-a" },
+            tasks: [makeTask({ bookingId: "a", trailerNumber: "FS-A", group: "current", status: "on_delivery", nextAction: "DELIVERED" })],
+          }),
+          { status: 200 },
+        );
+      }
+
+      if (url.includes("/api/driver-mobile/instructions") && method === "GET") {
+        return new Response(
+          JSON.stringify({
+            unreadCount: 1,
+            newestUnread: {
+              id: "instruction-a",
+              instruction: "Collect trailer PFC123 from ABC Warehouse",
+              createdAt: "2026-08-12T10:00:00.000Z",
+              trailerNumber: "PFC123",
+              readAt: null,
+            },
+            recent: [
+              {
+                id: "instruction-a",
+                instruction: "Collect trailer PFC123 from ABC Warehouse",
+                createdAt: "2026-08-12T10:00:00.000Z",
+                readAt: null,
+                latestResponse: null,
+                responseHistory: [],
+              },
+            ],
+          }),
+          { status: 200 },
+        );
+      }
+
+      if (url.includes("/api/driver-mobile/instructions/respond") && method === "POST") {
+        return new Response(JSON.stringify({ ok: true, response: { id: "event-1" } }), { status: 200 });
+      }
+
+      return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<DriverMobileDashboard />);
+
+    expect(await screen.findByText("Quick Response")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "OK" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "ARRIVED" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "DELAYED" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "PROBLEM" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "CALL ME" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "OK" }));
+    await waitFor(() => {
+      const calls = fetchMock.mock.calls.filter(([first, second]) => String(first).includes("/api/driver-mobile/instructions/respond") && second?.method === "POST");
+      expect(calls).toHaveLength(1);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "ARRIVED" }));
+    await waitFor(() => {
+      const calls = fetchMock.mock.calls.filter(([first, second]) => String(first).includes("/api/driver-mobile/instructions/respond") && second?.method === "POST");
+      expect(calls).toHaveLength(2);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "CALL ME" }));
+
+    await waitFor(() => {
+      const calls = fetchMock.mock.calls.filter(([first, second]) => String(first).includes("/api/driver-mobile/instructions/respond") && second?.method === "POST");
+      expect(calls).toHaveLength(3);
+      const payloads = calls.map(([, second]) => JSON.parse(String(second?.body ?? "{}")));
+      expect(payloads.map((item) => item.responseType)).toEqual(["OK", "ARRIVED", "CALL_ME"]);
+    });
+  });
+
+  it("supports delayed and problem exception note flow", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+
+      if (url.includes("/api/driver-mobile/tasks") && method === "GET") {
+        return new Response(
+          JSON.stringify({
+            driver: { id: "driver-a", display_name: "Driver One", user_id: "user-a" },
+            tasks: [makeTask({ bookingId: "a", trailerNumber: "FS-A", group: "current", status: "on_delivery", nextAction: "DELIVERED" })],
+          }),
+          { status: 200 },
+        );
+      }
+
+      if (url.includes("/api/driver-mobile/instructions") && method === "GET") {
+        return new Response(
+          JSON.stringify({
+            unreadCount: 1,
+            newestUnread: {
+              id: "instruction-a",
+              instruction: "Collect trailer PFC123 from ABC Warehouse",
+              createdAt: "2026-08-12T10:00:00.000Z",
+              trailerNumber: "PFC123",
+              readAt: null,
+            },
+            recent: [
+              {
+                id: "instruction-a",
+                instruction: "Collect trailer PFC123 from ABC Warehouse",
+                createdAt: "2026-08-12T10:00:00.000Z",
+                readAt: null,
+                latestResponse: null,
+                responseHistory: [],
+              },
+            ],
+          }),
+          { status: 200 },
+        );
+      }
+
+      if (url.includes("/api/driver-mobile/instructions/respond") && method === "POST") {
+        return new Response(JSON.stringify({ ok: true, response: { id: "event-1" } }), { status: 200 });
+      }
+
+      return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<DriverMobileDashboard />);
+
+    await screen.findByText("Quick Response");
+
+    fireEvent.click(screen.getByRole("button", { name: "DELAYED" }));
+    expect(screen.getByText("DELAYED selected. Add optional note.")).toBeInTheDocument();
+    fireEvent.change(screen.getByPlaceholderText("Optional note"), { target: { value: "Traffic at St Peter Port" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => {
+      const calls = fetchMock.mock.calls.filter(([first, second]) => String(first).includes("/api/driver-mobile/instructions/respond") && second?.method === "POST");
+      expect(calls).toHaveLength(1);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "PROBLEM" }));
+    expect(screen.getByText("PROBLEM selected. Add optional note.")).toBeInTheDocument();
+    fireEvent.change(screen.getByPlaceholderText("Optional note"), { target: { value: "Trailer light fault" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() => {
+      const calls = fetchMock.mock.calls.filter(([first, second]) => String(first).includes("/api/driver-mobile/instructions/respond") && second?.method === "POST");
+      expect(calls).toHaveLength(2);
+      const payloads = calls.map(([, second]) => JSON.parse(String(second?.body ?? "{}")));
+      expect(payloads[0]).toMatchObject({ responseType: "DELAYED", note: "Traffic at St Peter Port" });
+      expect(payloads[1]).toMatchObject({ responseType: "PROBLEM", note: "Trailer light fault" });
+    });
+  });
 });

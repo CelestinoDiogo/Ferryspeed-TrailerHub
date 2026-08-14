@@ -57,6 +57,7 @@ describe("Sidebar", () => {
     expect(screen.getByRole("link", { name: /Dashboard/i })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Master Mobile/i })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Driver Mobile/i })).toHaveAttribute("href", "/dashboard/driver");
+    expect(screen.getByRole("link", { name: /Driver Communications/i })).toBeInTheDocument();
   });
 
   it("keeps unauthorized role behavior by hiding dashboard navigation items", () => {
@@ -66,5 +67,6 @@ describe("Sidebar", () => {
     expect(screen.queryByRole("link", { name: /^Dashboard$/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /Master Mobile/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /Driver Mobile/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /Driver Communications/i })).not.toBeInTheDocument();
   });
 });

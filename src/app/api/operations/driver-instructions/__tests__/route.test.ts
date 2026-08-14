@@ -5,7 +5,7 @@ const createAuthenticatedRouteSupabaseClientMock = vi.fn();
 const requireAuthenticatedRouteUserMock = vi.fn();
 const bootstrapCurrentUserRoleMock = vi.fn();
 const requireRbacPermissionMock = vi.fn();
-const listOperationalInstructionsForDriverContextMock = vi.fn();
+const listOperationalInstructionContextForManagerMock = vi.fn();
 const sendDriverOperationalInstructionMock = vi.fn();
 
 class SupabaseRouteAuthError extends Error {
@@ -41,7 +41,7 @@ vi.mock("@/lib/rbac/route", () => ({
 
 vi.mock("@/lib/driver-operational-instructions", () => ({
   DRIVER_INSTRUCTION_MAX_LENGTH: 180,
-  listOperationalInstructionsForDriverContext: listOperationalInstructionsForDriverContextMock,
+  listOperationalInstructionContextForManager: listOperationalInstructionContextForManagerMock,
   sendDriverOperationalInstruction: sendDriverOperationalInstructionMock,
 }));
 
@@ -78,7 +78,12 @@ describe("/api/operations/driver-instructions", () => {
     });
     bootstrapCurrentUserRoleMock.mockResolvedValue(undefined);
     requireRbacPermissionMock.mockResolvedValue(undefined);
-    listOperationalInstructionsForDriverContextMock.mockResolvedValue([]);
+    listOperationalInstructionContextForManagerMock.mockResolvedValue({
+      instructions: [],
+      latestResponse: null,
+      latestException: null,
+      timeline: [],
+    });
     sendDriverOperationalInstructionMock.mockResolvedValue({ id: "instruction-a" });
   });
 
@@ -89,8 +94,13 @@ describe("/api/operations/driver-instructions", () => {
     );
 
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({ instructions: [] });
-    expect(listOperationalInstructionsForDriverContextMock).toHaveBeenCalledWith(
+    await expect(response.json()).resolves.toEqual({
+      instructions: [],
+      latestResponse: null,
+      latestException: null,
+      timeline: [],
+    });
+    expect(listOperationalInstructionContextForManagerMock).toHaveBeenCalledWith(
       {},
       {
         userId: "11111111-1111-4111-8111-111111111111",

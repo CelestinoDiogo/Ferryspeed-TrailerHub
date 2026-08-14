@@ -50,6 +50,20 @@ type YardStatus = {
 type InstructionStatus = {
   sentAt: string;
   readAt: string | null;
+  latestResponse: {
+    responseType: "ok" | "completed" | "arrived" | "delayed" | "problem" | "call_me";
+    message: string | null;
+    createdAt: string;
+    isException: boolean;
+  } | null;
+  timeline: Array<{
+    id: string;
+    kind: "manager_instruction" | "driver_response";
+    createdAt: string;
+    actorLabel: string;
+    text: string;
+    isException: boolean;
+  }>;
 };
 
 const COMPOUND_CAPACITY = 50;
@@ -64,6 +78,14 @@ const statusLabel = (status: string) =>
     .split("_")
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
     .join(" ");
+
+const toDriverResponseLabel = (value: "ok" | "completed" | "arrived" | "delayed" | "problem" | "call_me") => {
+  if (value === "call_me") {
+    return "CALL ME";
+  }
+
+  return value.toUpperCase();
+};
 
 const sortTodayDeliveries = (a: DeliveryRow, b: DeliveryRow) => {
   const ta = a.delivery_time ?? "99:99";
@@ -345,6 +367,20 @@ export default function OperationsCentrePage() {
     const payload = (await response.json().catch(() => ({}))) as {
       error?: string;
       instructions?: Array<{ createdAt: string; readAt: string | null }>;
+      latestResponse?: {
+        responseType: "ok" | "completed" | "arrived" | "delayed" | "problem" | "call_me";
+        message: string | null;
+        createdAt: string;
+        isException: boolean;
+      } | null;
+      timeline?: Array<{
+        id: string;
+        kind: "manager_instruction" | "driver_response";
+        createdAt: string;
+        actorLabel: string;
+        text: string;
+        isException: boolean;
+      }>;
     };
 
     if (!response.ok) {
@@ -361,6 +397,8 @@ export default function OperationsCentrePage() {
       [booking.id]: {
         sentAt: latest.createdAt,
         readAt: latest.readAt,
+        latestResponse: payload.latestResponse ?? null,
+        timeline: Array.isArray(payload.timeline) ? payload.timeline : [],
       },
     }));
   };
@@ -429,6 +467,8 @@ export default function OperationsCentrePage() {
           [booking.id]: {
             sentAt,
             readAt,
+            latestResponse: current[booking.id]?.latestResponse ?? null,
+            timeline: current[booking.id]?.timeline ?? [],
           },
         }));
       }
@@ -585,12 +625,40 @@ export default function OperationsCentrePage() {
                                     </button>
                                   </div>
                                   {instructionStatusByBookingId[booking.id] ? (
-                                    <p className="text-xs text-slate-300">
-                                      Sent: {new Date(instructionStatusByBookingId[booking.id].sentAt).toLocaleString("en-GB")}
-                                      {instructionStatusByBookingId[booking.id].readAt
-                                        ? ` | Read: ${new Date(instructionStatusByBookingId[booking.id].readAt as string).toLocaleString("en-GB")}`
-                                        : " | Read: pending"}
-                                    </p>
+                                    <div className="space-y-1 text-xs text-slate-300">
+                                      <p>
+                                        Sent: {new Date(instructionStatusByBookingId[booking.id].sentAt).toLocaleString("en-GB")}
+                                        {instructionStatusByBookingId[booking.id].readAt
+                                          ? ` | Read: ${new Date(instructionStatusByBookingId[booking.id].readAt as string).toLocaleString("en-GB")}`
+                                          : " | Read: pending"}
+                                      </p>
+                                      {(() => {
+                                        const latest = instructionStatusByBookingId[booking.id].latestResponse;
+                                        if (!latest) {
+                                          return null;
+                                        }
+
+                                        return (
+                                          <p className={latest.isException ? "font-semibold text-rose-300" : "font-semibold text-emerald-300"}>
+                                            Driver: {toDriverResponseLabel(latest.responseType)}
+                                            {latest.message ? ` - ${latest.message}` : ""}
+                                            {` • ${new Date(latest.createdAt).toLocaleString("en-GB")}`}
+                                          </p>
+                                        );
+                                      })()}
+                                      {(instructionStatusByBookingId[booking.id].timeline ?? []).length > 0 ? (
+                                        <details>
+                                          <summary className="cursor-pointer text-slate-400">Timeline</summary>
+                                          <div className="mt-1 space-y-1">
+                                            {(instructionStatusByBookingId[booking.id].timeline ?? []).slice(-5).map((entry) => (
+                                              <p key={entry.id} className={entry.isException ? "text-rose-300" : "text-slate-300"}>
+                                                {new Date(entry.createdAt).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })} {entry.actorLabel}: {entry.text}
+                                              </p>
+                                            ))}
+                                          </div>
+                                        </details>
+                                      ) : null}
+                                    </div>
                                   ) : null}
                                 </>
                               )}
@@ -707,12 +775,40 @@ export default function OperationsCentrePage() {
                                 {sendingInstructionForBookingId === booking.id ? "Sending..." : "Send"}
                               </button>
                               {instructionStatusByBookingId[booking.id] ? (
-                                <p className="text-xs text-slate-300">
-                                  Sent: {new Date(instructionStatusByBookingId[booking.id].sentAt).toLocaleString("en-GB")}
-                                  {instructionStatusByBookingId[booking.id].readAt
-                                    ? ` | Read: ${new Date(instructionStatusByBookingId[booking.id].readAt as string).toLocaleString("en-GB")}`
-                                    : " | Read: pending"}
-                                </p>
+                                <div className="space-y-1 text-xs text-slate-300">
+                                  <p>
+                                    Sent: {new Date(instructionStatusByBookingId[booking.id].sentAt).toLocaleString("en-GB")}
+                                    {instructionStatusByBookingId[booking.id].readAt
+                                      ? ` | Read: ${new Date(instructionStatusByBookingId[booking.id].readAt as string).toLocaleString("en-GB")}`
+                                      : " | Read: pending"}
+                                  </p>
+                                  {(() => {
+                                    const latest = instructionStatusByBookingId[booking.id].latestResponse;
+                                    if (!latest) {
+                                      return null;
+                                    }
+
+                                    return (
+                                      <p className={latest.isException ? "font-semibold text-rose-300" : "font-semibold text-emerald-300"}>
+                                        Driver: {toDriverResponseLabel(latest.responseType)}
+                                        {latest.message ? ` - ${latest.message}` : ""}
+                                        {` • ${new Date(latest.createdAt).toLocaleString("en-GB")}`}
+                                      </p>
+                                    );
+                                  })()}
+                                  {(instructionStatusByBookingId[booking.id].timeline ?? []).length > 0 ? (
+                                    <details>
+                                      <summary className="cursor-pointer text-slate-400">Timeline</summary>
+                                      <div className="mt-1 space-y-1">
+                                        {(instructionStatusByBookingId[booking.id].timeline ?? []).slice(-5).map((entry) => (
+                                          <p key={entry.id} className={entry.isException ? "text-rose-300" : "text-slate-300"}>
+                                            {new Date(entry.createdAt).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })} {entry.actorLabel}: {entry.text}
+                                          </p>
+                                        ))}
+                                      </div>
+                                    </details>
+                                  ) : null}
+                                </div>
                               ) : null}
                             </>
                           )}

@@ -8,7 +8,7 @@ import {
 } from "@/lib/supabase-route-client";
 import {
   DRIVER_INSTRUCTION_MAX_LENGTH,
-  listOperationalInstructionsForDriverContext,
+  listOperationalInstructionContextForManager,
   sendDriverOperationalInstruction,
 } from "@/lib/driver-operational-instructions";
 
@@ -46,7 +46,7 @@ export async function GET(request: Request) {
       limit: params.get("limit") ?? undefined,
     });
 
-    const items = await listOperationalInstructionsForDriverContext(supabase, {
+    const feed = await listOperationalInstructionContextForManager(supabase, {
       userId: user.id,
       driverId: query.driverId,
       deliveryBookingId: query.deliveryBookingId,
@@ -54,7 +54,7 @@ export async function GET(request: Request) {
       limit: query.limit,
     });
 
-    return Response.json({ instructions: items }, { status: 200 });
+    return Response.json(feed, { status: 200 });
   } catch (error) {
     if (error instanceof SupabaseRouteAuthError) {
       return Response.json({ error: error.message }, { status: error.status });

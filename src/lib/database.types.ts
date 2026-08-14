@@ -293,6 +293,24 @@ export type Database = {
         Update: Partial<Database["public"]["Tables"]["driver_operational_instructions"]["Row"]>;
         Relationships: [];
       };
+      driver_operational_instruction_events: {
+        Row: {
+          id: string;
+          instruction_id: string;
+          driver_id: string;
+          recipient_user_id: string;
+          delivery_booking_id: string | null;
+          trailer_id: string | null;
+          trailer_number: string | null;
+          event_type: string;
+          message: string | null;
+          created_by_user_id: string;
+          created_at: string;
+        };
+        Insert: Partial<Database["public"]["Tables"]["driver_operational_instruction_events"]["Row"]>;
+        Update: Partial<Database["public"]["Tables"]["driver_operational_instruction_events"]["Row"]>;
+        Relationships: [];
+      };
       delivery_bookings: {
         Row: {
           id: string;

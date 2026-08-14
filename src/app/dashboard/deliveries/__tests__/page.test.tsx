@@ -18,7 +18,7 @@ vi.mock("@/components/print/print-summary", () => ({ PrintSummary: () => <div />
 vi.mock("@/components/print/print-table", () => ({ PrintTable: () => <div /> }));
 
 vi.mock("@/lib/operational-readiness", () => ({
-  getDateKey: (value: string) => value.slice(0, 10),
+  getDateKey: () => "2026-08-13",
   getLocalDateKey: () => "2026-08-12",
   calculateOperationalReadiness: () => ({ level: "ready", reason: "Ready", details: [] }),
   getReadinessColor: () => ({ border: "border-white/10", bg: "bg-slate-900/70", text: "text-slate-200" }),

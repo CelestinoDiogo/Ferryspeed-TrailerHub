@@ -18,6 +18,12 @@ describe("driver-operational-instructions service contract", () => {
     expect(serviceSource).toContain("Math.max(1, Math.min(input?.limit ?? DEFAULT_HISTORY_LIMIT, 100))");
   });
 
+  it("keeps migration 042 optional for the minimum read loop", () => {
+    expect(serviceSource).toContain("isMissingInstructionEventsTableError");
+    expect(serviceSource).toContain('from("driver_operational_instruction_events")');
+    expect(serviceSource).toContain("return [] as DriverOperationalInstructionEventRow[]");
+  });
+
   it("uses mark-read RPC with controlled argument and no client read_by override", () => {
     expect(serviceSource).toContain('supabase.rpc("mark_driver_operational_instruction_read"');
     expect(serviceSource).toContain("p_instruction_id: input.instructionId");

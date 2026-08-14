@@ -43,6 +43,20 @@ import { normalizeTrailerNumber } from "@/lib/voice/normalizer";
 type InstructionStatus = {
   sentAt: string;
   readAt: string | null;
+  latestResponse: {
+    responseType: "ok" | "completed" | "arrived" | "delayed" | "problem" | "call_me";
+    message: string | null;
+    createdAt: string;
+    isException: boolean;
+  } | null;
+  timeline: Array<{
+    id: string;
+    kind: "manager_instruction" | "driver_response";
+    createdAt: string;
+    actorLabel: string;
+    text: string;
+    isException: boolean;
+  }>;
 };
 
 type MobileTabKey = "home" | "vessel" | "compound" | "departures" | "exports";
@@ -155,6 +169,14 @@ const formatDateTime = (value?: string | null) => {
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return "-";
   return parsed.toLocaleString("en-GB", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
+};
+
+const toDriverResponseLabel = (value: "ok" | "completed" | "arrived" | "delayed" | "problem" | "call_me") => {
+  if (value === "call_me") {
+    return "CALL ME";
+  }
+
+  return value.toUpperCase();
 };
 
 const parseNumericInput = (value: string) => {
@@ -724,6 +746,20 @@ export function SupervisorMobileDashboard() {
     const payload = (await response.json().catch(() => ({}))) as {
       error?: string;
       instructions?: Array<{ createdAt: string; readAt: string | null }>;
+      latestResponse?: {
+        responseType: "ok" | "completed" | "arrived" | "delayed" | "problem" | "call_me";
+        message: string | null;
+        createdAt: string;
+        isException: boolean;
+      } | null;
+      timeline?: Array<{
+        id: string;
+        kind: "manager_instruction" | "driver_response";
+        createdAt: string;
+        actorLabel: string;
+        text: string;
+        isException: boolean;
+      }>;
     };
 
     if (!response.ok) {
@@ -740,6 +776,8 @@ export function SupervisorMobileDashboard() {
       [assignment.id]: {
         sentAt: latest.createdAt,
         readAt: latest.readAt,
+        latestResponse: payload.latestResponse ?? null,
+        timeline: Array.isArray(payload.timeline) ? payload.timeline : [],
       },
     }));
   }, []);
@@ -807,6 +845,8 @@ export function SupervisorMobileDashboard() {
           [assignment.id]: {
             sentAt,
             readAt,
+            latestResponse: current[assignment.id]?.latestResponse ?? null,
+            timeline: current[assignment.id]?.timeline ?? [],
           },
         }));
       }
@@ -1601,9 +1641,30 @@ export function SupervisorMobileDashboard() {
                                   </button>
                                 </div>
                                 {status ? (
-                                  <p className="mt-2 text-[11px] text-slate-600">
-                                    Sent {formatDateTime(status.sentAt)} • {status.readAt ? `Read ${formatDateTime(status.readAt)}` : "Read pending"}
-                                  </p>
+                                  <div className="mt-2 space-y-1 text-[11px] text-slate-600">
+                                    <p>
+                                      Sent {formatDateTime(status.sentAt)} • {status.readAt ? `Read ${formatDateTime(status.readAt)}` : "Read pending"}
+                                    </p>
+                                    {status.latestResponse ? (
+                                      <p className={status.latestResponse.isException ? "font-semibold text-rose-700" : "font-semibold text-emerald-700"}>
+                                        Driver {toDriverResponseLabel(status.latestResponse.responseType)}
+                                        {status.latestResponse.message ? ` - ${status.latestResponse.message}` : ""}
+                                        {` • ${formatDateTime(status.latestResponse.createdAt)}`}
+                                      </p>
+                                    ) : null}
+                                    {(status.timeline ?? []).length > 0 ? (
+                                      <details>
+                                        <summary className="cursor-pointer text-slate-500">Timeline</summary>
+                                        <div className="mt-1 space-y-1">
+                                          {(status.timeline ?? []).slice(-5).map((entry) => (
+                                            <p key={entry.id} className={entry.isException ? "text-rose-700" : "text-slate-600"}>
+                                              {formatDateTime(entry.createdAt)} {entry.actorLabel}: {entry.text}
+                                            </p>
+                                          ))}
+                                        </div>
+                                      </details>
+                                    ) : null}
+                                  </div>
                                 ) : null}
                               </>
                             )}

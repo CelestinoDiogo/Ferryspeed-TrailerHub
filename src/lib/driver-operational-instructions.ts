@@ -7,11 +7,30 @@ import { loadCurrentUserRole } from "@/lib/rbac/service";
 
 type RouteSupabase = SupabaseClient<Database>;
 export type DriverOperationalInstructionRow = Database["public"]["Tables"]["driver_operational_instructions"]["Row"];
+export type DriverOperationalInstructionEventRow =
+  Database["public"]["Tables"]["driver_operational_instruction_events"]["Row"];
 
 export const DRIVER_INSTRUCTION_MAX_LENGTH = 180;
+export const DRIVER_RESPONSE_NOTE_MAX_LENGTH = 120;
 const DEFAULT_HISTORY_LIMIT = 30;
 
 export type DriverOperationalInstructionPriority = "normal" | "high" | "critical";
+export type DriverQuickResponseType = "ok" | "completed" | "arrived" | "delayed" | "problem" | "call_me";
+
+export type DriverInstructionResponseRecord = {
+  id: string;
+  instructionId: string;
+  driverId: string;
+  recipientUserId: string;
+  deliveryBookingId: string | null;
+  trailerId: string | null;
+  trailerNumber: string | null;
+  responseType: DriverQuickResponseType;
+  message: string | null;
+  createdByUserId: string;
+  createdAt: string;
+  isException: boolean;
+};
 
 export type DriverInstructionRecord = {
   id: string;
@@ -28,6 +47,25 @@ export type DriverInstructionRecord = {
   readAt: string | null;
   readBy: string | null;
   isRead: boolean;
+  latestResponse: DriverInstructionResponseRecord | null;
+  responseHistory: DriverInstructionResponseRecord[];
+};
+
+export type DriverInstructionTimelineEntry = {
+  id: string;
+  kind: "manager_instruction" | "driver_response";
+  createdAt: string;
+  actorLabel: string;
+  text: string;
+  responseType: DriverQuickResponseType | null;
+  isException: boolean;
+};
+
+export type DriverInstructionContextFeed = {
+  instructions: DriverInstructionRecord[];
+  latestResponse: DriverInstructionResponseRecord | null;
+  latestException: DriverInstructionResponseRecord | null;
+  timeline: DriverInstructionTimelineEntry[];
 };
 
 export type DriverInstructionFeed = {
@@ -50,7 +88,30 @@ export type SendDriverInstructionInput = {
   priority?: DriverOperationalInstructionPriority;
 };
 
+export type DriverQuickResponseInput = {
+  instructionId: string;
+  responseType: DriverQuickResponseType;
+  note?: string | null;
+};
+
+const instructionSelect =
+  "id,driver_id,recipient_user_id,delivery_booking_id,trailer_id,trailer_number,instruction,priority,sender_user_id,sender_display_name,created_at,read_at,read_by";
+
+const instructionEventSelect =
+  "id,instruction_id,driver_id,recipient_user_id,delivery_booking_id,trailer_id,trailer_number,event_type,message,created_by_user_id,created_at";
+
 const normalizeText = (value?: string | null) => value?.trim() ?? "";
+
+const isMissingInstructionEventsTableError = (error: { code?: string | null; message?: string | null } | null) => {
+  if (!error) {
+    return false;
+  }
+
+  const normalizedMessage = normalizeText(error.message).toLowerCase();
+  return error.code === "42P01"
+    || (normalizedMessage.includes("driver_operational_instruction_events")
+      && (normalizedMessage.includes("does not exist") || normalizedMessage.includes("not found")));
+};
 
 const resolveSenderDisplayName = (user: User) => {
   const fullName = typeof user.user_metadata?.full_name === "string" ? user.user_metadata.full_name.trim() : "";
@@ -68,7 +129,77 @@ const toPriority = (value?: string | null): DriverOperationalInstructionPriority
   return "normal";
 };
 
-const toInstructionRecord = (row: DriverOperationalInstructionRow): DriverInstructionRecord => ({
+const quickResponseTypes: DriverQuickResponseType[] = ["ok", "completed", "arrived", "delayed", "problem", "call_me"];
+const exceptionResponseTypes = new Set<DriverQuickResponseType>(["delayed", "problem", "call_me"]);
+
+const toQuickResponseType = (value: string): DriverQuickResponseType => {
+  const normalized = normalizeText(value).toLowerCase().replace(/\s+/g, "_") as DriverQuickResponseType;
+  if (!quickResponseTypes.includes(normalized)) {
+    throw new Error("Invalid response type.");
+  }
+
+  return normalized;
+};
+
+const toResponseLabel = (value: DriverQuickResponseType) => value.replace("_", " ").toUpperCase();
+
+const normalizeOptionalNote = (value?: string | null) => {
+  const normalized = normalizeText(value);
+  if (!normalized) {
+    return null;
+  }
+
+  if (normalized.length > DRIVER_RESPONSE_NOTE_MAX_LENGTH) {
+    throw new Error(`Response note must be ${DRIVER_RESPONSE_NOTE_MAX_LENGTH} characters or less.`);
+  }
+
+  return normalized;
+};
+
+const toInstructionResponseRecord = (row: DriverOperationalInstructionEventRow): DriverInstructionResponseRecord => {
+  const responseType = toQuickResponseType(row.event_type);
+
+  return {
+    id: row.id,
+    instructionId: row.instruction_id,
+    driverId: row.driver_id,
+    recipientUserId: row.recipient_user_id,
+    deliveryBookingId: row.delivery_booking_id,
+    trailerId: row.trailer_id,
+    trailerNumber: row.trailer_number,
+    responseType,
+    message: row.message,
+    createdByUserId: row.created_by_user_id,
+    createdAt: row.created_at ?? new Date().toISOString(),
+    isException: exceptionResponseTypes.has(responseType),
+  };
+};
+
+const buildResponseMap = (rows: DriverOperationalInstructionEventRow[]) => {
+  const byInstructionId = new Map<string, DriverInstructionResponseRecord[]>();
+
+  rows.forEach((row) => {
+    const record = toInstructionResponseRecord(row);
+    const current = byInstructionId.get(record.instructionId) ?? [];
+    current.push(record);
+    byInstructionId.set(record.instructionId, current);
+  });
+
+  byInstructionId.forEach((items, instructionId) => {
+    const sorted = [...items].sort((a, b) => {
+      const createdAtDifference = new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+      return createdAtDifference || b.id.localeCompare(a.id);
+    });
+    byInstructionId.set(instructionId, sorted);
+  });
+
+  return byInstructionId;
+};
+
+const toInstructionRecord = (
+  row: DriverOperationalInstructionRow,
+  responseHistory: DriverInstructionResponseRecord[] = [],
+): DriverInstructionRecord => ({
   id: row.id,
   driverId: row.driver_id,
   recipientUserId: row.recipient_user_id,
@@ -83,7 +214,37 @@ const toInstructionRecord = (row: DriverOperationalInstructionRow): DriverInstru
   readAt: row.read_at,
   readBy: row.read_by,
   isRead: Boolean(row.read_at),
+  latestResponse: responseHistory[0] ?? null,
+  responseHistory,
 });
+
+const listResponseEventsForInstructions = async (
+  supabase: RouteSupabase,
+  instructionIds: string[],
+  limit: number,
+) => {
+  if (instructionIds.length === 0) {
+    return [] as DriverOperationalInstructionEventRow[];
+  }
+
+  const responseLimit = Math.max(1, Math.min(limit * 6, 300));
+  const { data, error } = await supabase
+    .from("driver_operational_instruction_events")
+    .select(instructionEventSelect)
+    .in("instruction_id", instructionIds)
+    .order("created_at", { ascending: false })
+    .limit(responseLimit);
+
+  if (isMissingInstructionEventsTableError(error)) {
+    return [] as DriverOperationalInstructionEventRow[];
+  }
+
+  if (error) {
+    throw new Error(error.message || "Unable to load instruction response history.");
+  }
+
+  return (data ?? []) as DriverOperationalInstructionEventRow[];
+};
 
 const requireSupervisorOrAdministrator = async (supabase: RouteSupabase, userId: string) => {
   const role = await loadCurrentUserRole(supabase, userId);
@@ -127,7 +288,7 @@ export async function listDriverOperationalInstructionsForUser(
 
   const { data, error } = await supabase
     .from("driver_operational_instructions")
-    .select("id,driver_id,recipient_user_id,delivery_booking_id,trailer_id,trailer_number,instruction,priority,sender_user_id,sender_display_name,created_at,read_at,read_by")
+    .select(instructionSelect)
     .eq("recipient_user_id", userId)
     .order("created_at", { ascending: false })
     .limit(limit);
@@ -136,7 +297,15 @@ export async function listDriverOperationalInstructionsForUser(
     throw new Error(error.message || "Unable to load driver operational instructions.");
   }
 
-  const rows = ((data ?? []) as DriverOperationalInstructionRow[]).map(toInstructionRecord);
+  const instructionRows = (data ?? []) as DriverOperationalInstructionRow[];
+  const responseRows = await listResponseEventsForInstructions(
+    supabase,
+    instructionRows.map((row) => row.id),
+    limit,
+  );
+  const responseByInstruction = buildResponseMap(responseRows);
+
+  const rows = instructionRows.map((row) => toInstructionRecord(row, responseByInstruction.get(row.id) ?? []));
   const unreadRows = rows.filter((row) => !row.readAt);
 
   return {
@@ -169,6 +338,64 @@ export async function markDriverOperationalInstructionRead(
   }
 
   return toInstructionRecord(row);
+}
+
+export async function createDriverOperationalInstructionResponse(
+  supabase: RouteSupabase,
+  userId: string,
+  input: DriverQuickResponseInput,
+): Promise<DriverInstructionResponseRecord> {
+  const driver = await loadActiveDriverForUser(supabase, userId);
+  if (!driver) {
+    throw new Error("No active driver profile linked to this account.");
+  }
+
+  const responseType = toQuickResponseType(input.responseType);
+  const note = normalizeOptionalNote(input.note);
+
+  const { data: instruction, error: instructionError } = await supabase
+    .from("driver_operational_instructions")
+    .select(instructionSelect)
+    .eq("id", input.instructionId)
+    .eq("recipient_user_id", userId)
+    .eq("driver_id", driver.id)
+    .maybeSingle();
+
+  if (instructionError) {
+    throw new Error(instructionError.message || "Unable to validate instruction response context.");
+  }
+
+  if (!instruction) {
+    throw new Error("Instruction not found for the authenticated driver.");
+  }
+
+  const payload: Database["public"]["Tables"]["driver_operational_instruction_events"]["Insert"] = {
+    instruction_id: instruction.id,
+    driver_id: instruction.driver_id,
+    recipient_user_id: instruction.recipient_user_id,
+    delivery_booking_id: instruction.delivery_booking_id,
+    trailer_id: instruction.trailer_id,
+    trailer_number: instruction.trailer_number,
+    event_type: responseType,
+    message: note,
+    created_by_user_id: userId,
+  };
+
+  const { data: inserted, error: insertError } = await supabase
+    .from("driver_operational_instruction_events")
+    .insert(payload)
+    .select(instructionEventSelect)
+    .single();
+
+  if (isMissingInstructionEventsTableError(insertError)) {
+    throw new Error("Driver response events are not available until migration 042 is applied.");
+  }
+
+  if (insertError) {
+    throw new Error(insertError.message || "Unable to record driver response.");
+  }
+
+  return toInstructionResponseRecord(inserted as DriverOperationalInstructionEventRow);
 }
 
 export async function sendDriverOperationalInstruction(
@@ -284,7 +511,7 @@ export async function listOperationalInstructionsForDriverContext(
 
   let query = supabase
     .from("driver_operational_instructions")
-    .select("id,driver_id,recipient_user_id,delivery_booking_id,trailer_id,trailer_number,instruction,priority,sender_user_id,sender_display_name,created_at,read_at,read_by")
+    .select(instructionSelect)
     .eq("driver_id", input.driverId)
     .order("created_at", { ascending: false });
 
@@ -303,5 +530,65 @@ export async function listOperationalInstructionsForDriverContext(
     throw new Error(error.message || "Unable to load operational instruction history.");
   }
 
-  return ((data ?? []) as DriverOperationalInstructionRow[]).map(toInstructionRecord);
+  const instructionRows = (data ?? []) as DriverOperationalInstructionRow[];
+  const responseRows = await listResponseEventsForInstructions(
+    supabase,
+    instructionRows.map((row) => row.id),
+    limit,
+  );
+  const responseByInstruction = buildResponseMap(responseRows);
+
+  return instructionRows.map((row) => toInstructionRecord(row, responseByInstruction.get(row.id) ?? []));
+}
+
+export async function listOperationalInstructionContextForManager(
+  supabase: RouteSupabase,
+  input: {
+    userId: string;
+    driverId: string;
+    deliveryBookingId?: string | null;
+    trailerId?: string | null;
+    limit?: number;
+  },
+): Promise<DriverInstructionContextFeed> {
+  const instructions = await listOperationalInstructionsForDriverContext(supabase, input);
+
+  const responseRows = instructions
+    .flatMap((item) => item.responseHistory)
+    .sort((a, b) => {
+      const createdAtDifference = new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+      return createdAtDifference || b.id.localeCompare(a.id);
+    });
+  const latestResponse = responseRows[0] ?? null;
+  const latestException = responseRows.find((item) => item.isException) ?? null;
+
+  const timeline: DriverInstructionTimelineEntry[] = [
+    ...instructions.map((item) => ({
+      id: `instruction:${item.id}`,
+      kind: "manager_instruction" as const,
+      createdAt: item.createdAt,
+      actorLabel: item.senderDisplayName?.trim() || "Manager",
+      text: item.instruction,
+      responseType: null,
+      isException: false,
+    })),
+    ...responseRows.map((response) => ({
+      id: `response:${response.id}`,
+      kind: "driver_response" as const,
+      createdAt: response.createdAt,
+      actorLabel: "Driver",
+      text: response.message ? `${toResponseLabel(response.responseType)} - ${response.message}` : toResponseLabel(response.responseType),
+      responseType: response.responseType,
+      isException: response.isException,
+    })),
+  ]
+    .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
+    .slice(-(Math.max(1, Math.min(input.limit ?? DEFAULT_HISTORY_LIMIT, 100)) * 2));
+
+  return {
+    instructions,
+    latestResponse,
+    latestException,
+    timeline,
+  };
 }
