@@ -8,7 +8,7 @@ import { toRoleLabel, type RoleKey } from "@/lib/auth/roles";
 import { useCurrentUser } from "@/lib/auth/use-current-user";
 import { useOperationalRealtime } from "@/lib/realtime/operational-realtime";
 import { supabase } from "@/lib/supabase";
-import { type DriverMobileTask, type DriverTaskAction } from "@/lib/driver-mobile-service";
+import { type DriverMobileTask } from "@/lib/driver-mobile-service";
 import {
   applyDriverMobileQueuedActions,
   createDriverMobileQueuedAction,
@@ -27,6 +27,14 @@ import {
   type DriverMobileQueuedAction,
 } from "@/lib/mobile/driver-mobile-action-queue";
 import { getSessionToken, SESSION_EXPIRED_MESSAGE } from "@/lib/voice/session";
+import {
+  DRIVER_MOBILE_LANGUAGES,
+  readDriverMobileLanguage,
+  translateDriverMobile,
+  writeDriverMobileLanguage,
+  type DriverMobileLanguage,
+  type DriverMobileTranslationKey,
+} from "@/lib/mobile/driver-mobile-i18n";
 
 type DriverTaskResponse = {
   driver: {
@@ -124,12 +132,6 @@ const isToday = (value: string | null) => {
   return parsed.getFullYear() === today.getFullYear() && parsed.getMonth() === today.getMonth() && parsed.getDate() === today.getDate();
 };
 
-const actionLabel = (action: DriverTaskAction) => {
-  if (action === "ACKNOWLEDGED") return "ACKNOWLEDGE";
-  if (action === "COLLECTED") return "RECOLHIDA / COLLECTED";
-  return "ENTREGUE / DELIVERED";
-};
-
 const toInstructionPriorityTone = (priority: DriverInstructionRecord["priority"]) => {
   if (priority === "critical") {
     return "border-rose-300 bg-rose-50 text-rose-900";
@@ -222,18 +224,6 @@ const triggerDeviceAttentionFeedback = () => {
   window.navigator.vibrate([100, 60, 100]);
 };
 
-const toPriorityLabel = (priority: DriverInstructionRecord["priority"]) => {
-  if (priority === "critical") {
-    return "CRITICAL";
-  }
-
-  if (priority === "high") {
-    return "HIGH";
-  }
-
-  return "NORMAL";
-};
-
 const agingTone = (level: DriverMobileTask["collectionAging"] extends infer T
   ? T extends { level: infer L }
     ? L
@@ -274,6 +264,7 @@ export function DriverMobileJobsDashboard() {
   const [responseActionId, setResponseActionId] = useState<string | null>(null);
   const [responseNoteInstructionId, setResponseNoteInstructionId] = useState<string | null>(null);
   const [responseNoteByInstructionId, setResponseNoteByInstructionId] = useState<Record<string, string>>({});
+  const [language, setLanguage] = useState<DriverMobileLanguage>("en");
   const [pendingInstructionAckIds, setPendingInstructionAckIds] = useState<string[]>(() => loadPendingInstructionAcks());
   const [failedInstructionAckIds, setFailedInstructionAckIds] = useState<string[]>([]);
   const [temperatureByBookingId, setTemperatureByBookingId] = useState<Record<string, string>>({});
@@ -288,6 +279,26 @@ export function DriverMobileJobsDashboard() {
   const hasHydratedTaskIdsRef = useRef(false);
   const hasHydratedInstructionIdsRef = useRef(false);
   const attentionAlertTimeoutRef = useRef<number | null>(null);
+  const t = useCallback((key: DriverMobileTranslationKey) => translateDriverMobile(language, key), [language]);
+
+  useEffect(() => {
+    if (!driver?.id) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setLanguage(readDriverMobileLanguage(driver.id));
+    }, 0);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [driver]);
+
+  const changeLanguage = useCallback((nextLanguage: DriverMobileLanguage) => {
+    setLanguage(nextLanguage);
+    if (driver?.id) {
+      writeDriverMobileLanguage(driver.id, nextLanguage);
+    }
+  }, [driver]);
 
   useEffect(() => {
     queuedActionsRef.current = queuedActions;
@@ -550,20 +561,20 @@ export function DriverMobileJobsDashboard() {
 
       const payload = (await response.json().catch(() => ({}))) as { error?: string };
       if (!response.ok) {
-        throw new Error(payload.error || "Unable to send instruction response.");
+        throw new Error(payload.error || t("unableToSendResponse"));
       }
 
       setResponseNoteInstructionId(null);
       setResponseNoteByInstructionId((current) => ({ ...current, [instructionId]: "" }));
-      setSuccess(`Response sent: ${responseType === "CALL_ME" ? "CALL ME" : responseType}.`);
+      setSuccess(`${t("responseSent")}: ${responseType === "CALL_ME" ? t("callMe") : responseType}.`);
       await loadInstructions(false);
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Unable to send instruction response.";
+      const message = err instanceof Error ? err.message : t("unableToSendResponse");
       setError(message === SESSION_EXPIRED_MESSAGE ? SESSION_EXPIRED_MESSAGE : message);
     } finally {
       setResponseActionId(null);
     }
-  }, [loadInstructions, responseActionId, responseNoteByInstructionId]);
+  }, [loadInstructions, responseActionId, responseNoteByInstructionId, t]);
 
   const markLinkedInstructionsRead = useCallback(async (instructionIds: string[]) => {
     for (const instructionId of instructionIds) {
@@ -749,12 +760,12 @@ export function DriverMobileJobsDashboard() {
     const requiresTemperature = task.nextAction === "COLLECTED" && task.temperature.required;
 
     if (requiresTemperature && temperatureInput.trim().length === 0) {
-      setError("Temperature reading is required before marking as collected.");
+      setError(t("temperatureReadingRequired"));
       return;
     }
 
     if (requiresTemperature && Number.isNaN(parsedTemperature)) {
-      setError("Temperature must be a valid number.");
+      setError(t("temperatureValidNumber"));
       return;
     }
 
@@ -775,7 +786,7 @@ export function DriverMobileJobsDashboard() {
     setSuccess(null);
     setTemperatureByBookingId((current) => ({ ...current, [task.bookingId]: "" }));
     void submitQueuedAction(queuedAction, "direct");
-  }, [submitQueuedAction, temperatureByBookingId]);
+  }, [submitQueuedAction, t, temperatureByBookingId]);
 
   const handleAcknowledgeInstruction = useCallback(async (instruction: DriverInstructionRecord) => {
     if (instructionActionId) {
@@ -799,44 +810,44 @@ export function DriverMobileJobsDashboard() {
     try {
       if (!isOnline) {
         upsertPendingInstructionAck(instruction.id);
-        setSuccess("Acknowledged - waiting for connection");
+        setSuccess(t("savedWaitingConnection"));
         return;
       }
 
       await markInstructionRead(instruction.id);
-      setSuccess("Instruction acknowledged.");
+      setSuccess(language === "en" ? "Instruction acknowledged." : `${t("acknowledged")}.`);
       clearPendingInstructionAck(instruction.id);
       await loadInstructions(false);
     } catch (err) {
       if (isDriverMobileNetworkFailure(err)) {
         upsertPendingInstructionAck(instruction.id);
-        setSuccess("Acknowledged - waiting for connection");
+        setSuccess(t("savedWaitingConnection"));
         setError(null);
         return;
       }
 
-      const message = err instanceof Error ? err.message : "Unable to acknowledge instruction.";
+      const message = err instanceof Error ? err.message : t("unableToAcknowledge");
       setFailedInstructionAckIds((current) => (current.includes(instruction.id) ? current : [...current, instruction.id]));
       setError(message === SESSION_EXPIRED_MESSAGE ? SESSION_EXPIRED_MESSAGE : message);
     } finally {
       setInstructionActionId(null);
     }
-  }, [clearPendingInstructionAck, handleAction, instructionActionId, isOnline, loadInstructions, markInstructionRead, pendingInstructionAckIds, serverTasks, upsertPendingInstructionAck]);
+  }, [clearPendingInstructionAck, handleAction, instructionActionId, isOnline, language, loadInstructions, markInstructionRead, pendingInstructionAckIds, serverTasks, t, upsertPendingInstructionAck]);
 
   const handleRetryInstructionAcknowledge = useCallback((instructionId: string) => {
     if (!isOnline) {
-      setError("Connection is still unavailable.");
+      setError(t("connectionProblem"));
       return;
     }
 
     upsertPendingInstructionAck(instructionId);
-    setSuccess("Retrying instruction acknowledgement...");
+    setSuccess(`${t("retry")}...`);
     setError(null);
-  }, [isOnline, upsertPendingInstructionAck]);
+  }, [isOnline, t, upsertPendingInstructionAck]);
 
   const renderInstructionResponses = (instruction: DriverInstructionRecord) => (
     <div className="mt-3 border-t border-current/20 pt-3">
-      <p className="text-[11px] font-semibold uppercase tracking-[0.16em]">Respond to Operations</p>
+      <p className="text-[11px] font-semibold uppercase tracking-[0.16em]">{t("respondToOperations")}</p>
       <div className="mt-2 grid grid-cols-2 gap-2">
         {(["OK", "COMPLETED", "ARRIVED", "DELAYED", "PROBLEM", "CALL_ME"] as DriverResponseType[]).map((responseType) => (
           <button
@@ -848,7 +859,7 @@ export function DriverMobileJobsDashboard() {
             }}
             className="rounded-lg border border-current/30 bg-white/70 px-2 py-2 text-xs font-bold disabled:cursor-not-allowed disabled:opacity-60"
           >
-            {responseType === "CALL_ME" ? "CALL ME" : responseType}
+            {responseType === "OK" ? t("ok") : responseType === "COMPLETED" ? language === "en" ? "COMPLETED" : t("completed") : responseType === "ARRIVED" ? t("arrived") : responseType === "DELAYED" ? t("delayed") : responseType === "PROBLEM" ? t("problem") : t("callMe")}
           </button>
         ))}
       </div>
@@ -862,7 +873,7 @@ export function DriverMobileJobsDashboard() {
               const { value } = event.target;
               setResponseNoteByInstructionId((current) => ({ ...current, [instruction.id]: value }));
             }}
-            placeholder="Optional note"
+            placeholder={t("optionalNote")}
             className="min-w-0 flex-1 rounded-lg border border-current/30 bg-white px-2 py-2 text-xs text-slate-900"
           />
           <button
@@ -870,7 +881,7 @@ export function DriverMobileJobsDashboard() {
             onClick={() => setResponseNoteInstructionId(null)}
             className="rounded-lg border border-current/30 bg-white/70 px-2 py-2 text-xs font-semibold"
           >
-            Cancel
+            {t("cancel")}
           </button>
         </div>
       ) : (
@@ -879,7 +890,7 @@ export function DriverMobileJobsDashboard() {
           onClick={() => setResponseNoteInstructionId(instruction.id)}
           className="mt-2 rounded-lg border border-current/30 bg-white/70 px-2 py-1.5 text-xs font-semibold"
         >
-          Add note
+          {t("addNote")}
         </button>
       )}
     </div>
@@ -1148,10 +1159,21 @@ export function DriverMobileJobsDashboard() {
     <header className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.24em] text-cyan-700">Ferryspeed Driver Mobile</p>
-          <h1 className="mt-2 text-2xl font-semibold text-slate-950">Assigned Jobs</h1>
+          <p className="text-xs font-semibold uppercase tracking-[0.24em] text-cyan-700">{t("driverMobile")}</p>
+          <h1 className="mt-2 text-2xl font-semibold text-slate-950">{t("myJobs")}</h1>
           <p className="mt-1 text-sm text-slate-600">{headerName} • {roleLabel}</p>
           {driver ? <p className="mt-2 text-sm text-slate-700">Driver profile: {driver.display_name}</p> : null}
+          <label className="mt-3 block text-xs font-semibold uppercase tracking-[0.12em] text-slate-600" htmlFor="driver-mobile-language">
+            Language
+            <select
+              id="driver-mobile-language"
+              value={language}
+              onChange={(event) => changeLanguage(event.target.value as DriverMobileLanguage)}
+              className="ml-2 rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs font-semibold normal-case tracking-normal text-slate-900"
+            >
+              {DRIVER_MOBILE_LANGUAGES.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            </select>
+          </label>
         </div>
         <button
           type="button"
@@ -1162,21 +1184,21 @@ export function DriverMobileJobsDashboard() {
           className="inline-flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-semibold uppercase tracking-[0.12em] text-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
         >
           <LogOut className="h-4 w-4" />
-          {isSigningOut ? "Signing out..." : "Sign out"}
+          {isSigningOut ? t("sending") : t("signOut")}
         </button>
       </div>
 
       <div className="mt-4 grid gap-2 sm:grid-cols-3">
         <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">To Do</p>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">{t("toDo")}</p>
           <p className="mt-1 text-lg font-semibold text-slate-900">{grouped.toDo.length}</p>
         </div>
         <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">In Progress</p>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">{t("inProgress")}</p>
           <p className="mt-1 text-lg font-semibold text-slate-900">{grouped.inProgress.length}</p>
         </div>
         <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">Completed Today</p>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">{t("completedToday")}</p>
           <p className="mt-1 text-lg font-semibold text-slate-900">{grouped.completedToday.length}</p>
         </div>
       </div>
@@ -1190,7 +1212,7 @@ export function DriverMobileJobsDashboard() {
         <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-medium text-slate-700">{items.length}</span>
       </div>
 
-      {items.length === 0 ? <p className="text-sm text-slate-500">No jobs in this section.</p> : null}
+      {items.length === 0 ? <p className="text-sm text-slate-500">{t("noJobs")}</p> : null}
 
       {items.length > 0 ? (
         <div className="space-y-3">
@@ -1210,7 +1232,7 @@ export function DriverMobileJobsDashboard() {
               <article key={task.bookingId} className="rounded-xl border border-slate-200 bg-slate-50/80 p-3">
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-cyan-700">{task.taskKind === "collection" ? "Collection" : "Delivery"}</p>
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-cyan-700">{task.taskKind === "collection" ? t("collection") : t("delivery")}</p>
                     <h3 className="text-lg font-bold text-slate-950">{task.trailerNumber}</h3>
                     <p className="text-sm text-slate-700">{task.customer || "No customer"}</p>
                     <p className="text-xs text-slate-500">{task.location || "No location"}</p>
@@ -1230,10 +1252,10 @@ export function DriverMobileJobsDashboard() {
                 </div>
 
                 <div className="mt-3 space-y-1 text-sm text-slate-700">
-                  <p><span className="font-medium">Schedule:</span> {formatSchedule(task.deliveryDate, task.deliveryTime)}</p>
-                  <p><span className="font-medium">Reference:</span> {task.bookingReference || "-"}</p>
-                  <p><span className="font-medium">Acknowledged:</span> {task.driverAcknowledgedAt ? formatCompletedTime(task.driverAcknowledgedAt) : "No"}</p>
-                  {completedAt ? <p><span className="font-medium">Completed:</span> {formatCompletedTime(completedAt)}</p> : null}
+                  <p><span className="font-medium">{t("schedule")}:</span> {formatSchedule(task.deliveryDate, task.deliveryTime)}</p>
+                  <p><span className="font-medium">{t("reference")}:</span> {task.bookingReference || "-"}</p>
+                  <p><span className="font-medium">{t("acknowledgedLabel")}:</span> {task.driverAcknowledgedAt ? formatCompletedTime(task.driverAcknowledgedAt) : "No"}</p>
+                  {completedAt ? <p><span className="font-medium">{t("completed")}:</span> {formatCompletedTime(completedAt)}</p> : null}
                 </div>
 
                 {activeInstruction ? (
@@ -1242,17 +1264,17 @@ export function DriverMobileJobsDashboard() {
                       <p className="text-[11px] font-semibold uppercase tracking-[0.16em]">Instruction</p>
                       {activeInstruction.priority !== "normal" ? (
                         <span className="rounded-full border border-current px-2 py-0.5 text-[10px] font-bold tracking-[0.08em]">
-                          {toPriorityLabel(activeInstruction.priority)}
+                          {activeInstruction.priority === "critical" ? t("critical") : activeInstruction.priority === "high" ? t("attention") : t("normal")}
                         </span>
                       ) : null}
                     </div>
                     <p className="mt-1 text-sm font-semibold">{activeInstruction.instruction}</p>
                     <p className="mt-1 text-xs">
-                      Sent {formatCompletedTime(activeInstruction.createdAt)}
-                      {activeInstruction.readAt ? ` • Acknowledged ${formatCompletedTime(activeInstruction.readAt)}` : " • Acknowledge pending"}
+                      {t("sent")} {formatCompletedTime(activeInstruction.createdAt)}
+                      {activeInstruction.readAt ? ` • ${t("acknowledged")} ${formatCompletedTime(activeInstruction.readAt)}` : ` • ${t("acknowledgePending")}`}
                     </p>
                     {!activeInstruction.readAt && task.nextAction === "ACKNOWLEDGED" ? (
-                      <p className="mt-2 text-xs font-medium">Acknowledge this job to confirm the instruction.</p>
+                      <p className="mt-2 text-xs font-medium">{t("acknowledgeThisJob")}</p>
                     ) : null}
                     {!activeInstruction.readAt && task.nextAction !== "ACKNOWLEDGED" ? (
                       <div className="mt-2 flex justify-end">
@@ -1264,7 +1286,7 @@ export function DriverMobileJobsDashboard() {
                           }}
                           className="rounded-lg bg-slate-900 px-3 py-2 text-xs font-semibold text-white disabled:bg-slate-400"
                         >
-                          {instructionActionId === activeInstruction.id ? "Acknowledging..." : "ACKNOWLEDGE"}
+                            {instructionActionId === activeInstruction.id ? t("sending") : language === "en" ? "ACKNOWLEDGE" : t("acknowledged")}
                         </button>
                       </div>
                     ) : null}
@@ -1281,9 +1303,9 @@ export function DriverMobileJobsDashboard() {
 
                 {showTemperatureInput ? (
                   <div className="mt-3 rounded-xl border border-cyan-200 bg-cyan-50 p-3">
-                    <p className="text-xs font-semibold uppercase tracking-[0.16em] text-cyan-900">Temperature required</p>
+                    <p className="text-xs font-semibold uppercase tracking-[0.16em] text-cyan-900">{t("temperatureRequired")}</p>
                     <label htmlFor={`temp-${task.bookingId}`} className="mt-2 block text-xs font-medium text-cyan-900">
-                      Collection reading (C)
+                      {t("collectionReading")}
                     </label>
                     <input
                       id={`temp-${task.bookingId}`}
@@ -1317,7 +1339,7 @@ export function DriverMobileJobsDashboard() {
                       }}
                       className="w-full rounded-xl bg-amber-600 px-4 py-3 text-sm font-semibold text-white"
                     >
-                      Retry
+                      {t("retry")}
                     </button>
                   ) : task.nextAction ? (
                     <button
@@ -1328,7 +1350,7 @@ export function DriverMobileJobsDashboard() {
                       }}
                       className="w-full rounded-xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-400"
                     >
-                      {isPending ? "Sending..." : actionLabel(task.nextAction)}
+                      {isPending ? t("sending") : task.nextAction === "ACKNOWLEDGED" ? language === "en" ? "ACKNOWLEDGE" : t("acknowledged") : task.nextAction === "COLLECTED" ? t("collected") : t("delivered")}
                     </button>
                   ) : (
                     <span className="text-xs font-medium uppercase tracking-[0.14em] text-slate-500">No action required</span>
@@ -1409,7 +1431,7 @@ export function DriverMobileJobsDashboard() {
           {error ? <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">{error}</div> : null}
           {success ? <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">{success}</div> : null}
           {attentionAlert ? <div className="mt-4 rounded-2xl border border-cyan-200 bg-cyan-50 px-4 py-3 text-sm font-semibold text-cyan-900">{attentionAlert}</div> : null}
-          {!isOnline ? <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">Offline. Saved actions will send when connection returns.</div> : null}
+          {!isOnline ? <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">{t("offline")}</div> : null}
 
           {isLoading || isLoadingTasks ? (
             <div className="mt-4 rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-600">Loading assigned jobs...</div>
@@ -1426,40 +1448,40 @@ export function DriverMobileJobsDashboard() {
             <div className="mt-4 space-y-4">
               {attentionSummary.totalAttention > 0 || attentionSummary.offlineActionsCount > 0 || attentionSummary.overdueCollectionsCount > 0 ? (
                 <section className="rounded-2xl border border-amber-200 bg-amber-50 p-4 shadow-sm">
-                  <p className="text-xs font-semibold uppercase tracking-[0.2em] text-amber-900">Needs Attention</p>
+                    <p className="text-xs font-semibold uppercase tracking-[0.2em] text-amber-900">{t("needsAttention")}</p>
                   <p className="mt-2 text-xl font-bold text-amber-950">{attentionSummary.totalAttention} NEED ATTENTION</p>
                   <div className="mt-2 flex flex-wrap gap-2 text-xs font-semibold text-amber-900">
-                    {attentionSummary.newItemsCount > 0 ? <span className="rounded-full border border-amber-300 bg-white px-2 py-1">{attentionSummary.newItemsCount} NEW</span> : null}
-                    {attentionSummary.overdueCollectionsCount > 0 ? <span className="rounded-full border border-amber-300 bg-white px-2 py-1">{attentionSummary.overdueCollectionsCount} OVERDUE</span> : null}
-                    {attentionSummary.offlineActionsCount > 0 ? <span className="rounded-full border border-amber-300 bg-white px-2 py-1">{attentionSummary.offlineActionsCount} OFFLINE ACTION</span> : null}
+                    {attentionSummary.newItemsCount > 0 ? <span className="rounded-full border border-amber-300 bg-white px-2 py-1">{attentionSummary.newItemsCount} {t("new")}</span> : null}
+                    {attentionSummary.overdueCollectionsCount > 0 ? <span className="rounded-full border border-amber-300 bg-white px-2 py-1">{attentionSummary.overdueCollectionsCount} {t("overdue")}</span> : null}
+                    {attentionSummary.offlineActionsCount > 0 ? <span className="rounded-full border border-amber-300 bg-white px-2 py-1">{attentionSummary.offlineActionsCount} {t("offlineAction")}</span> : null}
                   </div>
                 </section>
               ) : null}
 
               <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
                 <div className="flex items-center justify-between gap-3">
-                  <h2 className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-700">Operational Instructions</h2>
+                  <h2 className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-700">{t("operationalInstructions")}</h2>
                   <span className="rounded-full border border-cyan-200 bg-cyan-50 px-2 py-1 text-xs font-semibold text-cyan-900">
-                    {effectiveInstructions.unreadCount} unread
+                    {effectiveInstructions.unreadCount} {t("unread")}
                   </span>
                 </div>
 
-                {isLoadingInstructions ? <p className="mt-3 text-sm text-slate-500">Loading instructions...</p> : null}
+                {isLoadingInstructions ? <p className="mt-3 text-sm text-slate-500">{t("loadingInstructions")}</p> : null}
 
                 {!isLoadingInstructions && standaloneInstructions.length === 0 && !effectiveInstructions.newestUnread ? (
-                  <p className="mt-3 text-sm text-slate-500">No standalone instructions right now.</p>
+                  <p className="mt-3 text-sm text-slate-500">{t("noStandaloneInstructions")}</p>
                 ) : null}
 
                 {!isLoadingInstructions && standaloneInstructions.length > 0 ? (
                   <div className="mt-3 space-y-3">
                     {standaloneInstructions.slice(0, 4).map((instruction) => (
                       <article key={instruction.id} className={`rounded-xl border px-3 py-3 ${toInstructionPriorityTone(instruction.priority)}`}>
-                        <p className="text-[11px] font-semibold uppercase tracking-[0.16em]">Instruction Only</p>
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.16em]">{t("instructionOnly")}</p>
                         <p className="mt-1 text-sm font-semibold">{instruction.instruction}</p>
                         <p className="mt-1 text-xs">
-                          Sent {formatCompletedTime(instruction.createdAt)}
+                          {t("sent")} {formatCompletedTime(instruction.createdAt)}
                           {instruction.trailerNumber ? ` • ${instruction.trailerNumber}` : ""}
-                          {instruction.readAt ? ` • Acknowledged ${formatCompletedTime(instruction.readAt)}` : " • Acknowledge pending"}
+                          {instruction.readAt ? ` • ${t("acknowledged")} ${formatCompletedTime(instruction.readAt)}` : ` • ${t("acknowledgePending")}`}
                         </p>
                         {!instruction.readAt ? (
                           <div className="mt-3 flex justify-end">
@@ -1471,7 +1493,7 @@ export function DriverMobileJobsDashboard() {
                               }}
                               className="rounded-xl bg-slate-900 px-3 py-2 text-xs font-semibold text-white disabled:bg-slate-400"
                             >
-                              {instructionActionId === instruction.id ? "Acknowledging..." : "ACKNOWLEDGE"}
+                              {instructionActionId === instruction.id ? t("sending") : language === "en" ? "ACKNOWLEDGE" : t("acknowledged")}
                             </button>
                           </div>
                         ) : null}
@@ -1482,10 +1504,10 @@ export function DriverMobileJobsDashboard() {
                 ) : null}
               </section>
 
-              {renderSection("Needs Attention", grouped.attention)}
-              {renderSection("To Do", grouped.toDo)}
-              {renderSection("In Progress", grouped.inProgress)}
-              {renderSection("Completed Today", grouped.completedToday)}
+              {renderSection(t("needsAttention"), grouped.attention)}
+              {renderSection(t("toDo"), grouped.toDo)}
+              {renderSection(t("inProgress"), grouped.inProgress)}
+              {renderSection(t("completedToday"), grouped.completedToday)}
             </div>
           ) : null}
 
