@@ -92,6 +92,7 @@ const groupedItems: MenuGroup[] = [
   {
     title: "INTELLIGENCE & REPORTS",
     items: [
+      { label: "Reports", href: "/dashboard/reports", icon: FileBarChart2, moduleKey: "reports" },
       { label: "Operations Summary", href: "/dashboard/operations", icon: FileBarChart2, moduleKey: "reports" },
       { label: "Trailer Timeline", href: "/dashboard/trailer-timeline", icon: ClipboardList, moduleKey: "timeline" },
       { label: "AI Assistant", href: "/dashboard/ai-assistant", icon: Bot, moduleKey: "ai_assistant" },
