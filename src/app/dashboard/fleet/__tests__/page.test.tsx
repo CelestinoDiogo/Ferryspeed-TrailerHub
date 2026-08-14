@@ -54,4 +54,18 @@ describe("Fleet / Transport admin", () => {
     expect(fetchMock).toHaveBeenCalledWith("/api/fleet?jobId=job-a", expect.anything());
     expect(screen.queryByRole("button", { name: /delete|edit event|clear history/i })).not.toBeInTheDocument();
   });
+
+  it("submits the Add Unit form with the canonical transport type and blank notes", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ units: [], jobs: [], drivers: [], trailers: [] }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<FleetPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Units" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add Unit" }));
+    fireEvent.change(screen.getByLabelText("Registration"), { target: { value: "unit test" } });
+    fireEvent.change(screen.getByLabelText("Internal number"), { target: { value: "1" } });
+    fireEvent.change(screen.getAllByLabelText("Transport type").at(-1)!, { target: { value: "tractor_only" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save Unit" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body as string)).toMatchObject({ entity: "unit", registration: "unit test", internalNumber: "1", unitType: "tractor_only", active: true, notes: "" });
+  });
 });

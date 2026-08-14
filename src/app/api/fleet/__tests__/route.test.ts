@@ -7,7 +7,15 @@ describe("Fleet transport API contract", () => {
   it("keeps unit lifecycle mutation as insert/update with no hard delete", () => {
     expect(source).toContain('from("fleet_transport_units").insert');
     expect(source).toContain('from("fleet_transport_units").update');
+    expect(source).toContain("const parseUnitPayload = (body: unknown)");
+    expect(source).toContain("const payload = parseUnitPayload(body)");
     expect(source).not.toMatch(/\.from\("fleet_transport_units"\)\.delete/);
+  });
+
+  it("accepts the UI discriminator while validating the canonical unit type", () => {
+    expect(source).toContain('unitType: (body as Record<string, unknown>).unitType');
+    expect(source).toContain('z.enum(["tractor_only", "curtain_sider", "reefer", "flatbed", "rigid", "other"])');
+    expect(source).not.toContain("unitSchema.parse(body)");
   });
 
   it("updates the same transport job identity for assignment and lifecycle changes", () => {

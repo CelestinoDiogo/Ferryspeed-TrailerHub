@@ -12,6 +12,14 @@ const unitSchema = z.object({
   active: z.boolean().optional(),
 }).strict();
 
+const parseUnitPayload = (body: unknown) => unitSchema.parse({
+  registration: (body as Record<string, unknown>).registration,
+  internalNumber: (body as Record<string, unknown>).internalNumber,
+  unitType: (body as Record<string, unknown>).unitType,
+  notes: (body as Record<string, unknown>).notes,
+  active: (body as Record<string, unknown>).active,
+});
+
 const jobSchema = z.object({
   jobReference: z.string().trim().min(1).max(64),
   status: z.enum(["planned", "assigned", "in_progress", "completed", "cancelled"]).optional(),
@@ -87,7 +95,7 @@ export async function POST(request: Request) {
     const body = await request.json().catch(() => ({}));
     const entity = z.enum(["unit", "job"]).parse(body.entity);
     if (entity === "unit") {
-      const payload = unitSchema.parse(body);
+      const payload = parseUnitPayload(body);
       const { data, error } = await supabase.from("fleet_transport_units").insert({ registration: payload.registration, internal_number: payload.internalNumber, unit_type: payload.unitType, notes: payload.notes ?? null, active: payload.active ?? true }).select().single();
       if (error) throw error;
       return Response.json({ unit: data }, { status: 201 });
@@ -112,7 +120,7 @@ export async function PATCH(request: Request) {
     const entity = z.enum(["unit", "job"]).parse(body.entity);
     const id = z.string().uuid().parse(body.id);
     if (entity === "unit") {
-      const payload = unitSchema.parse(body);
+      const payload = parseUnitPayload(body);
       const { data, error } = await supabase.from("fleet_transport_units").update({ registration: payload.registration, internal_number: payload.internalNumber, unit_type: payload.unitType, notes: payload.notes ?? null, active: payload.active ?? true }).eq("id", id).select().single();
       if (error) throw error;
       return Response.json({ unit: data });
