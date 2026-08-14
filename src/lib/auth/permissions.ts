@@ -87,6 +87,7 @@ supervisorPermissions.settings = new Set(["view"]);
 
 const operatorPermissions = createEmptyMap();
 operatorPermissions.dashboard = new Set(["view"]);
+operatorPermissions.fleet_transport = new Set(["view"]);
 operatorPermissions.arrivals = new Set(["view", "create", "edit"]);
 operatorPermissions.compound = new Set(["view", "create", "edit"]);
 operatorPermissions.stock_check = new Set(["view", "create", "edit"]);

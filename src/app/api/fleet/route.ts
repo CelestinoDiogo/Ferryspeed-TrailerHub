@@ -38,6 +38,26 @@ const requireFleet = async (request: Request, action: "view" | "create" | "edit"
   return { supabase, user };
 };
 
+const activeJobStatuses = ["planned", "assigned", "in_progress"];
+
+const findAssignmentWarnings = async (supabase: ReturnType<typeof createAuthenticatedRouteSupabaseClient>, driverId: string | null, unitId: string | null, excludedJobId?: string) => {
+  const { data, error } = await supabase
+    .from("transport_jobs")
+    .select("id,job_reference,driver_id,unit_id,status")
+    .in("status", activeJobStatuses)
+    .or(`driver_id.eq.${driverId ?? "00000000-0000-0000-0000-000000000000"},unit_id.eq.${unitId ?? "00000000-0000-0000-0000-000000000000"}`);
+
+  if (error) {
+    throw error;
+  }
+
+  const conflicts = (data ?? []).filter((job) => job.id !== excludedJobId && ((driverId && job.driver_id === driverId) || (unitId && job.unit_id === unitId)));
+  return conflicts.map((job) => {
+    const resources = [driverId && job.driver_id === driverId ? "driver" : null, unitId && job.unit_id === unitId ? "unit" : null].filter(Boolean).join(" and ");
+    return `${resources} already assigned to active job ${job.job_reference}`;
+  });
+};
+
 export async function GET(request: Request) {
   try {
     const { supabase } = await requireFleet(request, "view");
@@ -69,9 +89,10 @@ export async function POST(request: Request) {
     }
     const payload = jobSchema.parse(body);
     const status = payload.status ?? (payload.driverId || payload.unitId ? "assigned" : "planned");
+    const warnings = await findAssignmentWarnings(supabase, payload.driverId ?? null, payload.unitId ?? null);
     const { data, error } = await supabase.from("transport_jobs").insert({ job_reference: payload.jobReference, status, driver_id: payload.driverId ?? null, unit_id: payload.unitId ?? null, trailer_id: payload.trailerId ?? null, trailer_number_snapshot: payload.trailerNumberSnapshot ?? null, customer: payload.customer ?? null, booking_reference: payload.bookingReference ?? null, collection_address: payload.collectionAddress ?? null, delivery_address: payload.deliveryAddress ?? null, collection_at: payload.collectionAt ?? null, delivery_at: payload.deliveryAt ?? null, notes: payload.notes ?? null, completed_at: status === "completed" ? new Date().toISOString() : null, cancelled_at: status === "cancelled" ? new Date().toISOString() : null }).select().single();
     if (error) throw error;
-    return Response.json({ job: data }, { status: 201 });
+    return Response.json({ job: data, ...(warnings.length > 0 ? { warning: warnings.join("; ") } : {}) }, { status: 201 });
   } catch (error) {
     if (error instanceof SupabaseRouteAuthError || error instanceof RbacPermissionError) return Response.json({ error: error.message }, { status: error.status });
     if (error instanceof z.ZodError) return Response.json({ error: "Invalid Fleet / Transport payload." }, { status: 400 });
@@ -92,12 +113,13 @@ export async function PATCH(request: Request) {
       return Response.json({ unit: data });
     }
     const payload = jobSchema.parse(body);
-    const update: Database["public"]["Tables"]["transport_jobs"]["Update"] = { job_reference: payload.jobReference, status: payload.status ?? "planned", driver_id: payload.driverId ?? null, unit_id: payload.unitId ?? null, trailer_id: payload.trailerId ?? null, trailer_number_snapshot: payload.trailerNumberSnapshot ?? null, customer: payload.customer ?? null, booking_reference: payload.bookingReference ?? null, collection_address: payload.collectionAddress ?? null, delivery_address: payload.deliveryAddress ?? null, collection_at: payload.collectionAt ?? null, delivery_at: payload.deliveryAt ?? null, notes: payload.notes ?? null };
+    const warnings = await findAssignmentWarnings(supabase, payload.driverId ?? null, payload.unitId ?? null, id);
+    const update: Database["public"]["Tables"]["transport_jobs"]["Update"] = { job_reference: payload.jobReference, ...(payload.status ? { status: payload.status } : {}), driver_id: payload.driverId ?? null, unit_id: payload.unitId ?? null, trailer_id: payload.trailerId ?? null, trailer_number_snapshot: payload.trailerNumberSnapshot ?? null, customer: payload.customer ?? null, booking_reference: payload.bookingReference ?? null, collection_address: payload.collectionAddress ?? null, delivery_address: payload.deliveryAddress ?? null, collection_at: payload.collectionAt ?? null, delivery_at: payload.deliveryAt ?? null, notes: payload.notes ?? null };
     if (payload.status === "completed") update.completed_at = new Date().toISOString();
     if (payload.status === "cancelled") update.cancelled_at = new Date().toISOString();
     const { data, error } = await supabase.from("transport_jobs").update(update).eq("id", id).select().single();
     if (error) throw error;
-    return Response.json({ job: data });
+    return Response.json({ job: data, ...(warnings.length > 0 ? { warning: warnings.join("; ") } : {}) });
   } catch (error) {
     if (error instanceof SupabaseRouteAuthError || error instanceof RbacPermissionError) return Response.json({ error: error.message }, { status: error.status });
     if (error instanceof z.ZodError) return Response.json({ error: "Invalid Fleet / Transport payload." }, { status: 400 });
