@@ -47,6 +47,7 @@ type TrailerRecord = {
   id: string;
   trailer_number: string | null;
   load_status?: string | null;
+  operational_status?: string | null;
   arrival_date?: string | null;
   customer?: string | null;
   consignee?: string | null;
@@ -649,7 +650,7 @@ export default function CompoundPage() {
         trailerNumber: trailer?.trailer_number ?? null,
         customer: trailer?.customer ?? vesselTrailer?.customer ?? null,
         loadStatus: trailer?.load_status ?? null,
-        operationalStatus: trailer?.load_status ?? null,
+        operationalStatus: trailer?.operational_status ?? null,
         compoundPosition: trailer?.compound_position ?? position,
         priorityLevel: vesselTrailer?.priority_level ?? null,
         vesselName: vesselOperation?.vessel_name ?? null,

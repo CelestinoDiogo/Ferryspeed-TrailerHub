@@ -424,23 +424,6 @@ function ExportOperationsPageContent() {
     router.replace(`${pathname}?${params.toString()}`, { scroll: false });
   };
 
-  const handlePrintList = () => {
-    if (isLoading || filteredCount === 0) {
-      return;
-    }
-
-    window.requestAnimationFrame(() => {
-      window.requestAnimationFrame(() => {
-        const printRoot = document.getElementById("print-report-root");
-        if (printRoot && printRoot.childElementCount === 0) {
-          setError("Print report is still preparing. Please try again.");
-          return;
-        }
-        window.print();
-      });
-    });
-  };
-
   const loadAllocations = async (options?: { showLoading?: boolean }) => {
     const showLoading = options?.showLoading ?? true;
     if (showLoading) {
@@ -1366,7 +1349,7 @@ function ExportOperationsPageContent() {
                 >
                   Clear Filters
                 </button>
-                <PrintButton label="Print / Export" disabled={isLoading || filteredCount === 0} onPrint={handlePrintList} className="action-buttons" />
+                <PrintButton label="Print / Export" disabled={isLoading || filteredCount === 0} className="action-buttons" />
               </>
             }
           />

@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { HistoryDateRangeFilter } from "@/components/common/history-date-range-filter";
+import { PrintButton } from "@/components/print/print-button";
 import { PrintFilters } from "@/components/print/print-filters";
 import { PrintFooter } from "@/components/print/print-footer";
 import { PrintHeader } from "@/components/print/print-header";
@@ -60,7 +61,7 @@ export function HistoricalOperationsReport({ kind }: { kind: HistoricalOperation
           })));
         } else if (kind === "arrivals") {
           const [{ data: vesselRows, error: vesselError }, { data: operationRows, error: operationError }] = await Promise.all([
-            supabase.from("vessel_operation_trailers").select("id, trailer_id, trailer_number, customer, booking_reference, load_status, arrived_at, arrival_confirmed_at, arrival_status, planning_notes, vessel_operation_id"),
+            supabase.from("vessel_operation_trailers").select("id, trailer_id, trailer_number, customer, booking_reference, load_status, arrived_at, arrival_confirmed_at, arrival_status, planning_notes, vessel_operation_id, ownership_type, trailer_source, external_company"),
             supabase.from("vessel_operations").select("id, vessel_name, sailing_reference, origin_port"),
           ]);
           if (vesselError) throw vesselError;
@@ -72,7 +73,11 @@ export function HistoricalOperationsReport({ kind }: { kind: HistoricalOperation
           const trailerMap = new Map((trailers ?? []).map((row) => [row.id, row]));
           setRecords((vesselRows ?? []).filter((row) => row.arrival_confirmed_at || row.arrived_at).map((row) => {
             const operation = operations.get(row.vessel_operation_id) as { vessel_name?: string | null; sailing_reference?: string | null; origin_port?: string | null } | undefined;
-            const trailer = (row.trailer_id ? trailerMap.get(row.trailer_id) : undefined) ?? { trailer_number: row.trailer_number };
+            const trailer = (row.trailer_id ? trailerMap.get(row.trailer_id) : undefined) ?? {
+              trailer_number: row.trailer_number,
+              trailer_source: row.trailer_source,
+              external_company: row.external_company,
+            };
             return { id: row.id, trailerNumber: row.trailer_number ?? trailer.trailer_number ?? null, occurredAt: row.arrival_confirmed_at ?? row.arrived_at ?? null, ownershipType: ownershipForTrailer(trailer), customer: row.customer, sourceOrDestination: [operation?.vessel_name, operation?.origin_port].filter(Boolean).join(" / ") || null, reference: row.booking_reference, loadStatus: row.load_status, notes: row.planning_notes };
           }));
         } else {
@@ -123,6 +128,11 @@ export function HistoricalOperationsReport({ kind }: { kind: HistoricalOperation
   };
 
   return <>
+    <div className="screen-only bg-slate-950 px-4 pt-6 sm:px-6">
+      <div className="mx-auto flex max-w-7xl justify-end">
+        <PrintButton disabled={isLoading || filtered.length === 0} />
+      </div>
+    </div>
     <main className="screen-only min-h-screen bg-slate-950 px-4 py-6 text-slate-100 sm:px-6">
       <div className="mx-auto max-w-7xl space-y-5">
         <header className="rounded-3xl border border-white/10 bg-slate-900/80 p-5"><p className="text-xs font-semibold uppercase tracking-[0.25em] text-cyan-400">Historical Operations</p><h1 className="mt-2 text-3xl font-semibold">{label}</h1><p className="mt-2 text-sm text-slate-300">Read-only historical operational records.</p></header>

@@ -110,6 +110,11 @@ const makeClient = (options: {
 };
 
 describe("operational alert compound timestamp hierarchy", () => {
+  it("normalizes legacy open alerts as active", () => {
+    expect(operationalAlertTestUtils.normalizeAlertStatus("open")).toBe("active");
+    expect(operationalAlertTestUtils.normalizeAlertStatus("resolved")).toBe("resolved");
+  });
+
   it("prefers trailer arrival_date for compound entry timestamp", () => {
     const entry = operationalAlertTestUtils.resolveCompoundEntryTimestamp(
       {

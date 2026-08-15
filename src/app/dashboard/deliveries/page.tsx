@@ -340,23 +340,6 @@ function DeliveriesPageContent() {
     return sequence[currentStatus] || null;
   };
 
-  const handlePrint = () => {
-    if (isLoading || filteredBookings.length === 0) {
-      return;
-    }
-
-    window.requestAnimationFrame(() => {
-      window.requestAnimationFrame(() => {
-        const printRoot = document.getElementById("print-report-root");
-        if (printRoot && printRoot.childElementCount === 0) {
-          setError("Print report is still preparing. Please try again.");
-          return;
-        }
-        window.print();
-      });
-    });
-  };
-
   return (
     <ReportPrintLayout
       screen={
@@ -377,7 +360,7 @@ function DeliveriesPageContent() {
             </div>
 
             <div className="flex flex-wrap gap-2">
-              <PrintButton label="Print / Export" disabled={isLoading || filteredBookings.length === 0} onPrint={handlePrint} className="action-buttons" />
+              <PrintButton label="Print / Export" disabled={isLoading || filteredBookings.length === 0} className="action-buttons" />
               <Link
                 href="/dashboard/calendar"
                 className="rounded-2xl border border-white/10 bg-slate-800 px-5 py-3 text-center font-semibold text-white hover:bg-slate-700"

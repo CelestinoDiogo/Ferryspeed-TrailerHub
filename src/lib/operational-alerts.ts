@@ -188,7 +188,7 @@ type TrailerMovementActivityRow = {
   created_at: string | null;
 };
 
-const ACTIVE_ALERT_STATUSES: OperationalAlertStatus[] = ["active"];
+const ACTIVE_ALERT_QUERY_STATUSES = ["active", "open"] as const;
 const OPERATIONAL_ALERTS_ACTIVE_DEDUPE_INDEX = "operational_alerts_active_dedupe_idx";
 const OPERATIONAL_ALERTS_STATUS_CONSTRAINT_NAMES = new Set([
   "operational_alerts_status_valid",
@@ -1057,7 +1057,7 @@ export async function getOperationalAlerts(
     let query = client.from("operational_alerts").select("*").order("created_at", { ascending: true });
 
     if (!input.includeResolved) {
-      query = query.in("status", ACTIVE_ALERT_STATUSES);
+      query = query.in("status", ACTIVE_ALERT_QUERY_STATUSES);
     } else if (input.status && input.status.length > 0) {
       query = query.in("status", input.status);
     }
@@ -1219,7 +1219,7 @@ export async function createOperationalAlert(
       return { ok: true, data: existing };
     }
 
-    if (existing && ACTIVE_ALERT_STATUSES.includes(existing.status as OperationalAlertStatus)) {
+    if (existing?.status === "active") {
       const updated = await updateAlertRow(client, existing.id, {
         alert_key: alertKey,
         alert_type: alertType,
@@ -1797,4 +1797,5 @@ export const operationalAlertTestUtils = {
   resolveCompoundEntryTimestamp,
   resolveLatestCompoundMovementTimestamp,
   isCompoundMovementEventType,
+  normalizeAlertStatus,
 };

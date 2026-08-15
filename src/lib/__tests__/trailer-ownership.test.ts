@@ -24,8 +24,8 @@ describe("trailer ownership classification", () => {
     expect(getTrailerOwnershipType({ trailerSource: null, externalCompany: null, trailerNumber: null })).toBe("unknown");
   });
 
-  it("treats local flag as independent from outsourcing", () => {
-    expect(getTrailerOwnershipType({ isLocal: true, trailerSource: null, externalCompany: null })).toBe("unknown");
+  it("treats local trailers as company-owned when there is no outsourcing evidence", () => {
+    expect(getTrailerOwnershipType({ isLocal: true, trailerSource: null, externalCompany: null })).toBe("company");
   });
 
   it("resolves conflicting evidence in favor of outsourcing", () => {

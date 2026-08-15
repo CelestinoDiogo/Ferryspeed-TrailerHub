@@ -54,25 +54,40 @@ export const createHistoryDateRange = (
   return { preset, startDate: todayDateKey, endDate: todayDateKey };
 };
 
+export const normalizeHistoryDateRange = (
+  value: HistoryDateRangeValue,
+): HistoryDateRangeValue => {
+  const startDate = value.startDate.trim();
+  const endDate = value.endDate.trim();
+
+  if (value.preset === "custom" && startDate && endDate && startDate > endDate) {
+    return { ...value, startDate: endDate, endDate: startDate };
+  }
+
+  return { ...value, startDate, endDate };
+};
+
 export const getHistoryDateRangeLabel = (value: HistoryDateRangeValue) => {
-  if (value.preset === "today") {
+  const normalizedValue = normalizeHistoryDateRange(value);
+
+  if (normalizedValue.preset === "today") {
     return "Today";
   }
 
-  if (value.preset === "yesterday") {
+  if (normalizedValue.preset === "yesterday") {
     return "Yesterday";
   }
 
-  if (value.preset === "last_7_days") {
+  if (normalizedValue.preset === "last_7_days") {
     return "Last 7 Days";
   }
 
-  if (value.preset === "last_30_days") {
+  if (normalizedValue.preset === "last_30_days") {
     return "Last 30 Days";
   }
 
-  if (value.startDate && value.endDate) {
-    return `${value.startDate} to ${value.endDate}`;
+  if (normalizedValue.startDate && normalizedValue.endDate) {
+    return `${normalizedValue.startDate} to ${normalizedValue.endDate}`;
   }
 
   return "Custom";
@@ -82,9 +97,10 @@ export const isDateWithinHistoryRange = (
   dateKey: string | null | undefined,
   range: HistoryDateRangeValue,
 ) => {
+  const normalizedRange = normalizeHistoryDateRange(range);
   const normalizedDate = (dateKey ?? "").trim();
-  const normalizedStart = range.startDate.trim();
-  const normalizedEnd = range.endDate.trim();
+  const normalizedStart = normalizedRange.startDate;
+  const normalizedEnd = normalizedRange.endDate;
 
   if (!normalizedDate || !normalizedStart || !normalizedEnd) {
     return false;

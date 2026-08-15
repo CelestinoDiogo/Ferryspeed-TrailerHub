@@ -121,7 +121,7 @@ export async function loadCompoundReportData(
     supabase
       .from("trailers")
       .select(
-        "id, trailer_number, load_status, customer, consignee, container_number, compound_position, departure_date, is_local, trailer_source, external_company",
+        "id, trailer_number, load_status, operational_status, customer, consignee, container_number, compound_position, departure_date, is_local, trailer_source, external_company",
       )
       .is("departure_date", null)
       .neq("is_local", true)
@@ -170,7 +170,7 @@ export async function loadVesselArrivalsReportData(
       .single(),
     supabase
       .from("vessel_operation_trailers")
-      .select("id, vessel_operation_id, trailer_id, trailer_number, customer, booking_reference, load_status, load_description, temperature_required, expected_front_temperature, expected_rear_temperature, expected_temperature_unit, priority_level, priority_reason, planned_destination, planning_notes, status, arrived_at, arrival_status, arrival_confirmed_at, arrival_record_id, arrival_confirmed_by, inspection_started_at, inspection_completed_at, position_assigned_at, assigned_position, has_damage, has_temperature_alert, created_at, updated_at")
+      .select("id, vessel_operation_id, trailer_id, trailer_number, customer, booking_reference, load_status, load_description, temperature_required, expected_front_temperature, expected_rear_temperature, expected_temperature_unit, priority_level, priority_reason, planned_destination, planning_notes, ownership_type, trailer_source, external_company, status, arrived_at, arrival_status, arrival_confirmed_at, arrival_record_id, arrival_confirmed_by, inspection_started_at, inspection_completed_at, position_assigned_at, assigned_position, has_damage, has_temperature_alert, created_at, updated_at")
       .eq("vessel_operation_id", operationId)
       .order("created_at", { ascending: true }),
   ]);

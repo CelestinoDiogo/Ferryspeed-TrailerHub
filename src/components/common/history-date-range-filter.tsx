@@ -61,6 +61,7 @@ export function HistoryDateRangeFilter({
             <input
               type="date"
               value={value.startDate}
+              max={value.endDate || undefined}
               onChange={(event) =>
                 onChange({
                   ...value,
@@ -76,6 +77,7 @@ export function HistoryDateRangeFilter({
             <input
               type="date"
               value={value.endDate}
+              min={value.startDate || undefined}
               onChange={(event) =>
                 onChange({
                   ...value,

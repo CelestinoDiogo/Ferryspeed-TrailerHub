@@ -28,6 +28,10 @@ export const getTrailerOwnershipType = (input: TrailerOwnershipInput): TrailerOw
     return "company";
   }
 
+  if (input.isLocal === true) {
+    return "company";
+  }
+
   const trailerNumber = normalizeTrailerNumberForOwnership(input.trailerNumber);
   if (trailerNumber && input.companyTrailerNumbers?.has(trailerNumber)) {
     return "company";
