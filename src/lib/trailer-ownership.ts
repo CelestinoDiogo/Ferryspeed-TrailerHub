@@ -1,6 +1,7 @@
 export type TrailerOwnershipType = "company" | "outsourcing" | "unknown";
 
 export type TrailerOwnershipInput = {
+  ownershipType?: string | null;
   trailerSource?: string | null;
   externalCompany?: string | null;
   isLocal?: boolean | null;
@@ -17,14 +18,15 @@ const COMPANY_SOURCE_VALUES = new Set(["company", "fleet", "internal", "owned"])
 const OUTSOURCING_SOURCE_VALUES = new Set(["outsourced", "outsourcing", "external", "supplier"]);
 
 export const getTrailerOwnershipType = (input: TrailerOwnershipInput): TrailerOwnershipType => {
+  const ownershipType = normalizeText(input.ownershipType);
   const source = normalizeText(input.trailerSource);
   const hasExternalCompany = normalizeText(input.externalCompany).length > 0;
 
-  if (OUTSOURCING_SOURCE_VALUES.has(source) || hasExternalCompany) {
+  if (ownershipType === "outsourcing" || OUTSOURCING_SOURCE_VALUES.has(source) || hasExternalCompany) {
     return "outsourcing";
   }
 
-  if (COMPANY_SOURCE_VALUES.has(source)) {
+  if (ownershipType === "company" || COMPANY_SOURCE_VALUES.has(source)) {
     return "company";
   }
 

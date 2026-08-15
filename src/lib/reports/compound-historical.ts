@@ -54,3 +54,28 @@ export const filterCompoundActivity = (rows: CompoundActivityRecord[], range: Hi
 };
 
 export const ownershipForCompoundTrailer = (row: { trailer_source?: string | null; external_company?: string | null; is_local?: boolean | null; trailer_number?: string | null }) => getTrailerOwnershipType({ trailerSource: row.trailer_source, externalCompany: row.external_company, isLocal: row.is_local, trailerNumber: row.trailer_number });
+
+export const toCompoundSnapshotRecord = (row: {
+  id: string;
+  trailer_number: string | null;
+  compound_position: string | null;
+  load_status: string | null;
+  customer: string | null;
+  trailer_type?: string | null;
+  is_local?: boolean | null;
+  operational_status: string | null;
+  notes?: string | null;
+  trailer_source?: string | null;
+  external_company?: string | null;
+}): CompoundSnapshotRecord => ({
+  id: row.id,
+  trailerNumber: row.trailer_number,
+  ownershipType: ownershipForCompoundTrailer(row),
+  position: row.compound_position,
+  loadStatus: row.load_status,
+  customer: row.customer,
+  trailerType: row.trailer_type ?? null,
+  localLabel: row.is_local ? "Local" : "External",
+  currentStatus: row.operational_status,
+  notes: row.notes ?? null,
+});

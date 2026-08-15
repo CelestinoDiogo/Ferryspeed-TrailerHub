@@ -57,6 +57,31 @@ export const filterHistoricalOperations = (
 export const ownershipForTrailer = (row: { trailer_source?: string | null; external_company?: string | null; is_local?: boolean | null; trailer_number?: string | null }) =>
   getTrailerOwnershipType({ trailerSource: row.trailer_source, externalCompany: row.external_company, isLocal: row.is_local, trailerNumber: row.trailer_number });
 
+type ArrivalOwnershipRow = {
+  ownership_type?: string | null;
+  trailer_source?: string | null;
+  external_company?: string | null;
+  is_local?: boolean | null;
+  trailer_number?: string | null;
+};
+
+export const ownershipForArrival = (
+  historicalRow: ArrivalOwnershipRow,
+  currentTrailer?: ArrivalOwnershipRow | null,
+) => {
+  const historicalOwnership = getTrailerOwnershipType({
+    ownershipType: historicalRow.ownership_type,
+    trailerSource: historicalRow.trailer_source,
+    externalCompany: historicalRow.external_company,
+    isLocal: historicalRow.is_local,
+    trailerNumber: historicalRow.trailer_number,
+  });
+
+  return historicalOwnership === "unknown"
+    ? ownershipForTrailer(currentTrailer ?? historicalRow)
+    : historicalOwnership;
+};
+
 export const collectionRecord = (row: { id: string; trailer_number?: string | null; customer?: string | null; booking_reference?: string | null; delivery_date: string; delivered_at?: string | null; waiting_collection_since?: string | null; collection_due_date?: string | null; collected_at?: string | null; notes?: string | null; driver?: string | null; trailer_source?: string | null; external_company?: string | null; is_local?: boolean | null }) => {
   const collectionState = row.collected_at ? "collected" as const : "pending" as const;
   const aging = calculateCollectionAging({ delivery_date: row.delivery_date, delivered_at: row.delivered_at, waiting_collection_since: row.waiting_collection_since, collection_due_date: row.collection_due_date, collected_at: row.collected_at });

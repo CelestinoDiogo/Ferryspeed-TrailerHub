@@ -1349,7 +1349,7 @@ function ExportOperationsPageContent() {
                 >
                   Clear Filters
                 </button>
-                <PrintButton label="Print / Export" disabled={isLoading || filteredCount === 0} className="action-buttons" />
+                <PrintButton label="Print / Export" disabled={isLoading} className="action-buttons" />
               </>
             }
           />

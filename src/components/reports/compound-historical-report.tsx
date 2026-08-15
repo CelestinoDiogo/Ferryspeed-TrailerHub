@@ -10,7 +10,7 @@ import { PrintReportLayout } from "@/components/print/print-report-layout";
 import { PrintSummary } from "@/components/print/print-summary";
 import { PrintTable } from "@/components/print/print-table";
 import { createHistoryDateRange, getHistoryDateRangeLabel, normalizeHistoryPreset, type HistoryDateRangeValue } from "@/lib/history-date-range";
-import { compoundActivityTypes, filterCompoundActivity, ownershipForCompoundTrailer, type CompoundActivityRecord, type CompoundReportMode, type CompoundSnapshotRecord } from "@/lib/reports/compound-historical";
+import { compoundActivityTypes, filterCompoundActivity, ownershipForCompoundTrailer, toCompoundSnapshotRecord, type CompoundActivityRecord, type CompoundReportMode, type CompoundSnapshotRecord } from "@/lib/reports/compound-historical";
 import { supabase } from "@/lib/supabase";
 import { getTrailerOwnershipBadgeLabel } from "@/lib/trailer-ownership";
 
@@ -36,7 +36,7 @@ export function CompoundHistoricalReport({ mode }: { mode: CompoundReportMode })
         if (mode === "snapshot") {
           const { data, error: queryError } = await supabase.from("trailers").select("id, trailer_number, compound_position, load_status, customer, trailer_type, is_local, operational_status, notes, trailer_source, external_company").is("departure_date", null).neq("is_local", true).order("compound_position", { ascending: true });
           if (queryError) throw queryError;
-          setSnapshot((data ?? []).map((row) => ({ id: row.id, trailerNumber: row.trailer_number, ownershipType: ownershipForCompoundTrailer(row), position: row.compound_position, loadStatus: row.load_status, customer: row.customer, trailerType: row.trailer_type ?? null, localLabel: row.is_local ? "Local" : "External", currentStatus: row.operational_status, notes: row.notes ?? null })));
+          setSnapshot((data ?? []).map(toCompoundSnapshotRecord));
         } else {
           const { data, error: queryError } = await supabase.from("trailer_activity_log").select("id, trailer_id, trailer_number, event_type, previous_compound_position, new_compound_position, previous_status, new_status, source_module, performed_by, event_description, created_at").in("event_type", [...compoundActivityTypes]).order("created_at", { ascending: false }).limit(1200);
           if (queryError) throw queryError;

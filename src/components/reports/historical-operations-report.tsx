@@ -10,7 +10,7 @@ import { PrintReportLayout } from "@/components/print/print-report-layout";
 import { PrintSummary } from "@/components/print/print-summary";
 import { PrintTable } from "@/components/print/print-table";
 import { getHistoryDateRangeLabel, createHistoryDateRange, normalizeHistoryPreset, type HistoryDateRangeValue } from "@/lib/history-date-range";
-import { collectionRecord, filterHistoricalOperations, ownershipForTrailer, type HistoricalOperationKind, type HistoricalOperationRecord } from "@/lib/reports/historical-operations";
+import { collectionRecord, filterHistoricalOperations, ownershipForArrival, ownershipForTrailer, type HistoricalOperationKind, type HistoricalOperationRecord } from "@/lib/reports/historical-operations";
 import { supabase } from "@/lib/supabase";
 import { getTrailerOwnershipBadgeLabel } from "@/lib/trailer-ownership";
 
@@ -77,8 +77,9 @@ export function HistoricalOperationsReport({ kind }: { kind: HistoricalOperation
               trailer_number: row.trailer_number,
               trailer_source: row.trailer_source,
               external_company: row.external_company,
+              is_local: row.trailer_source === "local",
             };
-            return { id: row.id, trailerNumber: row.trailer_number ?? trailer.trailer_number ?? null, occurredAt: row.arrival_confirmed_at ?? row.arrived_at ?? null, ownershipType: ownershipForTrailer(trailer), customer: row.customer, sourceOrDestination: [operation?.vessel_name, operation?.origin_port].filter(Boolean).join(" / ") || null, reference: row.booking_reference, loadStatus: row.load_status, notes: row.planning_notes };
+            return { id: row.id, trailerNumber: row.trailer_number ?? trailer.trailer_number ?? null, occurredAt: row.arrival_confirmed_at ?? row.arrived_at ?? null, ownershipType: ownershipForArrival(row, trailer), customer: row.customer, sourceOrDestination: [operation?.vessel_name, operation?.origin_port].filter(Boolean).join(" / ") || null, reference: row.booking_reference, loadStatus: row.load_status, notes: row.planning_notes };
           }));
         } else {
           const { data, error: queryError } = await supabase.from("delivery_bookings").select("id, trailer_id, delivery_date, delivery_time, customer, booking_reference, status, notes, delivered_at, waiting_collection_since, collection_due_date, collected_at, driver:drivers(display_name), trailers(trailer_number, trailer_source, external_company, is_local)").order("delivery_date", { ascending: true });

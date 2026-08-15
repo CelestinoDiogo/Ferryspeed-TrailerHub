@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import {
   canConfirmVesselTrailerReception,
@@ -9,6 +9,8 @@ import {
   logVesselSupabaseError,
   normalizeCompoundPosition,
   normalizeTrailerNumber,
+  resolveVesselReceptionLoadStatus,
+  resolveVesselReceptionOwnership,
   type VesselOperationRecord,
   type VesselOperationTrailerRecord,
   type VesselReceptionDestination,
@@ -57,6 +59,9 @@ type VesselTrailerSnapshot = Pick<
   | "trailer_number"
   | "customer"
   | "load_status"
+  | "ownership_type"
+  | "trailer_source"
+  | "external_company"
   | "status"
   | "arrival_status"
   | "arrival_record_id"
@@ -168,7 +173,7 @@ const getCurrentVesselTrailer = async (trailerId: string) => {
   const { data, error } = await supabase
     .from("vessel_operation_trailers")
     .select(
-      "id, trailer_id, trailer_number, customer, load_status, status, arrival_status, arrival_record_id, arrival_confirmed_at, arrived_at, assigned_position, inspection_completed_at",
+      "id, trailer_id, trailer_number, customer, load_status, ownership_type, trailer_source, external_company, status, arrival_status, arrival_record_id, arrival_confirmed_at, arrived_at, assigned_position, inspection_completed_at",
     )
     .eq("id", trailerId)
     .single();
@@ -231,7 +236,7 @@ export function useVesselReception({ operation, onSuccess }: UseVesselReceptionO
       setNextAvailablePosition(currentAssignedPosition ?? nextOpenPosition);
       setFormState({
         destination: activeTrailer?.is_local === true ? "local" : "compound",
-        loadStatus: activeTrailer?.load_status === "Loaded" ? "Loaded" : trailer.load_status === "Loaded" ? "Loaded" : "Empty",
+        loadStatus: resolveVesselReceptionLoadStatus(activeTrailer?.load_status, trailer.load_status),
         customer: activeTrailer?.customer?.trim() || trailer.customer?.trim() || "",
         notes: "",
       });
@@ -318,7 +323,14 @@ export function useVesselReception({ operation, onSuccess }: UseVesselReceptionO
       const customerValue = formState.customer.trim() || currentTrailer.customer?.trim() || existingTrailer?.customer?.trim() || null;
       const notesValue = formState.notes.trim() || existingTrailer?.notes?.trim() || null;
       const receptionArrivalDate = getVesselReceptionDate(currentTrailer.arrived_at ?? currentTrailer.arrival_confirmed_at ?? nowIso);
-      const trailerSource = existingTrailer?.trailer_source === "outsourced" ? "outsourced" : "company";
+      const ownership = resolveVesselReceptionOwnership({
+        ownershipType: currentTrailer.ownership_type,
+        vesselTrailerSource: currentTrailer.trailer_source,
+        vesselExternalCompany: currentTrailer.external_company,
+        currentTrailerSource: existingTrailer?.trailer_source,
+        currentExternalCompany: existingTrailer?.external_company,
+        trailerNumber: currentTrailer.trailer_number,
+      });
       const mainTrailerPayload: Database["public"]["Tables"]["trailers"]["Insert"] = {
         trailer_number: normalizedTrailerNumber,
         arrival_date: receptionArrivalDate,
@@ -329,7 +341,8 @@ export function useVesselReception({ operation, onSuccess }: UseVesselReceptionO
         operational_status: destination === "compound" ? "In Compound" : destination === "local" ? "Local Trailer" : "Awaiting Position",
         compound_position: confirmedPosition,
         is_local: destination === "local",
-        trailer_source: trailerSource,
+        trailer_source: ownership.trailerSource,
+        external_company: ownership.externalCompany,
         source_vessel_operation_trailer_id:
           existingTrailer?.source_vessel_operation_trailer_id && existingTrailer.source_vessel_operation_trailer_id !== currentTrailer.id
             ? existingTrailer.source_vessel_operation_trailer_id

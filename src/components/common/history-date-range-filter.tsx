@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useRef } from "react";
 import {
   createHistoryDateRange,
   type HistoryDateRangePreset,
@@ -19,6 +20,36 @@ const PRESET_OPTIONS: Array<{ value: HistoryDateRangePreset; label: string }> = 
   { value: "last_30_days", label: "Last 30 Days" },
   { value: "custom", label: "Custom Date Range" },
 ];
+
+type DateFieldProps = {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+};
+
+function DateField({ label, value, onChange }: DateFieldProps) {
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const input = inputRef.current;
+    if (input && document.activeElement !== input && input.value !== value) {
+      input.value = value;
+    }
+  }, [value]);
+
+  return (
+    <label className="flex flex-col gap-2 text-sm text-slate-300">
+      <span className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">{label}</span>
+      <input
+        ref={inputRef}
+        type="date"
+        defaultValue={value}
+        onChange={(event) => onChange(event.target.value)}
+        className="h-11 rounded-2xl border border-white/10 bg-slate-950/80 px-3 text-slate-100 outline-none ring-0 focus:border-cyan-400/50"
+      />
+    </label>
+  );
+}
 
 export function HistoryDateRangeFilter({
   value,
@@ -56,37 +87,16 @@ export function HistoryDateRangeFilter({
 
       {value.preset === "custom" ? (
         <div className="grid gap-3 sm:grid-cols-2">
-          <label className="flex flex-col gap-2 text-sm text-slate-300">
-            <span className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Start Date</span>
-            <input
-              type="date"
-              value={value.startDate}
-              max={value.endDate || undefined}
-              onChange={(event) =>
-                onChange({
-                  ...value,
-                  startDate: event.target.value,
-                })
-              }
-              className="h-11 rounded-2xl border border-white/10 bg-slate-950/80 px-3 text-slate-100 outline-none ring-0 focus:border-cyan-400/50"
-            />
-          </label>
-
-          <label className="flex flex-col gap-2 text-sm text-slate-300">
-            <span className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">End Date</span>
-            <input
-              type="date"
-              value={value.endDate}
-              min={value.startDate || undefined}
-              onChange={(event) =>
-                onChange({
-                  ...value,
-                  endDate: event.target.value,
-                })
-              }
-              className="h-11 rounded-2xl border border-white/10 bg-slate-950/80 px-3 text-slate-100 outline-none ring-0 focus:border-cyan-400/50"
-            />
-          </label>
+          <DateField
+            label="Start Date"
+            value={value.startDate}
+            onChange={(startDate) => onChange({ ...value, startDate })}
+          />
+          <DateField
+            label="End Date"
+            value={value.endDate}
+            onChange={(endDate) => onChange({ ...value, endDate })}
+          />
         </div>
       ) : null}
     </div>

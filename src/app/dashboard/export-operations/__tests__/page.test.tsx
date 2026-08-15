@@ -152,4 +152,26 @@ describe("Export operations ownership filtering", () => {
     expect(screen.queryByText("PRO100")).not.toBeInTheDocument();
     expect(screen.queryByText("PRO300")).not.toBeInTheDocument();
   });
+
+  it("keeps Print / Export usable for the current filtered report", async () => {
+    searchParamsValue = "history=today&ownership=outsourcing";
+
+    render(<ExportOperationsPage />);
+
+    expect(await screen.findByText("1 allocation")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Print / Export" })).toBeEnabled();
+    expect(screen.getAllByText("PFC200").length).toBeGreaterThan(0);
+    expect(screen.queryByText("PRO100")).not.toBeInTheDocument();
+    expect(document.getElementById("print-report-root")).toHaveTextContent("PFC200");
+    expect(document.getElementById("print-report-root")).not.toHaveTextContent("PRO100");
+  });
+
+  it("allows printing an empty filtered report instead of hiding the action", async () => {
+    searchParamsValue = "history=today&ownership=outsourcing&customer=Missing";
+
+    render(<ExportOperationsPage />);
+
+    expect(await screen.findByText("0 allocations")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Print / Export" })).toBeEnabled();
+  });
 });

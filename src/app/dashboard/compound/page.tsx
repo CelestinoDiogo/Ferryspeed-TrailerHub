@@ -1675,7 +1675,7 @@ export default function CompoundPage() {
                       customer: panelTrailer.customer ?? null,
                       consignee: panelTrailer.consignee ?? null,
                       loadStatus: panelTrailer.load_status ?? null,
-                      status: panelTrailer.load_status ?? null,
+                      status: panelTrailer.operational_status ?? null,
                       compoundPosition: panelTrailer.compound_position ?? null,
                       arrivalDate: panelTrailer.arrival_date ?? null,
                     }

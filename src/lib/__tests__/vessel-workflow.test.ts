@@ -4,6 +4,8 @@ import {
   deriveVesselWorkflowStep,
   getCompletionReadiness,
   getPlanningReadiness,
+  resolveVesselReceptionLoadStatus,
+  resolveVesselReceptionOwnership,
   validateTrailerPlanning,
   type VesselOperationRecord,
   type VesselOperationTrailerRecord,
@@ -54,6 +56,34 @@ const makeTrailer = (overrides: Partial<VesselOperationTrailerRecord> = {}): Ves
 });
 
 describe("vessel workflow regression", () => {
+  it("keeps physical load state independent from operational lifecycle state", () => {
+    expect(resolveVesselReceptionLoadStatus("Empty", "Loaded")).toBe("Loaded");
+    expect(resolveVesselReceptionLoadStatus("Loaded", "Empty")).toBe("Loaded");
+    expect(resolveVesselReceptionLoadStatus("Empty", "Empty")).toBe("Empty");
+  });
+
+  it("preserves outsourced manifest ownership through reception", () => {
+    expect(resolveVesselReceptionOwnership({
+      ownershipType: "outsourcing",
+      vesselTrailerSource: "outsourced",
+      vesselExternalCompany: "Carrier Z",
+      currentTrailerSource: "company",
+      trailerNumber: "PFC200",
+    })).toEqual({
+      ownershipType: "outsourcing",
+      trailerSource: "outsourced",
+      externalCompany: "Carrier Z",
+    });
+  });
+
+  it("does not coerce unknown reception ownership to company", () => {
+    expect(resolveVesselReceptionOwnership({ trailerNumber: "UNKNOWN1" })).toEqual({
+      ownershipType: "unknown",
+      trailerSource: null,
+      externalCompany: null,
+    });
+  });
+
   it("keeps Confirm List available after planning save and allows arrival after confirmation", () => {
     const operation = makeOperation({ status: "draft", list_status: "draft" });
     const trailer = makeTrailer();

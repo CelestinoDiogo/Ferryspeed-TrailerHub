@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createOperationalAlert, operationalAlertTestUtils, type OperationalAlertRow } from "@/lib/operational-alerts";
+import { createOperationalAlert, getOperationalAlerts, operationalAlertTestUtils, resolveOperationalAlert, type OperationalAlertRow } from "@/lib/operational-alerts";
 
 const makeAlert = (overrides: Partial<OperationalAlertRow> = {}): OperationalAlertRow => ({
   id: overrides.id ?? "alert-1",
@@ -197,7 +197,86 @@ describe("operational alert compound timestamp hierarchy", () => {
   });
 });
 
+describe("operational alert status queries", () => {
+  it("keeps active, open, and acknowledged separate from resolved history", async () => {
+    const activeIn = vi.fn();
+    const makeQuery = (rows: OperationalAlertRow[]) => {
+      const chain = {
+        select: () => chain,
+        order: () => chain,
+        in: (column: string, values: readonly string[]) => {
+          activeIn(column, values);
+          return chain;
+        },
+        limit: () => chain,
+        then: (resolve: (value: { data: OperationalAlertRow[]; error: null }) => unknown) =>
+          Promise.resolve(resolve({ data: rows, error: null })),
+      };
+      return chain;
+    };
+    const active = makeAlert({ status: "open" });
+    const resolved = makeAlert({ id: "resolved", status: "resolved" });
+    const activeClient = { from: vi.fn().mockReturnValue(makeQuery([active])) } as never;
+    const resolvedClient = { from: vi.fn().mockReturnValue(makeQuery([resolved])) } as never;
+
+    const activeResult = await getOperationalAlerts({ includeResolved: false }, activeClient);
+    const resolvedResult = await getOperationalAlerts({ includeResolved: true, status: ["resolved"] }, resolvedClient);
+
+    expect(activeResult).toEqual({ ok: true, data: [expect.objectContaining({ status: "active" })] });
+    expect(resolvedResult).toEqual({ ok: true, data: [expect.objectContaining({ status: "resolved" })] });
+    expect(activeIn).toHaveBeenCalledWith("status", ["active", "open", "acknowledged"]);
+    expect(activeIn).toHaveBeenCalledWith("status", ["resolved"]);
+  });
+});
+
 describe("createOperationalAlert existing lookup", () => {
+  it("does not resurrect an identical condition while its latest alert remains resolved", async () => {
+    const resolved = makeAlert({ status: "resolved", resolved_at: "2026-08-01T11:00:00.000Z" });
+    const { client, mocks } = makeClient({
+      selectResults: [],
+      insertResult: { data: null, error: { message: "insert should not be called" } },
+    });
+
+    const result = await createOperationalAlert({
+      existingAlert: resolved,
+      severity: "warning",
+      title: resolved.title,
+      sourceModule: resolved.source_module,
+      sourceRecordId: resolved.source_record_id,
+      trailerId: resolved.trailer_id,
+    }, client);
+
+    expect(result).toEqual({ ok: true, data: resolved });
+    expect(mocks.insert).not.toHaveBeenCalled();
+    expect(mocks.update).not.toHaveBeenCalled();
+  });
+
+  it("allows a genuinely recurring condition after detection recorded that it cleared", async () => {
+    const resolved = makeAlert({
+      status: "resolved",
+      resolved_at: "2026-08-01T11:00:00.000Z",
+      metadata: { condition_cleared_at: "2026-08-02T11:00:00.000Z" },
+    });
+    const inserted = makeAlert({ id: "recurrence" });
+    const { client, mocks } = makeClient({
+      selectResults: [],
+      insertResult: { data: inserted, error: null },
+    });
+
+    const result = await createOperationalAlert({
+      existingAlert: resolved,
+      severity: "warning",
+      title: resolved.title,
+      sourceModule: resolved.source_module,
+      sourceRecordId: resolved.source_record_id,
+      trailerId: resolved.trailer_id,
+      performedBy: "tester",
+    }, client);
+
+    expect(result.ok).toBe(true);
+    expect(mocks.insert).toHaveBeenCalledTimes(1);
+  });
+
   it("falls back to a database lookup when existingAlert is null and updates the matching active alert", async () => {
     const existing = makeAlert();
     const updated = makeAlert({ updated_at: "2026-08-01T11:00:00.000Z", severity: "high" });
@@ -227,6 +306,31 @@ describe("createOperationalAlert existing lookup", () => {
     expect(mocks.select).toHaveBeenCalledTimes(1);
     expect(mocks.update).toHaveBeenCalledTimes(1);
     expect(mocks.insert).not.toHaveBeenCalled();
+  });
+});
+
+describe("resolveOperationalAlert legacy compatibility", () => {
+  it("persists resolved when the RPC returns a legacy open row unchanged", async () => {
+    const openRow = makeAlert({ status: "open" });
+    const resolvedRow = makeAlert({ status: "resolved", resolved_at: "2026-08-01T12:00:00.000Z" });
+    const updateSingle = vi.fn().mockResolvedValue({ data: resolvedRow, error: null });
+    const updateSelect = vi.fn().mockReturnValue({ single: updateSingle });
+    const updateEq = vi.fn().mockReturnValue({ select: updateSelect });
+    const update = vi.fn().mockReturnValue({ eq: updateEq });
+    const client = {
+      rpc: vi.fn().mockResolvedValue({ data: openRow, error: null }),
+      from: vi.fn().mockReturnValue({ update }),
+      auth: { getUser: vi.fn() },
+    } as never;
+
+    const result = await resolveOperationalAlert({
+      operationalAlertId: openRow.id,
+      performedBy: "tester",
+      reason: "Resolved from dashboard",
+    }, client);
+
+    expect(result).toEqual({ ok: true, data: resolvedRow });
+    expect(update).toHaveBeenCalledWith(expect.objectContaining({ status: "resolved" }));
   });
 });
 

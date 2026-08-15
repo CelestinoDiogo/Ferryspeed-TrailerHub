@@ -188,7 +188,7 @@ type TrailerMovementActivityRow = {
   created_at: string | null;
 };
 
-const ACTIVE_ALERT_QUERY_STATUSES = ["active", "open"] as const;
+const ACTIVE_ALERT_QUERY_STATUSES = ["active", "open", "acknowledged"] as const;
 const OPERATIONAL_ALERTS_ACTIVE_DEDUPE_INDEX = "operational_alerts_active_dedupe_idx";
 const OPERATIONAL_ALERTS_STATUS_CONSTRAINT_NAMES = new Set([
   "operational_alerts_status_valid",
@@ -373,6 +373,27 @@ const parseJsonMetadata = (metadata: unknown): Json => {
 };
 
 const getNowIso = () => new Date().toISOString();
+
+const getMetadataRecord = (metadata: Json | null): Record<string, Json | undefined> => {
+  if (!metadata || Array.isArray(metadata) || typeof metadata !== "object") {
+    return {};
+  }
+
+  return metadata as Record<string, Json | undefined>;
+};
+
+const isResolvedConditionCleared = (alert: OperationalAlertRow) =>
+  Boolean(getMetadataRecord(alert.metadata).condition_cleared_at);
+
+const markResolvedConditionCleared = async (
+  client: SupabaseClient<Database>,
+  alert: OperationalAlertRow,
+) => updateAlertRow(client, alert.id, {
+  metadata: {
+    ...getMetadataRecord(alert.metadata),
+    condition_cleared_at: getNowIso(),
+  },
+});
 
 const parseIsoMillis = (timestamp?: string | null) => {
   if (!timestamp) {
@@ -1136,16 +1157,28 @@ export async function resolveOperationalAlert(
       p_resolution_note: normalizeText(input.reason) || null,
     } as never);
 
-    if (error) {
-      return { ok: false, error: error.message || "Unable to resolve operational alert." };
-    }
-
     const row = (Array.isArray(data) ? data[0] : data) as OperationalAlertRow | null;
-    if (!row) {
-      return { ok: false, error: "No alert row was returned after resolve." };
+    if (!error && row) {
+      const normalizedRow = normalizeAlertRow(row);
+      if (normalizedRow.status === "resolved") {
+        return { ok: true, data: normalizedRow };
+      }
     }
 
-    return { ok: true, data: normalizeAlertRow(row) };
+    try {
+      const resolvedAt = getNowIso();
+      const resolvedRow = await updateAlertRow(client, input.operationalAlertId, {
+        status: "resolved",
+        resolved_at: resolvedAt,
+        resolved_by: performedBy,
+        resolution_note: normalizeText(input.reason) || null,
+        updated_at: resolvedAt,
+      });
+      return { ok: true, data: resolvedRow };
+    } catch (fallbackError) {
+      const fallbackMessage = fallbackError instanceof Error ? fallbackError.message : "Unable to resolve operational alert.";
+      return { ok: false, error: error?.message || fallbackMessage };
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unable to resolve operational alert.";
     return { ok: false, error: message };
@@ -1216,6 +1249,10 @@ export async function createOperationalAlert(
     const existing = input.existingAlert ?? await findLatestAlert(client, alertKey, sourceRecordId, trailerId);
 
     if (existing?.status === "dismissed") {
+      return { ok: true, data: existing };
+    }
+
+    if (existing?.status === "resolved" && !isResolvedConditionCleared(existing)) {
       return { ok: true, data: existing };
     }
 
@@ -1679,6 +1716,10 @@ export async function runOperationalAlertDetection(
     const activeAlerts = activeAlertsResult.data;
     const activeMap = activeKeyMap(activeAlerts);
     const targetKeys = new Set(targetCandidates.map(getCandidateKey));
+    const resolvedAlertsResult = await getOperationalAlerts({ includeResolved: true, status: ["resolved"], limit: 1000 }, client);
+    if (!resolvedAlertsResult.ok) {
+      return { ok: false, error: resolvedAlertsResult.error };
+    }
     const summaryResult = await getOperationalAlertSummary(client);
 
     const errors: string[] = [];
@@ -1694,11 +1735,30 @@ export async function runOperationalAlertDetection(
       }
 
       try {
-        await resolveOperationalAlert({ operationalAlertId: activeAlert.id, reason: "Condition no longer true." }, client);
+        const result = await resolveOperationalAlert({ operationalAlertId: activeAlert.id, reason: "Condition no longer true." }, client);
+        if (!result.ok) {
+          throw new Error(result.error);
+        }
+        await markResolvedConditionCleared(client, result.data);
         resolvedCount += 1;
       } catch (error) {
         const message = error instanceof Error ? error.message : `Unable to resolve alert ${activeAlert.id}.`;
         console.error("Operational alert resolution failed:", message, error);
+        errors.push(message);
+      }
+    }
+
+    for (const resolvedAlert of resolvedAlertsResult.data) {
+      const key = getAlertKey(resolvedAlert);
+      if (targetKeys.has(key) || isResolvedConditionCleared(resolvedAlert)) {
+        continue;
+      }
+
+      try {
+        await markResolvedConditionCleared(client, resolvedAlert);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : `Unable to mark resolved alert ${resolvedAlert.id} as cleared.`;
+        console.error("Operational alert clear-state update failed:", message, error);
         errors.push(message);
       }
     }
@@ -1725,7 +1785,7 @@ export async function runOperationalAlertDetection(
 
         if (activeRow) {
           updatedCount += 1;
-        } else if (result.data.status === "dismissed") {
+        } else if (result.data.status === "dismissed" || result.data.status === "resolved") {
           suppressedCount += 1;
         } else {
           createdCount += 1;

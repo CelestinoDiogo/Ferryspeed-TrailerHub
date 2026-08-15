@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createHistoryDateRange } from "@/lib/history-date-range";
-import { filterCompoundActivity, ownershipForCompoundTrailer, type CompoundActivityRecord } from "@/lib/reports/compound-historical";
+import { filterCompoundActivity, ownershipForCompoundTrailer, toCompoundSnapshotRecord, type CompoundActivityRecord } from "@/lib/reports/compound-historical";
 
 const rows: CompoundActivityRecord[] = [
   { id: "a", occurredAt: "2026-08-14T10:00:00Z", trailerNumber: "PRO100", eventType: "compound_position_changed", ownershipType: "company", previousPosition: "P01", newPosition: "P02", previousStatus: null, newStatus: null, sourceModule: "compound", performedBy: "Operator", description: "Position updated" },
@@ -8,6 +8,25 @@ const rows: CompoundActivityRecord[] = [
 ];
 
 describe("compound historical reporting", () => {
+  it("maps physical load state independently from operational status", () => {
+    expect(toCompoundSnapshotRecord({
+      id: "loaded",
+      trailer_number: "TEST-LOADED",
+      compound_position: "P27",
+      load_status: "Loaded",
+      operational_status: "Ready",
+      customer: null,
+    })).toMatchObject({ loadStatus: "Loaded", currentStatus: "Ready" });
+    expect(toCompoundSnapshotRecord({
+      id: "empty",
+      trailer_number: "TEST-EMPTY",
+      compound_position: "P28",
+      load_status: "Empty",
+      operational_status: "Scheduled",
+      customer: null,
+    })).toMatchObject({ loadStatus: "Empty", currentStatus: "Scheduled" });
+  });
+
   it("filters activity by period, ownership, event type, and trailer search chronologically", () => {
     const filtered = filterCompoundActivity(rows, { preset: "custom", startDate: "2026-08-13", endDate: "2026-08-14" }, "company", "PRO100", "compound_position_changed");
     expect(filtered.map((row) => row.id)).toEqual(["a"]);

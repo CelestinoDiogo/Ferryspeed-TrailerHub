@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createHistoryDateRange } from "@/lib/history-date-range";
-import { collectionRecord, filterHistoricalOperations, type HistoricalOperationRecord } from "@/lib/reports/historical-operations";
+import { collectionRecord, filterHistoricalOperations, ownershipForArrival, type HistoricalOperationRecord } from "@/lib/reports/historical-operations";
 
 const records: HistoricalOperationRecord[] = [
   { id: "a", trailerNumber: "PRO100", occurredAt: "2026-08-14T08:00:00Z", ownershipType: "company", customer: "Customer A", sourceOrDestination: "Vessel One", reference: "REF-A", loadStatus: "Loaded", notes: null },
@@ -8,6 +8,19 @@ const records: HistoricalOperationRecord[] = [
 ];
 
 describe("historical operations filters", () => {
+  it("keeps historical arrival ownership independent from the current trailer relation", () => {
+    expect(ownershipForArrival({ ownership_type: "company", trailer_source: "company" }, null)).toBe("company");
+    expect(ownershipForArrival({ ownership_type: "outsourcing", trailer_source: "outsourced", external_company: "Carrier Z" }, null)).toBe("outsourcing");
+    expect(ownershipForArrival(
+      { ownership_type: "outsourcing", trailer_source: "outsourced", external_company: "Carrier Z" },
+      { trailer_source: "company", trailer_number: "PFC200" },
+    )).toBe("outsourcing");
+    expect(ownershipForArrival(
+      { trailer_source: "local", is_local: true, trailer_number: "LOCAL1" },
+      null,
+    )).toBe("company");
+  });
+
   it("filters today, historical range, ownership, and trailer/reference search inclusively", () => {
     expect(filterHistoricalOperations(records, { range: createHistoryDateRange("today", "2026-08-14"), ownership: "all", search: "" })).toHaveLength(1);
     expect(filterHistoricalOperations(records, { range: { preset: "custom", startDate: "2026-08-13", endDate: "2026-08-14" }, ownership: "outsourcing", search: "PFC200" })).toHaveLength(1);

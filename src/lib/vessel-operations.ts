@@ -1,4 +1,4 @@
-import type { TrailerOwnershipType } from "@/lib/trailer-ownership";
+import { getTrailerOwnershipType, type TrailerOwnershipType } from "@/lib/trailer-ownership";
 
 export type VesselOperationStatus =
   | "draft"
@@ -215,6 +215,48 @@ export type VesselOperationSummary = {
 
 export type VesselReceptionDestination = "compound" | "local" | "hold";
 export type VesselReceptionLoadStatus = "Empty" | "Loaded";
+
+export const resolveVesselReceptionLoadStatus = (
+  currentLoadStatus?: string | null,
+  vesselLoadStatus?: string | null,
+): VesselReceptionLoadStatus =>
+  currentLoadStatus?.trim().toLowerCase() === "loaded" || vesselLoadStatus?.trim().toLowerCase() === "loaded"
+    ? "Loaded"
+    : "Empty";
+
+export const resolveVesselReceptionOwnership = (input: {
+  ownershipType?: string | null;
+  vesselTrailerSource?: string | null;
+  vesselExternalCompany?: string | null;
+  currentTrailerSource?: string | null;
+  currentExternalCompany?: string | null;
+  trailerNumber?: string | null;
+}) => {
+  const historicalOwnership = getTrailerOwnershipType({
+    ownershipType: input.ownershipType,
+    trailerSource: input.vesselTrailerSource,
+    externalCompany: input.vesselExternalCompany,
+    trailerNumber: input.trailerNumber,
+  });
+  const currentOwnership = getTrailerOwnershipType({
+    trailerSource: input.currentTrailerSource,
+    externalCompany: input.currentExternalCompany,
+    trailerNumber: input.trailerNumber,
+  });
+  const ownershipType = historicalOwnership === "unknown" ? currentOwnership : historicalOwnership;
+
+  return {
+    ownershipType,
+    trailerSource: ownershipType === "outsourcing"
+      ? "outsourced"
+      : ownershipType === "company"
+        ? "company"
+        : input.currentTrailerSource?.trim() || input.vesselTrailerSource?.trim() || null,
+    externalCompany: ownershipType === "outsourcing"
+      ? input.vesselExternalCompany?.trim() || input.currentExternalCompany?.trim() || null
+      : null,
+  };
+};
 
 export type VesselArrivalWorkflowState = "expected" | "arrived" | "inspection_pending" | "inspected" | "received" | "cancelled";
 
