@@ -110,6 +110,7 @@ export function ConfirmReceptionModal({
                 className="mt-1 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm outline-none"
                 disabled={isSubmitting}
               >
+                <option value="" disabled>Choose Loaded or Empty</option>
                 <option value="Empty">Empty</option>
                 <option value="Loaded">Loaded</option>
               </select>

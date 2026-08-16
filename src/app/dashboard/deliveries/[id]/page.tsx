@@ -240,6 +240,12 @@ export default function DeliveryDetailsPage() {
 
   const handleSave = async () => {
     if (!booking || !values) return;
+
+    if (values.status === "collected" && booking.status !== "collected") {
+      setError("Use Collected Loaded or Collected Empty to complete customer collection.");
+      return;
+    }
+
     setIsSaving(true);
     setError(null);
 
@@ -459,32 +465,23 @@ export default function DeliveryDetailsPage() {
 
   // ─── handleMarkCollected ──────────────────────────────────────────────────
 
-  const handleMarkCollected = async () => {
+  const handleMarkCollected = async (resultingLoadStatus: "Empty" | "Loaded") => {
     if (!booking) return;
     setIsMarkingCollected(true);
     setError(null);
 
     try {
-      const now = new Date().toISOString();
-      const { error: updErr } = await supabase
-        .from("delivery_bookings")
-        .update({ status: "collected", collected_at: booking.collected_at ?? now, updated_at: now })
-        .eq("id", booking.id);
-
-      if (updErr) throw updErr;
-
-      await supabase.from("trailer_events").insert({
-        trailer_id:        booking.trailer_id,
-        trailer_number:    booking.trailer_number,
-        event_type:        "trailer_collected",
-        event_description: "Trailer has been collected.",
-        old_value:         { status: booking.status },
-        new_value:         { status: "collected", collected_at: booking.collected_at ?? now },
+      const { data, error: collectionError } = await supabase.rpc("complete_delivery_customer_collection", {
+        p_booking_id: booking.id,
+        p_expected_current_status: "waiting_collection",
+        p_resulting_load_status: resultingLoadStatus,
       });
 
-      setBooking((prev) => prev ? { ...prev, status: "collected", collected_at: prev.collected_at ?? now } : null);
+      if (collectionError || !data) throw collectionError ?? new Error("Unable to complete customer collection.");
+
+      setBooking((prev) => prev ? { ...prev, status: "collected", collected_at: data.collected_at } : null);
       setValues((prev) => prev ? { ...prev, status: "collected" } : null);
-      setNotice("Trailer marked as collected.");
+      setNotice(`Trailer collected ${resultingLoadStatus.toLowerCase()}.`);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Unable to mark collected.");
     } finally {
@@ -749,13 +746,22 @@ export default function DeliveryDetailsPage() {
               ) : null}
 
               {booking.status === "waiting_collection" ? (
-                <button
-                  onClick={() => void handleMarkCollected()}
-                  disabled={isMarkingCollected}
-                  className="flex-1 rounded-2xl bg-emerald-600 px-5 py-3 font-semibold text-white hover:bg-emerald-500 disabled:opacity-50"
-                >
-                  {isMarkingCollected ? "Marking..." : "\u2713 Mark Collected"}
-                </button>
+                <div className="flex flex-1 gap-2">
+                  <button
+                    onClick={() => void handleMarkCollected("Empty")}
+                    disabled={isMarkingCollected}
+                    className="flex-1 rounded-2xl border border-white/20 bg-slate-800 px-4 py-3 font-semibold text-white hover:bg-slate-700 disabled:opacity-50"
+                  >
+                    {isMarkingCollected ? "Marking..." : "Collected Empty"}
+                  </button>
+                  <button
+                    onClick={() => void handleMarkCollected("Loaded")}
+                    disabled={isMarkingCollected}
+                    className="flex-1 rounded-2xl bg-emerald-600 px-4 py-3 font-semibold text-white hover:bg-emerald-500 disabled:opacity-50"
+                  >
+                    {isMarkingCollected ? "Marking..." : "Collected Loaded"}
+                  </button>
+                </div>
               ) : null}
 
               <button

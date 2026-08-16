@@ -306,7 +306,7 @@ export function DriverMobileDashboard() {
   );
 
   const handleAction = useCallback(
-    async (task: DriverMobileTask) => {
+    async (task: DriverMobileTask, resultingLoadStatus?: "Empty" | "Loaded") => {
       if (!task.nextAction || rowActionBookingId) {
         return;
       }
@@ -314,6 +314,12 @@ export function DriverMobileDashboard() {
       const temperatureInput = temperatureByBookingId[task.bookingId] ?? "";
       const parsedTemperature = parseTemperature(temperatureInput);
       const requiresCollectionTemperature = task.temperature.required && task.nextAction === "COLLECTED";
+      const requiresPhysicalOutcome = task.taskKind === "collection" && task.nextAction === "COLLECTED";
+
+      if (requiresPhysicalOutcome && !resultingLoadStatus) {
+        setError("Choose Collected Loaded or Collected Empty.");
+        return;
+      }
 
       if (requiresCollectionTemperature && temperatureInput.trim().length === 0) {
         setError("Temperature reading is required before marking this task as collected.");
@@ -342,6 +348,7 @@ export function DriverMobileDashboard() {
             bookingId: task.bookingId,
             action: task.nextAction,
             temperatureC: Number.isFinite(parsedTemperature) ? parsedTemperature : undefined,
+            resultingLoadStatus,
           }),
         });
 
@@ -787,8 +794,17 @@ export function DriverMobileDashboard() {
 
                             {task.notes ? <p className="mt-2 text-sm text-slate-600">{task.notes}</p> : null}
 
-                            <div className="mt-3 flex justify-end">
-                              {task.nextAction ? (
+                            <div className="mt-3 flex justify-end gap-2">
+                              {task.taskKind === "collection" && task.nextAction === "COLLECTED" ? (
+                                <>
+                                  <button type="button" disabled={isPending || Boolean(rowActionBookingId)} onClick={() => void handleAction(task, "Empty")} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-900 disabled:opacity-50">
+                                    Collected Empty
+                                  </button>
+                                  <button type="button" disabled={isPending || Boolean(rowActionBookingId)} onClick={() => void handleAction(task, "Loaded")} className="rounded-xl bg-slate-900 px-3 py-2 text-sm font-semibold text-white disabled:bg-slate-400">
+                                    Collected Loaded
+                                  </button>
+                                </>
+                              ) : task.nextAction ? (
                                 <button
                                   type="button"
                                   disabled={isPending || Boolean(rowActionBookingId)}

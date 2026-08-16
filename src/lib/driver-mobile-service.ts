@@ -16,6 +16,7 @@ type TrailerRow = Pick<
 >;
 
 export type DriverTaskAction = "ACKNOWLEDGED" | "COLLECTED" | "DELIVERED";
+export type CollectionPhysicalOutcome = "Empty" | "Loaded";
 export type DriverTaskGroup = "current" | "upcoming" | "completed";
 export type DriverTaskKind = "delivery" | "collection";
 
@@ -297,6 +298,7 @@ export async function applyDriverTaskAction(input: {
   bookingId: string;
   action: DriverTaskAction;
   temperatureC?: number | null;
+  resultingLoadStatus?: CollectionPhysicalOutcome | null;
 }) {
   const driver = await loadActiveDriverForUser(input.supabase, input.user.id);
   if (!driver) {
@@ -399,6 +401,30 @@ export async function applyDriverTaskAction(input: {
 
   const nowIso = new Date().toISOString();
   const transition = buildTransition(row, input.action, nowIso);
+
+  if (normalizeStatus(row.status) === "waiting_collection") {
+    if (!input.resultingLoadStatus) {
+      throw new Error("Choose Collected Loaded or Collected Empty before completing customer collection.");
+    }
+
+    const { data: collectedBooking, error: collectionError } = await input.supabase.rpc(
+      "complete_delivery_customer_collection",
+      {
+        p_booking_id: row.id,
+        p_expected_current_status: "waiting_collection",
+        p_resulting_load_status: input.resultingLoadStatus,
+        p_collected_temperature_c: input.temperatureC ?? null,
+        p_performed_by: resolveOperatorName(input.user),
+      },
+    );
+
+    if (collectionError || !collectedBooking) {
+      throw new Error(collectionError?.message || "Unable to complete customer collection.");
+    }
+
+    return collectedBooking as DeliveryBookingRow;
+  }
+
   const patch: Database["public"]["Tables"]["delivery_bookings"]["Update"] = {
     ...transition.patch,
   };

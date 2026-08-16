@@ -507,6 +507,7 @@ export function DriverMobileJobsDashboard() {
         bookingId: queuedAction.bookingId,
         action: queuedAction.action,
         temperatureC: typeof queuedAction.temperatureC === "number" ? queuedAction.temperatureC : undefined,
+        resultingLoadStatus: queuedAction.resultingLoadStatus ?? undefined,
       }),
     });
 
@@ -750,7 +751,7 @@ export function DriverMobileJobsDashboard() {
     setIsSigningOut(false);
   }, [isSigningOut, router]);
 
-  const handleAction = useCallback(async (task: DriverMobileTask) => {
+  const handleAction = useCallback(async (task: DriverMobileTask, resultingLoadStatus?: "Empty" | "Loaded") => {
     if (!task.nextAction || actionLocksRef.current.has(task.bookingId) || findDriverMobileQueuedAction(queuedActionsRef.current, task.bookingId)) {
       return;
     }
@@ -758,6 +759,12 @@ export function DriverMobileJobsDashboard() {
     const temperatureInput = temperatureByBookingId[task.bookingId] ?? "";
     const parsedTemperature = parseTemperature(temperatureInput);
     const requiresTemperature = task.nextAction === "COLLECTED" && task.temperature.required;
+    const requiresPhysicalOutcome = task.taskKind === "collection" && task.nextAction === "COLLECTED";
+
+    if (requiresPhysicalOutcome && !resultingLoadStatus) {
+      setError("Choose Collected Loaded or Collected Empty.");
+      return;
+    }
 
     if (requiresTemperature && temperatureInput.trim().length === 0) {
       setError(t("temperatureReadingRequired"));
@@ -778,6 +785,7 @@ export function DriverMobileJobsDashboard() {
       action: task.nextAction,
       linkedInstructionIds,
       temperatureC: requiresTemperature && Number.isFinite(parsedTemperature) ? parsedTemperature : null,
+      resultingLoadStatus: resultingLoadStatus ?? null,
     });
 
     actionLocksRef.current.add(task.bookingId);
@@ -1330,7 +1338,7 @@ export function DriverMobileJobsDashboard() {
                   </div>
                 ) : null}
 
-                <div className="mt-3 flex justify-end">
+                <div className="mt-3 flex justify-end gap-2">
                   {queuedAction?.state === "failed" ? (
                     <button
                       type="button"
@@ -1341,6 +1349,15 @@ export function DriverMobileJobsDashboard() {
                     >
                       {t("retry")}
                     </button>
+                  ) : task.taskKind === "collection" && task.nextAction === "COLLECTED" ? (
+                    <>
+                      <button type="button" disabled={Boolean(queuedAction)} onClick={() => void handleAction(task, "Empty")} className="w-full rounded-xl border border-slate-300 bg-white px-3 py-3 text-sm font-semibold text-slate-900 disabled:opacity-50">
+                        Collected Empty
+                      </button>
+                      <button type="button" disabled={Boolean(queuedAction)} onClick={() => void handleAction(task, "Loaded")} className="w-full rounded-xl bg-slate-900 px-3 py-3 text-sm font-semibold text-white disabled:bg-slate-400">
+                        Collected Loaded
+                      </button>
+                    </>
                   ) : task.nextAction ? (
                     <button
                       type="button"

@@ -759,8 +759,40 @@ export type Database = {
           p_arrival_notes?: string | null;
           p_condition_on_arrival?: string | null;
           p_confirmed_by?: string | null;
+          p_explicit_load_status?: string | null;
+          p_customer?: string | null;
+          p_destination?: string | null;
+          p_trailer_source?: string | null;
+          p_external_company?: string | null;
+          p_is_local?: boolean | null;
         };
         Returns: string;
+      };
+      advance_export_allocation_load_lifecycle: {
+        Args: {
+          p_allocation_id: string;
+          p_expected_current_status: string;
+          p_target_status: string;
+          p_performed_by?: string | null;
+        };
+        Returns: {
+          transitioned: boolean;
+          trailer_id: string | null;
+          previous_compound_position: string | null;
+          previous_load_status: string | null;
+          new_load_status: string | null;
+          occurred_at: string;
+        }[];
+      };
+      complete_delivery_customer_collection: {
+        Args: {
+          p_booking_id: string;
+          p_expected_current_status: string;
+          p_resulting_load_status: "Empty" | "Loaded";
+          p_collected_temperature_c?: number | null;
+          p_performed_by?: string | null;
+        };
+        Returns: Database["public"]["Tables"]["delivery_bookings"]["Row"];
       };
       start_compound_stock_check: {
         Args: { p_started_by: string };

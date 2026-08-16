@@ -210,8 +210,22 @@ const createMockSupabase = (input: CreateMockInput) => {
   };
 
   const trailerEventsInsert = vi.fn(async () => ({ error: null }));
+  const rpc = vi.fn(async (functionName: string, args: Record<string, unknown>) => {
+    if (functionName !== "complete_delivery_customer_collection") {
+      throw new Error(`Unexpected RPC: ${functionName}`);
+    }
+
+    const booking = bookings.find((row) => row.id === args.p_booking_id);
+    if (!booking) {
+      return { data: null, error: { message: "not found" } };
+    }
+
+    const updated = { ...booking, status: "collected", collected_at: "2026-08-12T09:00:00.000Z" };
+    return { data: updated, error: null };
+  });
 
   const supabase = {
+    rpc,
     from: vi.fn((table: string) => {
       if (table === "drivers") {
         return createDriverChain();
@@ -245,7 +259,7 @@ const createMockSupabase = (input: CreateMockInput) => {
     }),
   } as unknown as SupabaseClient<Database>;
 
-  return { supabase, driverQueryState, bookingQueryState, updateState, trailerEventsInsert };
+  return { supabase, driverQueryState, bookingQueryState, updateState, trailerEventsInsert, rpc };
 };
 
 const makeUser = (id: string): User =>
@@ -654,7 +668,7 @@ describe("driver mobile service", () => {
       collected_temperature_c: null,
     };
 
-    const { supabase, updateState, trailerEventsInsert } = createMockSupabase({
+    const { supabase, updateState, trailerEventsInsert, rpc } = createMockSupabase({
       driver,
       bookings: [booking],
       trailers: [{ id: "trailer-a", trailer_number: "FS1001" }],
@@ -663,18 +677,28 @@ describe("driver mobile service", () => {
     const createTrailerActivityMock = vi.mocked(createTrailerActivity);
     createTrailerActivityMock.mockClear();
 
+    await expect(applyDriverTaskAction({
+      supabase,
+      user: makeUser("user-a"),
+      bookingId: "booking-a",
+      action: "COLLECTED",
+    })).rejects.toThrow("Choose Collected Loaded or Collected Empty");
+
     const updated = await applyDriverTaskAction({
       supabase,
       user: makeUser("user-a"),
       bookingId: "booking-a",
       action: "COLLECTED",
+      resultingLoadStatus: "Loaded",
     });
 
-    expect(updateState.patch?.status).toBe("collected");
-    expect(updateState.patch?.collected_at).toBeTruthy();
+    expect(updateState.patch).toBeNull();
     expect(updated.status).toBe("collected");
-    expect(trailerEventsInsert).toHaveBeenCalledTimes(1);
-    expect(createTrailerActivityMock).toHaveBeenCalledTimes(1);
+    expect(rpc).toHaveBeenCalledWith("complete_delivery_customer_collection", expect.objectContaining({
+      p_resulting_load_status: "Loaded",
+    }));
+    expect(trailerEventsInsert).not.toHaveBeenCalled();
+    expect(createTrailerActivityMock).not.toHaveBeenCalled();
   });
 
   it("blocks collected action when booking requires temperature and reading is missing", async () => {

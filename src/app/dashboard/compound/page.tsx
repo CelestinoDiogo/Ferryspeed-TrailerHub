@@ -86,7 +86,7 @@ type PositionState = {
 };
 
 type FilterType = "all" | "ready" | "needs_preparation" | "action_required" | "empty" | "waiting_collection" | "today";
-type OperationalFilter = "all" | "empty" | "loaded" | "maintenance" | "available";
+type OperationalFilter = "all" | "empty" | "loaded";
 type PriorityFilter = "all" | "priority";
 type ExportFilter = "all" | "active" | "overdue" | "allocated" | "waiting_loading" | "delivered_empty" | "collected_loaded";
 type OwnershipFilter = "all" | "company" | "outsourcing";
@@ -232,8 +232,6 @@ const parseOperationalFilterValue = (value?: string | null): OperationalFilter =
   switch (normalized) {
     case "empty":
     case "loaded":
-    case "maintenance":
-    case "available":
       return normalized;
     default:
       return "all";
@@ -817,8 +815,6 @@ export default function CompoundPage() {
       { value: "all", label: "All statuses" },
       { value: "empty", label: "Empty" },
       { value: "loaded", label: "Loaded" },
-      { value: "maintenance", label: "Maintenance" },
-      { value: "available", label: "Available" },
     ] as Array<{ value: OperationalFilter; label: string }>,
     [],
   );
@@ -915,14 +911,8 @@ export default function CompoundPage() {
       // Operational status filter
       if (operationalFilter !== "all") {
         const loadStatus = normalizeLoadStatus(state.trailer?.load_status);
-        if (operationalFilter === "available") {
-          if (state.trailer && !loadStatus.includes("available")) {
-            return false;
-          }
-        } else {
-          if (!state.trailer || !loadStatus.includes(operationalFilter)) {
-            return false;
-          }
+        if (!state.trailer || loadStatus !== operationalFilter) {
+          return false;
         }
       }
 

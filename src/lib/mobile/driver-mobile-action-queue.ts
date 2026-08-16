@@ -1,4 +1,4 @@
-import type { DriverMobileTask, DriverTaskAction } from "@/lib/driver-mobile-service";
+import type { CollectionPhysicalOutcome, DriverMobileTask, DriverTaskAction } from "@/lib/driver-mobile-service";
 import { classifyActionFailure, getMaxRetryCount, getRetryBackoffMs } from "@/lib/mobile/mobile-action-queue";
 
 export type DriverMobileQueuedActionState = "pending" | "syncing" | "failed" | "conflict";
@@ -9,6 +9,7 @@ export type DriverMobileQueuedAction = {
   action: DriverTaskAction;
   linkedInstructionIds: string[];
   temperatureC: number | null;
+  resultingLoadStatus: CollectionPhysicalOutcome | null;
   createdAt: string;
   retryCount: number;
   state: DriverMobileQueuedActionState;
@@ -97,6 +98,7 @@ export const coerceDriverMobileQueuedAction = (value: unknown): DriverMobileQueu
     action,
     linkedInstructionIds,
     temperatureC,
+    resultingLoadStatus: row.resultingLoadStatus === "Empty" || row.resultingLoadStatus === "Loaded" ? row.resultingLoadStatus : null,
     createdAt: toIsoString(row.createdAt, nowIso),
     retryCount: toRetryCount(row.retryCount),
     state: toState(row.state),
@@ -111,6 +113,7 @@ export const createDriverMobileQueuedAction = (input: {
   action: DriverTaskAction;
   linkedInstructionIds?: string[];
   temperatureC?: number | null;
+  resultingLoadStatus?: CollectionPhysicalOutcome | null;
 }): DriverMobileQueuedAction => {
   const nowIso = new Date().toISOString();
 
@@ -120,6 +123,7 @@ export const createDriverMobileQueuedAction = (input: {
     action: input.action,
     linkedInstructionIds: (input.linkedInstructionIds ?? []).filter((item) => item.trim().length > 0),
     temperatureC: typeof input.temperatureC === "number" && Number.isFinite(input.temperatureC) ? input.temperatureC : null,
+    resultingLoadStatus: input.resultingLoadStatus ?? null,
     createdAt: nowIso,
     retryCount: 0,
     state: "syncing",

@@ -451,7 +451,11 @@ export default function CompoundStockCheckPage() {
   }, [loadStockCheckItems]);
 
   useEffect(() => {
-    void loadStockCheckData(false);
+    const timeoutId = window.setTimeout(() => {
+      void loadStockCheckData(false);
+    }, 0);
+
+    return () => window.clearTimeout(timeoutId);
   }, [loadStockCheckData]);
 
   useEffect(() => {
@@ -863,50 +867,6 @@ export default function CompoundStockCheckPage() {
 
       const beforeLabel = getLoadStatusLabel(rpcRow.previous_load_status);
       const afterLabel = getLoadStatusLabel(rpcRow.new_load_status);
-
-      await logTrailerEvent({
-        trailerId: rpcRow.trailer_id,
-        trailerNumber: rpcRow.trailer_number,
-        eventType: "stock_check_change_load_status",
-        description: "Load status changed from stock check reconciliation.",
-        previousValue: {
-          stock_check_id: openStockCheck.id,
-          stock_check_item_id: rpcRow.stock_check_item_id,
-          load_status: rpcRow.previous_load_status,
-        },
-        newValue: {
-          stock_check_id: openStockCheck.id,
-          stock_check_item_id: rpcRow.stock_check_item_id,
-          load_status: rpcRow.new_load_status,
-          discrepancy_type: rpcRow.discrepancy_type,
-          resolution_status: rpcRow.resolution_status,
-        },
-        sourceModule: "stock_check",
-        performedBy: operatorName,
-      });
-
-      try {
-        await createTrailerActivity({
-          trailerId: rpcRow.trailer_id,
-          trailerNumber: rpcRow.trailer_number,
-          eventType: "load_status_changed",
-          eventTitle: "Load status changed",
-          eventDescription: "Load status changed from stock check reconciliation.",
-          sourceModule: "stock_check",
-          sourceRecordId: rpcRow.stock_check_item_id,
-          previousStatus: rpcRow.previous_load_status,
-          newStatus: rpcRow.new_load_status,
-          metadata: {
-            stock_check_id: openStockCheck.id,
-            stock_check_item_id: rpcRow.stock_check_item_id,
-            discrepancy_type: rpcRow.discrepancy_type,
-            resolution_status: rpcRow.resolution_status,
-          },
-          performedBy: operatorName,
-        });
-      } catch (activityError) {
-        console.error("Unable to log trailer activity for stock check load status change:", activityError);
-      }
 
       setActionNotice(`${normalizeTrailerNumber(rpcRow.trailer_number)} changed from ${beforeLabel} to ${afterLabel}.`);
       showScanNotice("Operational correction applied.", "info");
@@ -1559,7 +1519,7 @@ export default function CompoundStockCheckPage() {
           <AppCard className="w-full max-w-lg">
             <div className="p-5 md:p-6">
               <h2 className="text-lg font-semibold text-slate-950">Confirm Operational Correction</h2>
-              <p className="mt-3 text-sm text-slate-600">This will update the trailer's current load status in TrailerHub.</p>
+              <p className="mt-3 text-sm text-slate-600">This will update the trailer&apos;s current load status in TrailerHub.</p>
 
               <dl className="mt-4 grid gap-3 text-sm text-slate-700">
                 <div>
@@ -1636,7 +1596,7 @@ export default function CompoundStockCheckPage() {
                 </div>
               </dl>
 
-              <p className="mt-4 text-sm text-slate-600">This will update the trailer's current compound position in TrailerHub.</p>
+              <p className="mt-4 text-sm text-slate-600">This will update the trailer&apos;s current compound position in TrailerHub.</p>
 
               <div className="mt-5 flex flex-wrap justify-end gap-2">
                 <button

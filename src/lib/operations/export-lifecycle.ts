@@ -101,108 +101,29 @@ const buildStatusEvent = (
 const moveToDeliveredEmpty = async (
   supabaseClient: SupabaseClient<Database>,
   allocation: ExportAllocationRecord,
+  targetStatus: ExportAllocationStatus,
+  performedBy?: string | null,
 ) => {
-  if (!allocation.trailer_id) {
-    const nowIso = new Date().toISOString();
-    const { error: updateError } = await supabaseClient
-      .from("export_allocations")
-      .update({
-        status: "delivered_empty",
-        delivered_empty_at: nowIso,
-        updated_at: nowIso,
-      })
-      .eq("id", allocation.id)
-      .eq("status", allocation.status);
-
-    if (updateError) {
-      throw new Error(updateError.message || "Unable to move allocation to delivered empty.");
-    }
-
-    return {
-      occurredAt: nowIso,
-      previousPosition: null as string | null,
-      skipOperationalEvent: false,
-    };
-  }
-
-  const rpcResult = await (supabaseClient as unknown as {
-    rpc: (fn: string, args: Record<string, unknown>) => Promise<{ data: unknown; error: { code?: string; message?: string } | null }>;
-  }).rpc("set_export_allocation_delivered_empty", {
+  const rpcResult = await supabaseClient.rpc("advance_export_allocation_load_lifecycle", {
     p_allocation_id: allocation.id,
     p_expected_current_status: allocation.status,
+    p_target_status: targetStatus,
+    p_performed_by: performedBy ?? null,
   });
 
-  if (!rpcResult.error) {
-    const rows = Array.isArray(rpcResult.data) ? rpcResult.data : [];
-    const row = (rows[0] as { transitioned?: boolean; previous_compound_position?: string | null } | undefined) ?? null;
-
-    if (!row?.transitioned) {
-      throw new Error("Allocation status changed by another user. Refresh and try again.");
-    }
-
-    return {
-      occurredAt: new Date().toISOString(),
-      previousPosition: normalizeCompoundPosition(row.previous_compound_position),
-      skipOperationalEvent: true,
-    };
+  if (rpcResult.error) {
+    throw new Error(rpcResult.error.message || "Unable to advance export allocation lifecycle.");
   }
 
-  if (rpcResult.error.code !== "42883") {
-    throw new Error(rpcResult.error.message || "Unable to move allocation to Delivered Empty.");
-  }
-
-  const nowIso = new Date().toISOString();
-  const { data: trailerData, error: trailerReadError } = await supabaseClient
-    .from("trailers")
-    .select("id, compound_position")
-    .eq("id", allocation.trailer_id)
-    .single();
-
-  if (trailerReadError || !trailerData) {
-    throw new Error(trailerReadError?.message || "Unable to load trailer compound position.");
-  }
-
-  const previousPosition = normalizeCompoundPosition((trailerData as { compound_position?: string | null }).compound_position);
-
-  const { error: updateError } = await supabaseClient
-    .from("export_allocations")
-    .update({
-      status: "delivered_empty",
-      delivered_empty_at: nowIso,
-      updated_at: nowIso,
-    })
-    .eq("id", allocation.id)
-    .eq("status", allocation.status);
-
-  if (updateError) {
-    throw new Error(updateError.message || "Unable to advance export allocation status.");
-  }
-
-  const { error: trailerUpdateError } = await supabaseClient
-    .from("trailers")
-    .update({
-      compound_position: null,
-    })
-    .eq("id", allocation.trailer_id);
-
-  if (trailerUpdateError) {
-    await supabaseClient
-      .from("export_allocations")
-      .update({
-        status: allocation.status,
-        delivered_empty_at: allocation.delivered_empty_at ?? null,
-        updated_at: nowIso,
-      })
-      .eq("id", allocation.id)
-      .eq("status", "delivered_empty");
-
-    throw new Error(trailerUpdateError.message || "Unable to clear trailer compound position.");
+  const row = rpcResult.data?.[0];
+  if (!row?.transitioned) {
+    throw new Error("Allocation status changed by another user. Refresh and try again.");
   }
 
   return {
-    occurredAt: nowIso,
-    previousPosition,
-    skipOperationalEvent: false,
+    occurredAt: row.occurred_at,
+    previousPosition: normalizeCompoundPosition(row.previous_compound_position),
+    skipOperationalEvent: true,
   };
 };
 
@@ -225,14 +146,21 @@ export const advanceExportAllocationStatus = async (
   let movementMetadata: Record<string, unknown> | null = null;
   let skipOperationalEvent = false;
 
-  if (nextStatus === "delivered_empty") {
-    const deliveredResult = await moveToDeliveredEmpty(supabaseClient, input.allocation);
+  if (nextStatus !== "cancelled") {
+    const deliveredResult = await moveToDeliveredEmpty(
+      supabaseClient,
+      input.allocation,
+      nextStatus,
+      input.performedBy,
+    );
     occurredAt = deliveredResult.occurredAt;
-    movementMetadata = {
-      reason: "export_departure",
-      previous_compound_position: deliveredResult.previousPosition,
-      new_compound_position: null,
-    };
+    movementMetadata = nextStatus === "delivered_empty"
+      ? {
+          reason: "export_departure",
+          previous_compound_position: deliveredResult.previousPosition,
+          new_compound_position: null,
+        }
+      : null;
     skipOperationalEvent = deliveredResult.skipOperationalEvent;
   } else {
     const timestampField = getExportAllocationTimestampField(nextStatus);
@@ -260,42 +188,30 @@ export const advanceExportAllocationStatus = async (
     }
   }
 
-  const statusEvent = buildStatusEvent(input.allocation, previousStatus, nextStatus);
+  if (!skipOperationalEvent) {
+    const statusEvent = buildStatusEvent(input.allocation, previousStatus, nextStatus);
 
-  await recordTrailerLifecycleEvent(supabaseClient, {
-    trailerId: input.allocation.trailer_id ?? null,
-    trailerNumber: input.allocation.trailer_number ?? "Unknown trailer",
-    eventType: statusEvent.eventType,
-    title: statusEvent.title,
-    description: statusEvent.description,
-    sourceModule: input.sourceModule,
-    sourceRecordId: input.allocation.id,
-    previousStatus,
-    newStatus: nextStatus,
-    previousCompoundPosition:
-      typeof movementMetadata?.previous_compound_position === "string" ? movementMetadata.previous_compound_position : null,
-    newCompoundPosition:
-      typeof movementMetadata?.new_compound_position === "string" ? movementMetadata.new_compound_position : null,
-    metadata: {
-      export_allocation_id: input.allocation.id,
-      customer: input.allocation.customer ?? null,
-      movement: movementMetadata,
-      activity_type: statusEvent.activityType,
-    },
-    occurredAt,
-    performedBy: input.performedBy ?? null,
-    oldValue: {
-      export_allocation_id: input.allocation.id,
-      status: previousStatus,
-      ...(movementMetadata ? { movement: movementMetadata } : {}),
-    } as Json,
-    newValue: {
-      export_allocation_id: input.allocation.id,
-      status: nextStatus,
-      ...(movementMetadata ? { movement: movementMetadata } : {}),
-    } as Json,
-    skipOperationalEvent,
-  });
+    await recordTrailerLifecycleEvent(supabaseClient, {
+      trailerId: input.allocation.trailer_id ?? null,
+      trailerNumber: input.allocation.trailer_number ?? "Unknown trailer",
+      eventType: statusEvent.eventType,
+      title: statusEvent.title,
+      description: statusEvent.description,
+      sourceModule: input.sourceModule,
+      sourceRecordId: input.allocation.id,
+      previousStatus,
+      newStatus: nextStatus,
+      metadata: {
+        export_allocation_id: input.allocation.id,
+        customer: input.allocation.customer ?? null,
+        activity_type: statusEvent.activityType,
+      },
+      occurredAt,
+      performedBy: input.performedBy ?? null,
+      oldValue: { export_allocation_id: input.allocation.id, status: previousStatus } as Json,
+      newValue: { export_allocation_id: input.allocation.id, status: nextStatus } as Json,
+    });
+  }
 
   let warning: string | null = null;
 

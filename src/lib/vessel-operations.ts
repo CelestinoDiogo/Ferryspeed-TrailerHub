@@ -214,15 +214,24 @@ export type VesselOperationSummary = {
 };
 
 export type VesselReceptionDestination = "compound" | "local" | "hold";
-export type VesselReceptionLoadStatus = "Empty" | "Loaded";
+export type VesselReceptionLoadStatus = "" | "Empty" | "Loaded";
 
 export const resolveVesselReceptionLoadStatus = (
   currentLoadStatus?: string | null,
   vesselLoadStatus?: string | null,
-): VesselReceptionLoadStatus =>
-  currentLoadStatus?.trim().toLowerCase() === "loaded" || vesselLoadStatus?.trim().toLowerCase() === "loaded"
-    ? "Loaded"
-    : "Empty";
+): VesselReceptionLoadStatus => {
+  const incoming = vesselLoadStatus?.trim().toLowerCase();
+  if (incoming === "loaded" || incoming === "empty") {
+    return incoming === "loaded" ? "Loaded" : "Empty";
+  }
+
+  const current = currentLoadStatus?.trim().toLowerCase();
+  if (current === "loaded" || current === "empty") {
+    return current === "loaded" ? "Loaded" : "Empty";
+  }
+
+  return "";
+};
 
 export const resolveVesselReceptionOwnership = (input: {
   ownershipType?: string | null;

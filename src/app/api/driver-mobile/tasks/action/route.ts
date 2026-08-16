@@ -14,6 +14,7 @@ const requestSchema = z.object({
   bookingId: z.string().uuid(),
   action: z.enum(["ACKNOWLEDGED", "COLLECTED", "DELIVERED"]),
   temperatureC: z.number().finite().min(-60).max(60).optional(),
+  resultingLoadStatus: z.enum(["Empty", "Loaded"]).optional(),
 });
 
 export async function POST(request: Request) {
@@ -32,6 +33,7 @@ export async function POST(request: Request) {
       bookingId: payload.bookingId,
       action: payload.action,
       temperatureC: payload.temperatureC,
+      resultingLoadStatus: payload.resultingLoadStatus,
     });
 
     return Response.json({ ok: true, booking: updatedBooking }, { status: 200 });

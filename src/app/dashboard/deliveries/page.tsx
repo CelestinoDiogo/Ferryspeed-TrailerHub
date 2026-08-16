@@ -230,6 +230,11 @@ function DeliveriesPageContent() {
       return;
     }
 
+    if (newStatus === "collected" && currentStatus !== "collected") {
+      setError("Use Collected Loaded or Collected Empty to complete customer collection.");
+      return;
+    }
+
     setStatusChanging(bookingId);
     setError(null);
 
@@ -292,7 +297,7 @@ function DeliveriesPageContent() {
     }
   };
 
-  const handleMarkCollected = async (bookingId: string) => {
+  const handleMarkCollected = async (bookingId: string, resultingLoadStatus: "Empty" | "Loaded") => {
     if (markingCollected === bookingId) {
       return;
     }
@@ -302,22 +307,14 @@ function DeliveriesPageContent() {
     try {
       const booking = bookings.find((b) => b.id === bookingId);
       if (!booking) return;
-      const now = new Date().toISOString();
-      const { error: updErr } = await supabase
-        .from("delivery_bookings")
-        .update({ status: "collected", collected_at: booking.collected_at ?? now, updated_at: now })
-        .eq("id", bookingId);
-      if (updErr) throw updErr;
-      await supabase.from("trailer_events").insert({
-        trailer_id: booking.trailer_id,
-        trailer_number: booking.trailer_number,
-        event_type: "trailer_collected",
-        event_description: "Trailer has been collected.",
-        old_value: { status: booking.status },
-        new_value: { status: "collected" },
+      const { data, error: collectionError } = await supabase.rpc("complete_delivery_customer_collection", {
+        p_booking_id: bookingId,
+        p_expected_current_status: "waiting_collection",
+        p_resulting_load_status: resultingLoadStatus,
       });
-      setBookings((prev) => prev.map((b) => b.id === bookingId ? { ...b, status: "collected", collected_at: b.collected_at ?? now } : b));
-      setNotice("Trailer marked as collected.");
+      if (collectionError || !data) throw collectionError ?? new Error("Unable to complete customer collection.");
+      setBookings((prev) => prev.map((b) => b.id === bookingId ? { ...b, status: "collected", collected_at: data.collected_at } : b));
+      setNotice(`Trailer collected ${resultingLoadStatus.toLowerCase()}.`);
     } catch (e) {
       console.error("Unable to mark trailer as collected", {
         bookingId,
@@ -708,11 +705,18 @@ function DeliveriesPageContent() {
 
                       <div className="flex flex-wrap gap-2 border-t border-white/10 pt-3">
                         <button
-                          onClick={() => void handleMarkCollected(b.id)}
+                          onClick={() => void handleMarkCollected(b.id, "Empty")}
+                          disabled={markingCollected === b.id}
+                          className="rounded-xl border border-white/20 bg-slate-800 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 disabled:opacity-50"
+                        >
+                          {markingCollected === b.id ? "Marking..." : "Collected Empty"}
+                        </button>
+                        <button
+                          onClick={() => void handleMarkCollected(b.id, "Loaded")}
                           disabled={markingCollected === b.id}
                           className="rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500 disabled:opacity-50"
                         >
-                          {markingCollected === b.id ? "Marking..." : "✓ Mark Collected"}
+                          {markingCollected === b.id ? "Marking..." : "Collected Loaded"}
                         </button>
                         <Link href={`/dashboard/deliveries/${b.id}`} className="rounded-xl border border-white/10 bg-slate-800 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-700">View Booking</Link>
                         <Link href={`/dashboard/trailers/${b.trailer_id}`} className="rounded-xl border border-white/10 bg-slate-800 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-700">View Trailer</Link>

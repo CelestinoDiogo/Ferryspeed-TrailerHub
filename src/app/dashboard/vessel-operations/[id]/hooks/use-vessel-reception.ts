@@ -5,7 +5,6 @@ import { supabase } from "@/lib/supabase";
 import {
   canConfirmVesselTrailerReception,
   getFirstAvailableCompoundPosition,
-  getVesselReceptionDate,
   logVesselSupabaseError,
   normalizeCompoundPosition,
   normalizeTrailerNumber,
@@ -31,22 +30,6 @@ type ActiveTrailerRow = Pick<
   | "external_company"
   | "external_reference"
   | "is_local"
-  | "operational_status"
-  | "arrival_date"
-  | "source_vessel_operation_trailer_id"
->;
-
-type SavedTrailerRow = Pick<
-  Database["public"]["Tables"]["trailers"]["Row"],
-  | "id"
-  | "trailer_number"
-  | "compound_position"
-  | "load_status"
-  | "customer"
-  | "notes"
-  | "departure_date"
-  | "is_local"
-  | "trailer_source"
   | "operational_status"
   | "arrival_date"
   | "source_vessel_operation_trailer_id"
@@ -89,7 +72,7 @@ type SubmitResult = {
 
 const initialFormState: ReceptionFormState = {
   destination: "compound",
-  loadStatus: "Empty",
+  loadStatus: "",
   customer: "",
   notes: "",
 };
@@ -253,6 +236,11 @@ export function useVesselReception({ operation, onSuccess }: UseVesselReceptionO
       return null;
     }
 
+    if (!formState.loadStatus) {
+      setError("Choose Loaded or Empty before completing reception.");
+      return null;
+    }
+
     if (!canConfirmVesselTrailerReception(selectedTrailer, operation)) {
       setError("Trailer is not available for reception.");
       return null;
@@ -266,8 +254,6 @@ export function useVesselReception({ operation, onSuccess }: UseVesselReceptionO
 
     setIsSubmitting(true);
     setError(null);
-
-    let createdTrailerRecord = false;
 
     try {
       const nowIso = new Date().toISOString();
@@ -321,8 +307,6 @@ export function useVesselReception({ operation, onSuccess }: UseVesselReceptionO
       }
 
       const customerValue = formState.customer.trim() || currentTrailer.customer?.trim() || existingTrailer?.customer?.trim() || null;
-      const notesValue = formState.notes.trim() || existingTrailer?.notes?.trim() || null;
-      const receptionArrivalDate = getVesselReceptionDate(currentTrailer.arrived_at ?? currentTrailer.arrival_confirmed_at ?? nowIso);
       const ownership = resolveVesselReceptionOwnership({
         ownershipType: currentTrailer.ownership_type,
         vesselTrailerSource: currentTrailer.trailer_source,
@@ -331,138 +315,29 @@ export function useVesselReception({ operation, onSuccess }: UseVesselReceptionO
         currentExternalCompany: existingTrailer?.external_company,
         trailerNumber: currentTrailer.trailer_number,
       });
-      const mainTrailerPayload: Database["public"]["Tables"]["trailers"]["Insert"] = {
-        trailer_number: normalizedTrailerNumber,
-        arrival_date: receptionArrivalDate,
-        load_status: formState.loadStatus,
-        customer: customerValue,
-        notes: notesValue,
-        departure_date: null,
-        operational_status: destination === "compound" ? "In Compound" : destination === "local" ? "Local Trailer" : "Awaiting Position",
-        compound_position: confirmedPosition,
-        is_local: destination === "local",
-        trailer_source: ownership.trailerSource,
-        external_company: ownership.externalCompany,
-        source_vessel_operation_trailer_id:
-          existingTrailer?.source_vessel_operation_trailer_id && existingTrailer.source_vessel_operation_trailer_id !== currentTrailer.id
-            ? existingTrailer.source_vessel_operation_trailer_id
-            : currentTrailer.id,
-      };
-
-      let mainTrailerId = existingTrailer?.id ?? null;
-      let mainTrailerNumber = normalizedTrailerNumber;
-      let savedTrailer: SavedTrailerRow | null = null;
-
-      if (existingTrailer) {
-        const { data: updatedTrailer, error: updateError } = await supabase
-          .from("trailers")
-          .update(mainTrailerPayload)
-          .eq("id", existingTrailer.id)
-          .select()
-          .single();
-
-        if (updateError) {
-          console.error(updateError);
-        }
-
-        if (updateError || !updatedTrailer) {
-          throw new Error((updateError ?? new Error("Unable to update main trailer record.")).message);
-        }
-
-        savedTrailer = updatedTrailer as SavedTrailerRow;
-
-        mainTrailerId = savedTrailer.id;
-        mainTrailerNumber = savedTrailer.trailer_number ?? normalizedTrailerNumber;
-      } else {
-        createdTrailerRecord = true;
-
-        const { data: insertedTrailer, error: insertError } = await supabase
-          .from("trailers")
-          .insert(mainTrailerPayload)
-          .select()
-          .single();
-
-        if (insertError) {
-          console.error(insertError);
-        }
-
-        if (insertError || !insertedTrailer) {
-          throw new Error((insertError ?? new Error("Unable to create main trailer record.")).message);
-        }
-
-        savedTrailer = insertedTrailer as SavedTrailerRow;
-
-        mainTrailerId = savedTrailer.id;
-        mainTrailerNumber = savedTrailer.trailer_number ?? normalizedTrailerNumber;
-      }
-
-      if (!savedTrailer) {
-        throw new Error("Trailer reception was not saved because no trailer record was returned.");
-      }
-
-      const finalPosition = savedTrailer?.compound_position ?? confirmedPosition ?? null;
-
-      if (!savedTrailer?.id) {
-        throw new Error("The main trailer record was not created, so reception cannot be completed.");
-      }
-
-      const vesselTrailerStatus = currentTrailer.status === "inspected" ? "inspected" : "arrived";
-      const vesselTrailerUpdate: Database["public"]["Tables"]["vessel_operation_trailers"]["Update"] = {
-        trailer_id: savedTrailer.id,
-        arrival_record_id: savedTrailer.id,
-        arrival_confirmed_at: currentTrailer.arrival_confirmed_at ?? nowIso,
-        arrival_confirmed_by: operatorName,
-        assigned_position: destination === "compound" ? finalPosition : null,
-        position_assigned_at: destination === "compound" ? nowIso : null,
-        status: vesselTrailerStatus,
-        updated_at: nowIso,
-      };
-
-      const { data: linkedTrailer, error: linkError } = await supabase
-        .from("vessel_operation_trailers")
-        .update(vesselTrailerUpdate)
-        .eq("id", currentTrailer.id)
-        .is("arrival_record_id", null)
-        .select("id")
-        .maybeSingle();
-
-      if (linkError || !linkedTrailer) {
-        const partialMessage = createdTrailerRecord
-          ? "Reception created the main trailer record, but linking back to the vessel trailer failed. Review the trailer manually before retrying."
-          : "Main trailer record updated, but linking back to the vessel trailer failed. Review the trailer manually before retrying.";
-        throw linkError ?? new Error(partialMessage);
-      }
-
-      const eventDescription = formState.destination === "compound"
-        ? `Trailer received from vessel operation and automatically assigned to Compound position ${finalPosition}.`
-        : "Trailer received from vessel operation and assigned as Local Trailer.";
-
-      const { error: eventError } = await supabase.from("trailer_events").insert({
-        trailer_id: mainTrailerId,
-        trailer_number: mainTrailerNumber,
-        event_type: "vessel_arrival_received",
-        event_description: eventDescription,
-        new_value: {
-          vessel_operation_id: operation.id,
-          vessel_trailer_id: currentTrailer.id,
-          trailer_id: savedTrailer.id,
-          arrival_record_id: savedTrailer.id,
-          compound_position: destination === "compound" ? finalPosition : null,
-          destination,
-          load_status: formState.loadStatus,
-          customer: customerValue,
-          received_at: nowIso,
-          received_by: operatorName,
-        },
+      const { data: mainTrailerId, error: receptionError } = await supabase.rpc("confirm_vessel_trailer_arrival", {
+        p_vessel_operation_trailer_id: currentTrailer.id,
+        p_received_at: nowIso,
+        p_compound_position: confirmedPosition,
+        p_arrival_notes: formState.notes.trim() || null,
+        p_condition_on_arrival: null,
+        p_confirmed_by: operatorName,
+        p_explicit_load_status: formState.loadStatus,
+        p_customer: customerValue,
+        p_destination: destination === "hold" ? "awaiting_position" : destination,
+        p_trailer_source: ownership.trailerSource,
+        p_external_company: ownership.externalCompany,
+        p_is_local: destination === "local",
       });
 
-      if (eventError) {
-        logVesselSupabaseError("Failed to create vessel reception event", eventError);
+      if (receptionError || !mainTrailerId) {
+        logVesselSupabaseError("Failed to confirm vessel reception", receptionError);
+        throw new Error(receptionError?.message || "Unable to confirm vessel reception.");
       }
 
       const successMessage = formState.destination === "compound"
-        ? `Trailer received and assigned to Compound position ${finalPosition}.`
-        : `Reception confirmed for ${mainTrailerNumber} as Local Trailer.`;
+        ? `Trailer received and assigned to Compound position ${confirmedPosition}.`
+        : `Reception confirmed for ${normalizedTrailerNumber}.`;
 
       closeReception();
       if (onSuccess) {

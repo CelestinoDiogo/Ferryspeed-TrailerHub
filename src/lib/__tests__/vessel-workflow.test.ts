@@ -58,8 +58,11 @@ const makeTrailer = (overrides: Partial<VesselOperationTrailerRecord> = {}): Ves
 describe("vessel workflow regression", () => {
   it("keeps physical load state independent from operational lifecycle state", () => {
     expect(resolveVesselReceptionLoadStatus("Empty", "Loaded")).toBe("Loaded");
-    expect(resolveVesselReceptionLoadStatus("Loaded", "Empty")).toBe("Loaded");
+    expect(resolveVesselReceptionLoadStatus("Loaded", "Empty")).toBe("Empty");
     expect(resolveVesselReceptionLoadStatus("Empty", "Empty")).toBe("Empty");
+    expect(resolveVesselReceptionLoadStatus("Loaded", null)).toBe("Loaded");
+    expect(resolveVesselReceptionLoadStatus("Empty", null)).toBe("Empty");
+    expect(resolveVesselReceptionLoadStatus(null, null)).toBe("");
   });
 
   it("preserves outsourced manifest ownership through reception", () => {
