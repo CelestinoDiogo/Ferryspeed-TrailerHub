@@ -15,7 +15,7 @@ export const navItems: NavItem[] = [
   { label: "Deliveries", href: "/dashboard/deliveries", icon: "deliveries" },
   { label: "Export Operations", href: "/dashboard/export-operations", icon: "exportOps" },
   { label: "Vessel Operations", href: "/dashboard/vessel-operations", icon: "vesselOps" },
-  { label: "Waiting Collection", href: "/dashboard/deliveries?filter=waiting", icon: "waiting" },
+  { label: "Collections", href: "/dashboard/collections", icon: "waiting" },
   { label: "Calendar", href: "/dashboard/calendar", icon: "calendar" },
   { label: "Company Trailers", href: "/dashboard/company-trailers", icon: "fleet" },
   { label: "Operations Board", href: "/dashboard/operations", icon: "operations" },

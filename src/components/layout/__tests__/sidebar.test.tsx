@@ -78,7 +78,7 @@ describe("Sidebar", () => {
     expect(screen.getByRole("link", { name: "Arrivals Report" })).toHaveAttribute("href", "/dashboard/arrivals");
     expect(screen.getByRole("link", { name: "Departures Report" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Deliveries Report" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Collections Report" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Collections Report" })).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Compound Snapshot" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Compound Activity" })).toBeInTheDocument();
 

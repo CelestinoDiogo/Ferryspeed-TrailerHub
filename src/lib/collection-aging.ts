@@ -4,8 +4,6 @@
 // Reuse these helpers across Deliveries, Operations Board, Calendar and Dashboard.
 // No duplicate logic. No any types. No AI. All calculations are deterministic.
 
-import { getLocalDateKey } from "./operational-readiness";
-
 // ─── Configuration ────────────────────────────────────────────────────────────
 
 /**
@@ -55,7 +53,7 @@ export interface CollectionBookingInput {
 const toDateTime = (value: string): Date => {
   if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
     const [y, m, d] = value.split("-").map(Number);
-    return new Date(y, m - 1, d);
+    return new Date(Date.UTC(y, m - 1, d));
   }
 
   return new Date(value);
@@ -82,14 +80,13 @@ const getReferenceDate = (booking: CollectionBookingInput): Date => {
     return new Date(booking.referenceAt);
   }
 
-  const todayKey = getLocalDateKey();
-  return toDateTime(todayKey);
+  return new Date();
 };
 
 // ─── Status mapping helper ───────────────────────────────────────────────────
 
 export const getCollectionStatus = (waitingHours: number): { level: AgingLevel; label: string } => {
-  if (waitingHours < COLLECTION_STATUS_RULES.orange.minHours) {
+  if (waitingHours <= COLLECTION_STATUS_RULES.orange.minHours) {
     return { level: "green", label: COLLECTION_STATUS_RULES.green.label };
   }
 

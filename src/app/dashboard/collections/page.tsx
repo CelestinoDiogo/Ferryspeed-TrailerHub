@@ -1,6 +1,5 @@
-import { Suspense } from "react";
-import { HistoricalOperationsReport } from "@/components/reports/historical-operations-report";
+import { MandatoryCollectionsWorkboard } from "@/components/operations/mandatory-collections-workboard";
 
-export default function CollectionsHistoryPage() {
-  return <Suspense fallback={<div className="p-6 text-sm text-slate-600">Loading collections...</div>}><HistoricalOperationsReport kind="collections" /></Suspense>;
+export default function CollectionsPage() {
+  return <MandatoryCollectionsWorkboard />;
 }

@@ -8,7 +8,6 @@ export type ExportAllocationStatus =
 
 export type LegacyExportAllocationStatus =
   | "collected_by_haulier"
-  | "waiting_loading"
   | "loading"
   | "loaded"
   | "returned"
@@ -89,7 +88,6 @@ const LEGACY_STATUS_MAP: Record<
   ExportAllocationStatus
 > = {
   collected_by_haulier: "delivered_empty",
-  waiting_loading: "waiting_loading",
   loading: "waiting_loading",
   loaded: "collected_loaded",
   returned: "completed",
@@ -134,7 +132,6 @@ export function normalizeExportAllocationStatus(
       return normalized;
 
     case "collected_by_haulier":
-    case "waiting_loading":
     case "loading":
     case "loaded":
     case "returned":

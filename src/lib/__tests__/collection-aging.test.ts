@@ -29,7 +29,7 @@ describe("collection aging", () => {
       referenceAt: "2026-08-13T11:59:59.000Z",
     });
 
-    const orangeAt24 = calculateCollectionAging({
+    const greenAt24 = calculateCollectionAging({
       delivery_date: "2026-08-12",
       waiting_collection_since: "2026-08-12T12:00:00.000Z",
       referenceAt: "2026-08-13T12:00:00.000Z",
@@ -48,7 +48,7 @@ describe("collection aging", () => {
     });
 
     expect(green.agingLevel).toBe("green");
-    expect(orangeAt24.agingLevel).toBe("orange");
+    expect(greenAt24.agingLevel).toBe("green");
     expect(orangeAt48.agingLevel).toBe("orange");
     expect(red.agingLevel).toBe("red");
   });

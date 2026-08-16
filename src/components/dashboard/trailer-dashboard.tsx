@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Anchor, BarChart3, ChevronRight, ClipboardList, Package, PlusCircle, ScanSearch, Ship, Truck, Wrench } from "lucide-react";
+import { Anchor, BarChart3, ChevronRight, ClipboardList, Package, PlusCircle, ScanSearch, Ship, Truck } from "lucide-react";
 import { PrintButton } from "@/components/print/print-button";
 import { PrintFilters } from "@/components/print/print-filters";
 import { PrintFooter } from "@/components/print/print-footer";
@@ -238,7 +238,6 @@ export function TrailerDashboard() {
   const [waitingCollections, setWaitingCollections] = useState<WaitingCollectionItem[]>([]);
   const [waitingCollectionSummary, setWaitingCollectionSummary] = useState<WaitingCollectionSummary>({ count: 0, attentionRequiredCount: 0, oldestTrailer: null, oldestDays: 0 });
   const [exportSummary, setExportSummary] = useState<ExportSummary>(defaultExportSummary);
-  const [vesselOperations, setVesselOperations] = useState<VesselOperationCard[]>([]);
   const [arrivalsTodayCount, setArrivalsTodayCount] = useState(0);
   const [departuresTodayCount, setDeparturesTodayCount] = useState(0);
   const [vesselOpsTodayCount, setVesselOpsTodayCount] = useState(0);
@@ -526,7 +525,6 @@ export function TrailerDashboard() {
         const visibleTrailers = trailers.filter((trailer) =>
           trailer.is_local === true || isTrailerEligibleForCompoundViews(trailer, activeExportStatusByTrailerId.get(trailer.id)),
         );
-        setVesselOperations(allVesselOperations.slice(0, 4));
         setTrailers(visibleTrailers);
 
         const activeTrailers = visibleTrailers.filter((item) => {
@@ -797,7 +795,7 @@ export function TrailerDashboard() {
   }, []);
 
   const deliveriesTodayCount = todayDeliveries.length;
-  const collectionsTodayCount = waitingCollectionSummary.count;
+  const collectionsOutstandingCount = waitingCollectionSummary.count + exportSummary.atCustomer;
 
   const activeCompoundTrailers = trailers.filter((item) => {
     const departureDate = item.departure_date;
@@ -818,7 +816,7 @@ export function TrailerDashboard() {
     { label: "Arrivals", subtitle: "Today", value: arrivalsTodayCount, href: "/dashboard/search?filter=arrivals_today", icon: <Ship className="h-6 w-6" /> },
     { label: "Departures", subtitle: "Today", value: departuresTodayCount, href: "/dashboard/search?filter=departures_today", icon: <Package className="h-6 w-6" /> },
     { label: "Deliveries", subtitle: "Today", value: deliveriesTodayCount, href: "/dashboard/deliveries", icon: <Truck className="h-6 w-6" /> },
-    { label: "Collections", subtitle: "Today", value: collectionsTodayCount, href: "/dashboard/deliveries?filter=waiting", icon: <ClipboardList className="h-6 w-6" /> },
+    { label: "Collections", subtitle: "Outstanding", value: collectionsOutstandingCount, href: "/dashboard/collections", icon: <ClipboardList className="h-6 w-6" /> },
     { label: "Vessel Operations", subtitle: "Today", value: vesselOpsTodayCount, href: "/dashboard/vessel-operations?filter=today", icon: <Anchor className="h-6 w-6" /> },
   ];
 
