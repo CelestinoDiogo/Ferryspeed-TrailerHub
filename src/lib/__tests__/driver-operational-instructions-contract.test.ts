@@ -41,5 +41,12 @@ describe("driver-operational-instructions service contract", () => {
     expect(serviceSource).toContain("Delivery booking is not assigned to the selected driver.");
     expect(serviceSource).toContain("Trailer context does not match the selected delivery booking.");
     expect(serviceSource).toContain("Driver was not found or is not linked to a user account.");
+    expect(serviceSource).toContain("Trailer number does not match the selected trailer context.");
+    expect(serviceSource).toContain("Trailer number requires a selected trailer context.");
+    expect(serviceSource).toContain('if (trailerId) {');
+  });
+
+  it("rejects invalid priorities for direct service callers", () => {
+    expect(serviceSource).toContain('throw new Error("Invalid instruction priority.")');
   });
 });

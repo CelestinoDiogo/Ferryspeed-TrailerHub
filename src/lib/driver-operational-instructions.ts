@@ -122,11 +122,15 @@ const resolveSenderDisplayName = (user: User) => {
 
 const toPriority = (value?: string | null): DriverOperationalInstructionPriority => {
   const normalized = normalizeText(value).toLowerCase();
+  if (!normalized || normalized === "normal") {
+    return "normal";
+  }
+
   if (normalized === "high" || normalized === "critical") {
     return normalized;
   }
 
-  return "normal";
+  throw new Error("Invalid instruction priority.");
 };
 
 const quickResponseTypes: DriverQuickResponseType[] = ["ok", "completed", "arrived", "delayed", "problem", "call_me"];
@@ -454,7 +458,11 @@ export async function sendDriverOperationalInstruction(
     trailerId = trailerId ?? booking.trailer_id;
   }
 
-  if (trailerId && !trailerNumber) {
+  if (trailerNumber && !trailerId) {
+    throw new Error("Trailer number requires a selected trailer context.");
+  }
+
+  if (trailerId) {
     const { data: trailer, error: trailerError } = await supabase
       .from("trailers")
       .select("id,trailer_number")
@@ -469,7 +477,12 @@ export async function sendDriverOperationalInstruction(
       throw new Error("Trailer context was not found.");
     }
 
-    trailerNumber = normalizeText(trailer.trailer_number).toUpperCase() || null;
+    const canonicalTrailerNumber = normalizeText(trailer.trailer_number).toUpperCase() || null;
+    if (trailerNumber && canonicalTrailerNumber && trailerNumber !== canonicalTrailerNumber) {
+      throw new Error("Trailer number does not match the selected trailer context.");
+    }
+
+    trailerNumber = canonicalTrailerNumber;
   }
 
   const payload: Database["public"]["Tables"]["driver_operational_instructions"]["Insert"] = {

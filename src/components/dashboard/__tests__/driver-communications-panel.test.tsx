@@ -16,6 +16,7 @@ const routeQueryState = vi.hoisted(() => ({
 
 const userState = vi.hoisted(() => ({
   roleKey: "supervisor" as "administrator" | "supervisor" | "operator" | "driver" | null,
+  isLoading: false,
 }));
 
 const realtimeState = vi.hoisted(() => ({
@@ -68,7 +69,7 @@ vi.mock("next/navigation", () => ({
 }));
 
 vi.mock("@/lib/auth/use-current-user", () => ({
-  useCurrentUser: () => ({ roleKey: userState.roleKey }),
+  useCurrentUser: () => ({ roleKey: userState.roleKey, isLoading: userState.isLoading }),
 }));
 
 vi.mock("@/lib/realtime/operational-realtime", () => ({
@@ -124,6 +125,7 @@ describe("DriverCommunicationsPanel", () => {
     vi.clearAllMocks();
     cleanup();
     userState.roleKey = "supervisor";
+    userState.isLoading = false;
     routeQueryState.driverId = "driver-a";
     routeQueryState.deliveryBookingId = "booking-a";
     routeQueryState.trailerId = "trailer-a";
@@ -248,6 +250,14 @@ describe("DriverCommunicationsPanel", () => {
     expect(await screen.findByRole("heading", { name: "Driver A" })).toBeInTheDocument();
     expect(await screen.findByText("Pending 1")).toBeInTheDocument();
     expect(screen.queryByText(/Auth session missing/i)).not.toBeInTheDocument();
+  });
+
+  it.each(["operator", "driver"] as const)("denies %s without querying operational communications", async (roleKey) => {
+    userState.roleKey = roleKey;
+    render(<DriverCommunicationsPanel />);
+
+    expect(await screen.findByText("You do not have permission to access Driver Communications.")).toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("desktop history GET resolves authenticated session and deep-link context", async () => {

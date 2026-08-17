@@ -149,6 +149,18 @@ describe("/api/operations/driver-instructions", () => {
     await expect(response.json()).resolves.toEqual({ error: "Invalid send-instruction payload." });
   });
 
+  it("rejects invalid instruction priority", async () => {
+    const { POST } = await importRoute();
+    const response = await POST(makePostRequest({
+      driverId: "22222222-2222-4222-8222-222222222222",
+      instruction: "Proceed to the quay.",
+      priority: "urgent",
+    }));
+
+    expect(response.status).toBe(400);
+    expect(sendDriverOperationalInstructionMock).not.toHaveBeenCalled();
+  });
+
   it("rejects empty instruction payload", async () => {
     const { POST } = await importRoute();
     const response = await POST(
@@ -205,6 +217,33 @@ describe("/api/operations/driver-instructions", () => {
 
     expect(response.status).toBe(400);
     await expect(response.json()).resolves.toEqual({ error: "Trailer context does not match the selected delivery booking." });
+  });
+
+  it("maps trailer-number context mismatch errors from service", async () => {
+    sendDriverOperationalInstructionMock.mockRejectedValueOnce(new Error("Trailer number does not match the selected trailer context."));
+
+    const { POST } = await importRoute();
+    const response = await POST(makePostRequest({
+      driverId: "22222222-2222-4222-8222-222222222222",
+      trailerId: "44444444-4444-4444-8444-444444444444",
+      trailerNumber: "WRONG-1",
+      instruction: "Proceed to the quay.",
+    }));
+
+    expect(response.status).toBe(400);
+  });
+
+  it("maps unverifiable trailer-number-only context errors from service", async () => {
+    sendDriverOperationalInstructionMock.mockRejectedValueOnce(new Error("Trailer number requires a selected trailer context."));
+
+    const { POST } = await importRoute();
+    const response = await POST(makePostRequest({
+      driverId: "22222222-2222-4222-8222-222222222222",
+      trailerNumber: "FS1001",
+      instruction: "Proceed to the quay.",
+    }));
+
+    expect(response.status).toBe(400);
   });
 
   it("does not allow sender spoofing fields in request payload", async () => {

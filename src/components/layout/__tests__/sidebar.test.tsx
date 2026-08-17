@@ -97,4 +97,12 @@ describe("Sidebar", () => {
     expect(screen.queryByRole("link", { name: /Driver Communications/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /History & Reports/i })).not.toBeInTheDocument();
   });
+
+  it("does not advertise manager-only Driver Communications to Operators", () => {
+    state.roleKey = "operator";
+    render(<Sidebar />);
+
+    expect(screen.queryByRole("link", { name: /Driver Communications/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /^Dashboard$/i })).toBeInTheDocument();
+  });
 });

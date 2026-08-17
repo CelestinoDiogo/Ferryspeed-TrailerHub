@@ -205,8 +205,9 @@ const readDriverContextFeed = async (
 
 export function DriverCommunicationsPanel() {
   const searchParams = useSearchParams();
-  const { roleKey } = useCurrentUser();
+  const { roleKey, isLoading: isLoadingUser } = useCurrentUser();
   const desktopRoleKey = roleKey as RoleKey | null;
+  const canManageDriverCommunications = roleKey === "administrator" || roleKey === "supervisor";
 
   const [drivers, setDrivers] = useState<DriverRow[]>([]);
   const [driverSummaries, setDriverSummaries] = useState<Record<string, DriverSummary>>({});
@@ -375,15 +376,19 @@ export function DriverCommunicationsPanel() {
   }, [contextDeliveryBookingId, contextMatchesSelection, contextTrailerId]);
 
   useEffect(() => {
+    if (isLoadingUser || !canManageDriverCommunications) {
+      return;
+    }
+
     const timeoutId = window.setTimeout(() => {
       void loadDriverIndex(true);
     }, 0);
 
     return () => window.clearTimeout(timeoutId);
-  }, [loadDriverIndex]);
+  }, [canManageDriverCommunications, isLoadingUser, loadDriverIndex]);
 
   useEffect(() => {
-    if (!selectedDriverId) {
+    if (!canManageDriverCommunications || !selectedDriverId) {
       return;
     }
 
@@ -392,9 +397,13 @@ export function DriverCommunicationsPanel() {
     }, 0);
 
     return () => window.clearTimeout(timeoutId);
-  }, [loadHistory, selectedDriverId]);
+  }, [canManageDriverCommunications, loadHistory, selectedDriverId]);
 
   useOperationalRealtime(["dashboard"], () => {
+    if (!canManageDriverCommunications) {
+      return;
+    }
+
     void loadDriverIndex(false);
     if (selectedDriverId) {
       void loadHistory(selectedDriverId, false);
@@ -478,6 +487,19 @@ export function DriverCommunicationsPanel() {
       setIsSending(false);
     }
   }, [composerPriority, composerText, contextDeliveryBookingId, contextMatchesSelection, contextTrailerId, contextTrailerNumber, loadDriverIndex, loadHistory, selectedDriver]);
+
+  if (isLoadingUser) {
+    return <p className="p-6 text-sm text-slate-500">Checking Driver Communications access...</p>;
+  }
+
+  if (!canManageDriverCommunications) {
+    return (
+      <div className="rounded-3xl border border-rose-200 bg-rose-50 p-6 text-rose-800 shadow-sm">
+        <h2 className="text-xl font-semibold">Access denied</h2>
+        <p className="mt-2 text-sm">You do not have permission to access Driver Communications.</p>
+      </div>
+    );
+  }
 
   return (
     <PermissionGuard

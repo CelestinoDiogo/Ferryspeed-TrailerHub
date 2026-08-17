@@ -119,7 +119,7 @@ export async function POST(request: Request) {
         return Response.json({ error: error.message }, { status: 404 });
       }
 
-      if (lowered.includes("required") || lowered.includes("must be") || lowered.includes("does not match")) {
+      if (lowered.includes("required") || lowered.includes("requires") || lowered.includes("must be") || lowered.includes("does not match")) {
         return Response.json({ error: error.message }, { status: 400 });
       }
 
