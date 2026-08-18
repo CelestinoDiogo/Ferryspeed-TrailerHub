@@ -46,6 +46,7 @@ import {
   type ExportAllocationStatus,
 } from "@/lib/export-allocation";
 import { getTrailerOwnershipBadgeLabel, getTrailerOwnershipType, type TrailerOwnershipType } from "@/lib/trailer-ownership";
+import { resolveHistoricalOwnership, type HistoricalOwnershipSnapshot } from "@/lib/reports/historical-trailer-ownership";
 import { advanceExportAllocationStatus, undoExportAllocationStatus } from "@/lib/operations/export-lifecycle";
 
 type TrailerLoadSnapshot = {
@@ -391,11 +392,13 @@ function ExportOperationsPageContent() {
       const normalizedRows = rows.map((row) => normalizeExportAllocationRecord(row));
       const trailerIds = Array.from(new Set(normalizedRows.map((row) => row.trailer_id).filter((value): value is string => Boolean(value))));
 
-      let trailerOwnershipById = new Map<string, { trailer_source?: string | null; external_company?: string | null; is_local?: boolean | null; trailer_number?: string | null }>();
+      let trailerOwnershipById = new Map<string, { trailer_source?: string | null; external_company?: string | null; is_local?: boolean | null; trailer_number?: string | null; source_vessel_operation_trailer_id?: string | null }>();
+      let vesselOwnershipById = new Map<string, HistoricalOwnershipSnapshot>();
+      let eventOwnershipByAllocationId = new Map<string, HistoricalOwnershipSnapshot>();
       if (trailerIds.length > 0) {
         const { data: trailerRows, error: trailerLookupError } = await supabase
           .from("trailers")
-          .select("id, trailer_source, external_company, is_local, trailer_number")
+          .select("id, trailer_source, external_company, is_local, trailer_number, source_vessel_operation_trailer_id")
           .in("id", trailerIds);
 
         if (trailerLookupError) {
@@ -409,18 +412,38 @@ function ExportOperationsPageContent() {
             external_company: row.external_company,
             is_local: row.is_local,
             trailer_number: row.trailer_number,
+            source_vessel_operation_trailer_id: row.source_vessel_operation_trailer_id,
           },
         ]));
+
+        const sourceIds = Array.from(new Set((trailerRows ?? []).map((row) => row.source_vessel_operation_trailer_id).filter((value): value is string => Boolean(value))));
+        const [{ data: sourceRows, error: sourceError }, { data: eventRows, error: eventError }] = await Promise.all([
+          sourceIds.length
+            ? supabase.from("vessel_operation_trailers").select("id, ownership_type, trailer_source, external_company").in("id", sourceIds)
+            : Promise.resolve({ data: [], error: null }),
+          supabase.from("trailer_events").select("trailer_id, event_type, new_value").in("trailer_id", trailerIds).eq("event_type", "export_allocation_created"),
+        ]);
+        if (sourceError) throw sourceError;
+        if (eventError) throw eventError;
+        vesselOwnershipById = new Map((sourceRows ?? []).map((row) => [row.id, row]));
+        eventOwnershipByAllocationId = new Map((eventRows ?? []).flatMap((row) => {
+          const value = row.new_value as { export_allocation_id?: string; source?: string } | null;
+          if (!value?.export_allocation_id || (value.source !== "outsourced" && value.source !== "existing")) return [];
+          return [[value.export_allocation_id, { trailer_source: value.source === "outsourced" ? "outsourced" : "unknown" }]];
+        }));
       }
 
       const withOwnership = normalizedRows.map((row) => {
         const ownershipSource = row.trailer_id ? trailerOwnershipById.get(row.trailer_id) : undefined;
-        const ownershipType = getTrailerOwnershipType({
-          trailerSource: ownershipSource?.trailer_source,
-          externalCompany: ownershipSource?.external_company,
-          isLocal: ownershipSource?.is_local,
-          trailerNumber: ownershipSource?.trailer_number ?? row.trailer_number,
-        });
+        const operationSnapshot = ownershipSource?.source_vessel_operation_trailer_id
+          ? vesselOwnershipById.get(ownershipSource.source_vessel_operation_trailer_id) ?? null
+          : null;
+        const eventSnapshot = eventOwnershipByAllocationId.get(row.id) ?? null;
+        const ownershipType = EXPORT_ACTIVE_STATUSES.has(row.status)
+          ? operationSnapshot || eventSnapshot
+            ? resolveHistoricalOwnership({ sourceSnapshot: operationSnapshot, eventSnapshot })
+            : getTrailerOwnershipType({ trailerSource: ownershipSource?.trailer_source, externalCompany: ownershipSource?.external_company, isLocal: ownershipSource?.is_local })
+          : resolveHistoricalOwnership({ sourceSnapshot: operationSnapshot, eventSnapshot });
 
         return {
           ...row,

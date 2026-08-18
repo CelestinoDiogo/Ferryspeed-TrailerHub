@@ -10,20 +10,23 @@ import { PrintReportLayout } from "@/components/print/print-report-layout";
 import { PrintSummary } from "@/components/print/print-summary";
 import { PrintTable } from "@/components/print/print-table";
 import { getHistoryDateRangeLabel, createHistoryDateRange, normalizeHistoryPreset, type HistoryDateRangeValue } from "@/lib/history-date-range";
-import { collectionRecord, filterHistoricalOperations, ownershipForArrival, ownershipForTrailer, type HistoricalOperationKind, type HistoricalOperationRecord } from "@/lib/reports/historical-operations";
+import { collectionRecord, filterHistoricalOperations, ownershipForArrival, type HistoricalOperationKind, type HistoricalOperationRecord } from "@/lib/reports/historical-operations";
+import { resolveHistoricalOwnership, type HistoricalOwnershipSnapshot } from "@/lib/reports/historical-trailer-ownership";
 import { supabase } from "@/lib/supabase";
 import { getTrailerOwnershipBadgeLabel } from "@/lib/trailer-ownership";
 
 const formatDateTime = (value: string | null) => value ? new Date(value).toLocaleString("en-GB", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "-";
 const formatDate = (value: string | null) => value ? new Date(value).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }) : "-";
 
-const readFilterState = (): { range: HistoryDateRangeValue; ownership: "all" | "company" | "outsourcing"; search: string } => {
+type OwnershipFilter = "all" | "company" | "outsourcing" | "unknown";
+
+const readFilterState = (): { range: HistoryDateRangeValue; ownership: OwnershipFilter; search: string } => {
   if (typeof window === "undefined") return { range: createHistoryDateRange("today"), ownership: "all", search: "" };
   const params = new URLSearchParams(window.location.search);
   const preset = normalizeHistoryPreset(params.get("history"));
   return {
     range: preset === "custom" ? { preset, startDate: params.get("start") ?? "", endDate: params.get("end") ?? "" } : createHistoryDateRange(preset),
-    ownership: params.get("ownership") === "company" || params.get("ownership") === "outsourcing" ? params.get("ownership") as "company" | "outsourcing" : "all",
+    ownership: params.get("ownership") === "company" || params.get("ownership") === "outsourcing" || params.get("ownership") === "unknown" ? params.get("ownership") as OwnershipFilter : "all",
     search: params.get("search") ?? "",
   };
 };
@@ -31,7 +34,7 @@ const readFilterState = (): { range: HistoryDateRangeValue; ownership: "all" | "
 export function HistoricalOperationsReport({ kind }: { kind: HistoricalOperationKind }) {
   const [records, setRecords] = useState<HistoricalOperationRecord[]>([]);
   const [range, setRange] = useState<HistoryDateRangeValue>(() => readFilterState().range);
-  const [ownership, setOwnership] = useState<"all" | "company" | "outsourcing">(() => readFilterState().ownership);
+  const [ownership, setOwnership] = useState<OwnershipFilter>(() => readFilterState().ownership);
   const [search, setSearch] = useState(() => readFilterState().search);
   const [collectionState, setCollectionState] = useState<"all" | "pending" | "collected">("all");
   const [aging, setAging] = useState<"all" | "green" | "orange" | "red">("all");
@@ -45,14 +48,20 @@ export function HistoricalOperationsReport({ kind }: { kind: HistoricalOperation
       try {
         if (kind === "departures") {
           const { data, error: queryError } = await supabase.from("trailers")
-            .select("id, trailer_number, departure_date, departure_time, customer, load_status, notes, trailer_source, external_company, is_local")
+            .select("id, trailer_number, departure_date, departure_time, customer, load_status, notes, source_vessel_operation_trailer_id")
             .not("departure_date", "is", null);
           if (queryError) throw queryError;
+          const sourceIds = Array.from(new Set((data ?? []).map((row) => row.source_vessel_operation_trailer_id).filter((value): value is string => Boolean(value))));
+          const { data: sourceRows, error: sourceError } = sourceIds.length
+            ? await supabase.from("vessel_operation_trailers").select("id, ownership_type, trailer_source, external_company").in("id", sourceIds)
+            : { data: [], error: null };
+          if (sourceError) throw sourceError;
+          const sourceMap = new Map((sourceRows ?? []).map((row) => [row.id, row]));
           setRecords(((data ?? []) as Array<Record<string, unknown>>).map((row) => ({
             id: row.id as string,
             trailerNumber: row.trailer_number as string | null,
             occurredAt: row.departure_date ? `${String(row.departure_date).slice(0, 10)}T${row.departure_time ?? "00:00:00"}` : null,
-            ownershipType: ownershipForTrailer(row as { trailer_source?: string; external_company?: string; is_local?: boolean; trailer_number?: string }),
+            ownershipType: resolveHistoricalOwnership({ sourceSnapshot: sourceMap.get(row.source_vessel_operation_trailer_id as string) ?? null }),
             customer: row.customer as string | null,
             sourceOrDestination: null,
             reference: null,
@@ -67,27 +76,24 @@ export function HistoricalOperationsReport({ kind }: { kind: HistoricalOperation
           if (vesselError) throw vesselError;
           if (operationError) throw operationError;
           const operations = new Map((operationRows ?? []).map((row) => [row.id, row]));
-          const trailerIds = Array.from(new Set((vesselRows ?? []).map((row) => row.trailer_id).filter((value): value is string => Boolean(value))));
-          const { data: trailers, error: trailerError } = trailerIds.length ? await supabase.from("trailers").select("id, trailer_number, trailer_source, external_company, is_local").in("id", trailerIds) : { data: [], error: null };
-          if (trailerError) throw trailerError;
-          const trailerMap = new Map((trailers ?? []).map((row) => [row.id, row]));
           setRecords((vesselRows ?? []).filter((row) => row.arrival_confirmed_at || row.arrived_at).map((row) => {
             const operation = operations.get(row.vessel_operation_id) as { vessel_name?: string | null; sailing_reference?: string | null; origin_port?: string | null } | undefined;
-            const trailer = (row.trailer_id ? trailerMap.get(row.trailer_id) : undefined) ?? {
-              trailer_number: row.trailer_number,
-              trailer_source: row.trailer_source,
-              external_company: row.external_company,
-              is_local: row.trailer_source === "local",
-            };
-            return { id: row.id, trailerNumber: row.trailer_number ?? trailer.trailer_number ?? null, occurredAt: row.arrival_confirmed_at ?? row.arrived_at ?? null, ownershipType: ownershipForArrival(row, trailer), customer: row.customer, sourceOrDestination: [operation?.vessel_name, operation?.origin_port].filter(Boolean).join(" / ") || null, reference: row.booking_reference, loadStatus: row.load_status, notes: row.planning_notes };
+            return { id: row.id, trailerNumber: row.trailer_number ?? null, occurredAt: row.arrival_confirmed_at ?? row.arrived_at ?? null, ownershipType: ownershipForArrival(row), customer: row.customer, sourceOrDestination: [operation?.vessel_name, operation?.origin_port].filter(Boolean).join(" / ") || null, reference: row.booking_reference, loadStatus: row.load_status, notes: row.planning_notes };
           }));
         } else {
-          const { data, error: queryError } = await supabase.from("delivery_bookings").select("id, trailer_id, delivery_date, delivery_time, customer, booking_reference, status, notes, delivered_at, waiting_collection_since, collection_due_date, collected_at, driver:drivers(display_name), trailers(trailer_number, trailer_source, external_company, is_local)").order("delivery_date", { ascending: true });
+          const { data, error: queryError } = await supabase.from("delivery_bookings").select("id, trailer_id, delivery_date, delivery_time, customer, booking_reference, status, notes, delivered_at, waiting_collection_since, collection_due_date, collected_at, driver:drivers(display_name), trailers(trailer_number, source_vessel_operation_trailer_id)").order("delivery_date", { ascending: true });
           if (queryError) throw queryError;
-          setRecords(((data ?? []) as Array<Record<string, unknown>>).filter((row) => kind === "deliveries" || row.status === "waiting_collection" || row.collected_at).map((row) => {
+          const bookingRows = (data ?? []) as Array<Record<string, unknown>>;
+          const sourceIds = Array.from(new Set(bookingRows.map((row) => (row.trailers as { source_vessel_operation_trailer_id?: string | null } | null)?.source_vessel_operation_trailer_id).filter((value): value is string => Boolean(value))));
+          const { data: sourceRows, error: sourceError } = sourceIds.length
+            ? await supabase.from("vessel_operation_trailers").select("id, ownership_type, trailer_source, external_company").in("id", sourceIds)
+            : { data: [], error: null };
+          if (sourceError) throw sourceError;
+          const sourceMap = new Map((sourceRows ?? []).map((row) => [row.id, row as HistoricalOwnershipSnapshot & { id: string }]));
+          setRecords(bookingRows.filter((row) => kind === "deliveries" || row.status === "waiting_collection" || row.collected_at).map((row) => {
             const driver = row.driver as { display_name?: string | null } | null;
-            const trailer = row.trailers as { trailer_number?: string | null; trailer_source?: string | null; external_company?: string | null; is_local?: boolean | null } | null;
-            const collection = collectionRecord({ id: row.id as string, trailer_number: trailer?.trailer_number, customer: row.customer as string | null, booking_reference: row.booking_reference as string | null, delivery_date: row.delivery_date as string, delivered_at: row.delivered_at as string | null, waiting_collection_since: row.waiting_collection_since as string | null, collection_due_date: row.collection_due_date as string | null, collected_at: row.collected_at as string | null, notes: row.notes as string | null, driver: driver?.display_name ?? null, trailer_source: trailer?.trailer_source, external_company: trailer?.external_company, is_local: trailer?.is_local });
+            const trailer = row.trailers as { trailer_number?: string | null; source_vessel_operation_trailer_id?: string | null } | null;
+            const collection = collectionRecord({ id: row.id as string, trailer_number: trailer?.trailer_number, customer: row.customer as string | null, booking_reference: row.booking_reference as string | null, delivery_date: row.delivery_date as string, delivered_at: row.delivered_at as string | null, waiting_collection_since: row.waiting_collection_since as string | null, collection_due_date: row.collection_due_date as string | null, collected_at: row.collected_at as string | null, notes: row.notes as string | null, driver: driver?.display_name ?? null, historicalOwnership: trailer?.source_vessel_operation_trailer_id ? sourceMap.get(trailer.source_vessel_operation_trailer_id) ?? null : null });
             return kind === "collections" ? collection : { ...collection, occurredAt: (row.delivery_time ? `${String(row.delivery_date).slice(0, 10)}T${String(row.delivery_time)}` : String(row.delivery_date)) as string, collectionState: undefined, agingLevel: undefined, agingLabel: undefined };
           }));
         }

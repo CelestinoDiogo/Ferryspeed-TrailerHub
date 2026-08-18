@@ -36,16 +36,28 @@ vi.mock("@/lib/supabase", () => ({
               },
               {
                 id: "t-outsourcing",
-                trailer_source: "outsourced",
-                external_company: "Carrier Z",
+                trailer_source: "company",
+                external_company: null,
                 is_local: false,
                 trailer_number: "PFC200",
+                source_vessel_operation_trailer_id: "vt-outsourcing",
               },
             ],
             error: null,
           }),
         };
 
+        return chain;
+      }
+
+      if (table === "vessel_operation_trailers") {
+        const chain = {
+          select: () => chain,
+          in: () => Promise.resolve({
+            data: [{ id: "vt-outsourcing", ownership_type: "outsourcing", trailer_source: "outsourced", external_company: "Carrier Z" }],
+            error: null,
+          }),
+        };
         return chain;
       }
 
@@ -129,6 +141,15 @@ describe("Export operations ownership filtering", () => {
     expect(await screen.findByText("1 allocation")).toBeInTheDocument();
     expect(screen.getAllByText("PFC200").length).toBeGreaterThan(0);
     expect(screen.queryByText("PRO100")).not.toBeInTheDocument();
+  });
+
+  it("keeps historical vessel ownership when the linked global trailer later says company", async () => {
+    searchParamsValue = "history=today&ownership=outsourcing";
+
+    render(<ExportOperationsPage />);
+
+    expect(await screen.findByText("1 allocation")).toBeInTheDocument();
+    expect(screen.getAllByText("PFC200").length).toBeGreaterThan(0);
   });
 
   it("combines multiple customers into one consolidated filtered view", async () => {

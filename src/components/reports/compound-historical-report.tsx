@@ -10,7 +10,8 @@ import { PrintReportLayout } from "@/components/print/print-report-layout";
 import { PrintSummary } from "@/components/print/print-summary";
 import { PrintTable } from "@/components/print/print-table";
 import { createHistoryDateRange, getHistoryDateRangeLabel, normalizeHistoryPreset, type HistoryDateRangeValue } from "@/lib/history-date-range";
-import { compoundActivityTypes, filterCompoundActivity, ownershipForCompoundTrailer, toCompoundSnapshotRecord, type CompoundActivityRecord, type CompoundReportMode, type CompoundSnapshotRecord } from "@/lib/reports/compound-historical";
+import { compoundActivityTypes, filterCompoundActivity, ownershipForCompoundActivity, toCompoundSnapshotRecord, type CompoundActivityRecord, type CompoundReportMode, type CompoundSnapshotRecord } from "@/lib/reports/compound-historical";
+import type { HistoricalOwnershipSnapshot } from "@/lib/reports/historical-trailer-ownership";
 import { supabase } from "@/lib/supabase";
 import { getTrailerOwnershipBadgeLabel } from "@/lib/trailer-ownership";
 
@@ -38,14 +39,14 @@ export function CompoundHistoricalReport({ mode }: { mode: CompoundReportMode })
           if (queryError) throw queryError;
           setSnapshot((data ?? []).map(toCompoundSnapshotRecord));
         } else {
-          const { data, error: queryError } = await supabase.from("trailer_activity_log").select("id, trailer_id, trailer_number, event_type, previous_compound_position, new_compound_position, previous_status, new_status, source_module, performed_by, event_description, created_at").in("event_type", [...compoundActivityTypes]).order("created_at", { ascending: false }).limit(1200);
+          const { data, error: queryError } = await supabase.from("trailer_activity_log").select("id, trailer_id, trailer_number, event_type, previous_compound_position, new_compound_position, previous_status, new_status, source_module, source_record_id, metadata, performed_by, event_description, created_at").in("event_type", [...compoundActivityTypes]).order("created_at", { ascending: false }).limit(1200);
           if (queryError) throw queryError;
           const activityRows = data ?? [];
-          const trailerIds = Array.from(new Set(activityRows.map((row) => row.trailer_id).filter((value): value is string => Boolean(value))));
-          const { data: trailerRows, error: trailerError } = trailerIds.length ? await supabase.from("trailers").select("id, trailer_number, trailer_source, external_company, is_local").in("id", trailerIds) : { data: [], error: null };
-          if (trailerError) throw trailerError;
-          const trailerMap = new Map((trailerRows ?? []).map((row) => [row.id, row]));
-          setActivity(activityRows.map((row) => ({ id: row.id, occurredAt: row.created_at, trailerNumber: row.trailer_number, eventType: row.event_type, ownershipType: ownershipForCompoundTrailer(row.trailer_id ? trailerMap.get(row.trailer_id) ?? { trailer_number: row.trailer_number } : { trailer_number: row.trailer_number }), previousPosition: row.previous_compound_position, newPosition: row.new_compound_position, previousStatus: row.previous_status, newStatus: row.new_status, sourceModule: row.source_module, performedBy: row.performed_by, description: row.event_description })));
+          const sourceIds = Array.from(new Set(activityRows.map((row) => row.source_record_id).filter((value): value is string => Boolean(value))));
+          const { data: sourceRows, error: sourceError } = sourceIds.length ? await supabase.from("vessel_operation_trailers").select("id, ownership_type, trailer_source, external_company").in("id", sourceIds) : { data: [], error: null };
+          if (sourceError) throw sourceError;
+          const sourceMap = new Map((sourceRows ?? []).map((row) => [row.id, row]));
+          setActivity(activityRows.map((row) => ({ id: row.id, occurredAt: row.created_at, trailerNumber: row.trailer_number, eventType: row.event_type, ownershipType: ownershipForCompoundActivity(row.source_record_id ? sourceMap.get(row.source_record_id) ?? null : null, row.metadata as HistoricalOwnershipSnapshot | null), previousPosition: row.previous_compound_position, newPosition: row.new_compound_position, previousStatus: row.previous_status, newStatus: row.new_status, sourceModule: row.source_module, performedBy: row.performed_by, description: row.event_description })));
         }
       } catch (loadError) { setError(loadError instanceof Error ? loadError.message : "Unable to load Compound report."); } finally { setLoading(false); }
     };

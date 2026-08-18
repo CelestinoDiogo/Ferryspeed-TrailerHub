@@ -30,6 +30,7 @@ type FormState = {
   source: AllocationSource;
   trailerId: string;
   trailerNumber: string;
+  externalCompany: string;
   customer: string;
   collectionAddress: string;
   haulier: string;
@@ -45,6 +46,7 @@ const INITIAL_FORM: FormState = {
   source: "existing",
   trailerId: "",
   trailerNumber: "",
+  externalCompany: "",
   customer: "",
   collectionAddress: "",
   haulier: "",
@@ -256,6 +258,7 @@ export default function NewExportAllocationPage() {
             .insert({
               trailer_number: normalizedNumber,
               trailer_source: "outsourced",
+              external_company: formState.externalCompany.trim() || null,
               load_status: "Empty",
               customer: formState.customer.trim() || null,
               is_local: false,
@@ -334,6 +337,8 @@ export default function NewExportAllocationPage() {
           priority: insertPayload.priority,
           status: "allocated",
           source: formState.source,
+          trailer_source: formState.source === "outsourced" ? "outsourced" : trailer.trailer_source ?? null,
+          external_company: formState.source === "outsourced" ? formState.externalCompany.trim() || null : null,
         },
       });
 
@@ -362,6 +367,8 @@ export default function NewExportAllocationPage() {
             expected_return_at: insertPayload.expected_return_at,
             priority: insertPayload.priority,
             source: formState.source,
+            trailer_source: formState.source === "outsourced" ? "outsourced" : trailer.trailer_source ?? null,
+            external_company: formState.source === "outsourced" ? formState.externalCompany.trim() || null : null,
           },
         });
       } catch (activityError) {
@@ -453,6 +460,19 @@ export default function NewExportAllocationPage() {
                 placeholder="Customer name"
               />
             </div>
+
+            {formState.source === "outsourced" ? (
+              <div>
+                <label className="mb-2 block text-sm font-medium text-slate-200">External Company / Supplier</label>
+                <input
+                  value={formState.externalCompany}
+                  onChange={(event) => handleChange("externalCompany", event.target.value)}
+                  className="w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm outline-none"
+                  placeholder="Optional external owner"
+                  disabled={isSaving}
+                />
+              </div>
+            ) : null}
 
             <div>
               <label className="mb-2 block text-sm font-medium text-slate-200">Collection Address</label>

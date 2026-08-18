@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createHistoryDateRange } from "@/lib/history-date-range";
-import { filterCompoundActivity, ownershipForCompoundTrailer, toCompoundSnapshotRecord, type CompoundActivityRecord } from "@/lib/reports/compound-historical";
+import { filterCompoundActivity, ownershipForCompoundActivity, ownershipForCompoundTrailer, toCompoundSnapshotRecord, type CompoundActivityRecord } from "@/lib/reports/compound-historical";
 
 const rows: CompoundActivityRecord[] = [
   { id: "a", occurredAt: "2026-08-14T10:00:00Z", trailerNumber: "PRO100", eventType: "compound_position_changed", ownershipType: "company", previousPosition: "P01", newPosition: "P02", previousStatus: null, newStatus: null, sourceModule: "compound", performedBy: "Operator", description: "Position updated" },
@@ -36,6 +36,12 @@ describe("compound historical reporting", () => {
     expect(filterCompoundActivity(rows, createHistoryDateRange("today", "2026-08-14"), "all", "", "all")).toHaveLength(1);
     expect(ownershipForCompoundTrailer({ trailer_source: "outsourced", external_company: "Carrier Z" })).toBe("outsourcing");
     expect(ownershipForCompoundTrailer({ trailer_source: "company" })).toBe("company");
+  });
+
+  it("keeps activity ownership scoped to historical evidence", () => {
+    expect(ownershipForCompoundActivity({ ownership_type: "outsourcing", trailer_source: "outsourced" }, { ownership_type: "company" })).toBe("outsourcing");
+    expect(ownershipForCompoundActivity(null, { trailer_source: "outsourced", external_company: "External Owner" })).toBe("outsourcing");
+    expect(ownershipForCompoundActivity()).toBe("unknown");
   });
 
   it("returns no events for excluded periods", () => {

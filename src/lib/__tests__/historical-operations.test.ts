@@ -9,16 +9,15 @@ const records: HistoricalOperationRecord[] = [
 
 describe("historical operations filters", () => {
   it("keeps historical arrival ownership independent from the current trailer relation", () => {
-    expect(ownershipForArrival({ ownership_type: "company", trailer_source: "company" }, null)).toBe("company");
-    expect(ownershipForArrival({ ownership_type: "outsourcing", trailer_source: "outsourced", external_company: "Carrier Z" }, null)).toBe("outsourcing");
+    expect(ownershipForArrival({ ownership_type: "company", trailer_source: "company" })).toBe("company");
+    expect(ownershipForArrival({ ownership_type: "outsourcing", trailer_source: "outsourced", external_company: "Carrier Z" })).toBe("outsourcing");
     expect(ownershipForArrival(
       { ownership_type: "outsourcing", trailer_source: "outsourced", external_company: "Carrier Z" },
-      { trailer_source: "company", trailer_number: "PFC200" },
     )).toBe("outsourcing");
     expect(ownershipForArrival(
-      { trailer_source: "local", is_local: true, trailer_number: "LOCAL1" },
-      null,
+      { trailer_source: "local", is_local: true },
     )).toBe("company");
+    expect(ownershipForArrival({ ownership_type: "unknown", trailer_source: "unknown" })).toBe("unknown");
   });
 
   it("filters today, historical range, ownership, and trailer/reference search inclusively", () => {
@@ -38,5 +37,15 @@ describe("historical operations filters", () => {
     expect(filterHistoricalOperations([pending, collected], { range: createHistoryDateRange("today", "2026-08-14"), ownership: "all", search: "", collectionState: "pending", aging: "all", currentPending: true })).toEqual([pending]);
     expect(["orange", "red"]).toContain(pending.agingLevel);
     expect(collected.collectionState).toBe("collected");
+  });
+
+  it("uses source ownership for collection history and otherwise remains unknown", () => {
+    expect(collectionRecord({ id: "historical", trailer_number: "SAME1", delivery_date: "2026-08-01", historicalOwnership: { ownership_type: "outsourcing", trailer_source: "outsourced" } }).ownershipType).toBe("outsourcing");
+    expect(collectionRecord({ id: "unknown", trailer_number: "SAME1", delivery_date: "2026-08-01" }).ownershipType).toBe("unknown");
+  });
+
+  it("keeps repeated trailer numbers isolated by their own snapshots", () => {
+    expect(ownershipForArrival({ ownership_type: "company", trailer_source: "company" })).toBe("company");
+    expect(ownershipForArrival({ ownership_type: "outsourcing", trailer_source: "outsourced" })).toBe("outsourcing");
   });
 });

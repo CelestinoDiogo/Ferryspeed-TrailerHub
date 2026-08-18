@@ -1,5 +1,6 @@
 import { isDateWithinHistoryRange, type HistoryDateRangeValue } from "@/lib/history-date-range";
 import { getTrailerOwnershipType, type TrailerOwnershipType } from "@/lib/trailer-ownership";
+import { resolveHistoricalOwnership, type HistoricalOwnershipSnapshot } from "@/lib/reports/historical-trailer-ownership";
 
 export type CompoundReportMode = "snapshot" | "activity";
 export type CompoundSnapshotRecord = {
@@ -54,6 +55,11 @@ export const filterCompoundActivity = (rows: CompoundActivityRecord[], range: Hi
 };
 
 export const ownershipForCompoundTrailer = (row: { trailer_source?: string | null; external_company?: string | null; is_local?: boolean | null; trailer_number?: string | null }) => getTrailerOwnershipType({ trailerSource: row.trailer_source, externalCompany: row.external_company, isLocal: row.is_local, trailerNumber: row.trailer_number });
+
+export const ownershipForCompoundActivity = (
+  sourceSnapshot?: HistoricalOwnershipSnapshot | null,
+  eventSnapshot?: HistoricalOwnershipSnapshot | null,
+) => resolveHistoricalOwnership({ sourceSnapshot, eventSnapshot });
 
 export const toCompoundSnapshotRecord = (row: {
   id: string;
