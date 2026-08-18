@@ -661,6 +661,20 @@ const runMarkArrived = async (
     };
   }
 
+  if (
+    trailer.arrival_status === "cancelled" ||
+    trailer.arrival_status === "no_show" ||
+    trailer.arrival_status === "not_discharged"
+  ) {
+    return buildConflict({
+      code: "arrival_outcome_conflict",
+      message: `Trailer is marked ${(trailer.arrival_status ?? "unavailable").replace(/_/g, " ")} and cannot be marked arrived.`,
+      serverState: {
+        arrivalStatus: trailer.arrival_status,
+      },
+    });
+  }
+
   if (trailer.arrival_status === "arrived" || trailer.arrival_record_id) {
     return {
       ok: true,

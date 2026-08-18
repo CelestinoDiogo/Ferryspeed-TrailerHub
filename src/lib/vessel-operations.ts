@@ -459,6 +459,25 @@ export const getFirstAvailableCompoundPosition = (occupiedPositions: Set<string>
 export const hasCompletedBoatCheck = (trailer: Pick<VesselOperationTrailerRecord, "status" | "inspection_completed_at">) =>
   trailer.status === "inspected" || Boolean(trailer.inspection_completed_at);
 
+type VesselCancellationEligibilityRow = Pick<
+  VesselOperationTrailerRecord,
+  "arrival_status" | "arrival_record_id" | "inspection_started_at" | "inspection_completed_at" | "status"
+>;
+
+const hasVesselArrivalHistory = (trailer: VesselCancellationEligibilityRow) =>
+  Boolean(trailer.arrival_record_id) ||
+  Boolean(trailer.inspection_started_at) ||
+  Boolean(trailer.inspection_completed_at) ||
+  trailer.status === "arrived" ||
+  trailer.status === "inspected";
+
+export const canCancelVesselTrailer = (trailer: VesselCancellationEligibilityRow) =>
+  (trailer.arrival_status === "expected" || trailer.arrival_status === "available_for_arrival") &&
+  !hasVesselArrivalHistory(trailer);
+
+export const canUndoVesselTrailerCancellation = (trailer: VesselCancellationEligibilityRow) =>
+  trailer.arrival_status === "cancelled" && !hasVesselArrivalHistory(trailer);
+
 export const getVesselInspectionProgressState = (
   trailer: Pick<VesselOperationTrailerRecord, "inspection_started_at" | "inspection_completed_at" | "has_damage" | "has_temperature_alert" | "status">,
 ): VesselInspectionProgressState => {
@@ -664,15 +683,17 @@ export const sortVesselOperationTrailersForArrivals = <T extends { priority_leve
 export const computeVesselOperationSummary = (
   trailers: Array<Pick<VesselOperationTrailerRecord, "priority_level" | "status" | "has_damage" | "has_temperature_alert" | "arrival_status">>,
 ): VesselOperationSummary => {
-  const isNotArrived = (item: Pick<VesselOperationTrailerRecord, "status" | "arrival_status">) =>
-    item.status === "not_arrived" ||
-    item.arrival_status === "not_arrived" ||
+  const isCancelledOrNoShow = (item: Pick<VesselOperationTrailerRecord, "status" | "arrival_status">) =>
     item.status === "cancelled" ||
     item.arrival_status === "cancelled" ||
     item.status === "no_show" ||
-    item.arrival_status === "no_show" ||
-    item.status === "not_discharged" ||
-    item.arrival_status === "not_discharged";
+    item.arrival_status === "no_show";
+
+  const isNotArrived = (item: Pick<VesselOperationTrailerRecord, "status" | "arrival_status">) =>
+    !isCancelledOrNoShow(item) &&
+    item.status !== "not_discharged" &&
+    item.arrival_status !== "not_discharged" &&
+    (item.status === "not_arrived" || item.arrival_status === "not_arrived");
 
   const isArrived = (item: Pick<VesselOperationTrailerRecord, "status" | "arrival_status">) =>
     item.arrival_status === "arrived" || item.status === "arrived" || item.status === "inspected" || item.status === "positioned" || item.status === "inspection_pending" || item.status === "inspection_in_progress";
@@ -680,11 +701,13 @@ export const computeVesselOperationSummary = (
   const isInspected = (item: Pick<VesselOperationTrailerRecord, "status">) =>
     item.status === "inspected" || item.status === "positioned";
 
-  const expected = trailers.length;
-  const arrived = trailers.filter((item) => isArrived(item)).length;
-  const inspected = trailers.filter((item) => isInspected(item)).length;
-  const notArrived = trailers.filter((item) => isNotArrived(item)).length;
-  const remaining = Math.max(expected - arrived - notArrived, 0);
+  const activeTrailers = trailers.filter((item) => !isCancelledOrNoShow(item));
+  const expected = activeTrailers.length;
+  const arrived = activeTrailers.filter((item) => isArrived(item)).length;
+  const inspected = activeTrailers.filter((item) => isInspected(item)).length;
+  const notArrived = activeTrailers.filter((item) => isNotArrived(item)).length;
+  const notDischarged = activeTrailers.filter((item) => item.status === "not_discharged" || item.arrival_status === "not_discharged").length;
+  const remaining = Math.max(expected - arrived - notArrived - notDischarged, 0);
   const inspectionPending = Math.max(arrived - inspected, 0);
   const availableForArrival = remaining;
   const pending = remaining;
@@ -693,7 +716,6 @@ export const computeVesselOperationSummary = (
   const normal = trailers.filter((item) => item.priority_level !== "priority").length;
   const cancelled = trailers.filter((item) => item.status === "cancelled" || item.arrival_status === "cancelled").length;
   const noShow = trailers.filter((item) => item.status === "no_show" || item.arrival_status === "no_show").length;
-  const notDischarged = trailers.filter((item) => item.status === "not_discharged" || item.arrival_status === "not_discharged").length;
   const inProgress = trailers.filter((item) => item.status === "inspection_in_progress").length;
   const positioned = trailers.filter((item) => item.status === "positioned").length;
   const damagedTrailers = trailers.filter((item) => item.has_damage).length;

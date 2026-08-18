@@ -1,4 +1,6 @@
 import {
+  canCancelVesselTrailer,
+  canUndoVesselTrailerCancellation,
   formatVesselDateTime,
   getVesselPriorityClass,
   getVesselPriorityLabel,
@@ -18,6 +20,7 @@ import { useEffect, useMemo, useState } from "react";
 import { OperationalActionBar } from "@/components/operations/operational-action-bar";
 import { TrailerOperationsPanel } from "@/components/operations/trailer-operations-panel";
 import { TrailerHistoryDrawer } from "@/components/trailers/trailer-history-drawer";
+import { CancelVesselTrailerModal } from "./cancel-vessel-trailer-modal";
 
 type TrailerFilter = "all" | "expected" | "arrived" | "inspection_pending" | "inspection_in_progress" | "completed" | "priority" | "cancelled" | "no_show" | "not_discharged";
 type TrailerSort = "trailer_asc" | "trailer_desc";
@@ -40,7 +43,7 @@ type VesselTrailerListProps = {
   onTogglePriority: (trailer: VesselOperationTrailerRecord) => Promise<void>;
   onRemoveTrailer: (trailer: VesselOperationTrailerRecord) => Promise<void>;
   onMarkArrived: (trailer: VesselOperationTrailerRecord) => Promise<void>;
-  onMarkCancelled: (trailer: VesselOperationTrailerRecord) => Promise<void>;
+  onMarkCancelled: (trailer: VesselOperationTrailerRecord, reason: string) => Promise<void>;
   onMarkNoShow: (trailer: VesselOperationTrailerRecord) => Promise<void>;
   onUndoCancelled: (trailer: VesselOperationTrailerRecord) => Promise<void>;
   onUndoNoShow: (trailer: VesselOperationTrailerRecord) => Promise<void>;
@@ -69,35 +72,41 @@ export function VesselTrailerList({
   const [searchTerm, setSearchTerm] = useState("");
   const [sortBy, setSortBy] = useState<TrailerSort>("trailer_asc");
   const [prefixFilter, setPrefixFilter] = useState<string>("all");
+  const [cancellationTrailer, setCancellationTrailer] = useState<VesselOperationTrailerRecord | null>(null);
 
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const filterValue = (params.get("trailerFilter") ?? "all").toLowerCase();
-    const sortValue = (params.get("trailerSort") ?? "trailer_asc").toLowerCase();
-    const queryValue = params.get("trailerSearch") ?? "";
-    const prefixValue = (params.get("trailerPrefix") ?? "all").toUpperCase();
+    const timeoutId = window.setTimeout(() => {
+      const params = new URLSearchParams(window.location.search);
+      const filterValue = (params.get("trailerFilter") ?? "all").toLowerCase();
+      const sortValue = (params.get("trailerSort") ?? "trailer_asc").toLowerCase();
+      const queryValue = params.get("trailerSearch") ?? "";
+      const prefixParam = params.get("trailerPrefix");
+      const prefixValue = prefixParam ? prefixParam.toUpperCase() : "all";
 
-    if (
-      filterValue === "all" ||
-      filterValue === "expected" ||
-      filterValue === "arrived" ||
-      filterValue === "inspection_pending" ||
-      filterValue === "inspection_in_progress" ||
-      filterValue === "completed" ||
-      filterValue === "priority" ||
-      filterValue === "cancelled" ||
-      filterValue === "no_show" ||
-      filterValue === "not_discharged"
-    ) {
-      setActiveFilter(filterValue);
-    }
+      if (
+        filterValue === "all" ||
+        filterValue === "expected" ||
+        filterValue === "arrived" ||
+        filterValue === "inspection_pending" ||
+        filterValue === "inspection_in_progress" ||
+        filterValue === "completed" ||
+        filterValue === "priority" ||
+        filterValue === "cancelled" ||
+        filterValue === "no_show" ||
+        filterValue === "not_discharged"
+      ) {
+        setActiveFilter(filterValue);
+      }
 
-    if (sortValue === "trailer_asc" || sortValue === "trailer_desc") {
-      setSortBy(sortValue);
-    }
+      if (sortValue === "trailer_asc" || sortValue === "trailer_desc") {
+        setSortBy(sortValue);
+      }
 
-    setPrefixFilter(prefixValue || "all");
-    setSearchTerm(queryValue);
+      setPrefixFilter(prefixValue);
+      setSearchTerm(queryValue);
+    }, 0);
+
+    return () => window.clearTimeout(timeoutId);
   }, []);
 
   useEffect(() => {
@@ -250,9 +259,10 @@ export function VesselTrailerList({
     [filteredTrailers, panelTrailerId],
   );
 
-  useEffect(() => {
-    setSelectedTrailerIds((current) => current.filter((id) => filteredTrailers.some((item) => item.id === id)));
-  }, [filteredTrailers]);
+  const visibleSelectedTrailerIds = useMemo(
+    () => selectedTrailerIds.filter((id) => filteredTrailers.some((item) => item.id === id)),
+    [filteredTrailers, selectedTrailerIds],
+  );
 
   const toggleTrailerSelection = (trailerId: string) => {
     setSelectedTrailerIds((current) => {
@@ -295,7 +305,7 @@ export function VesselTrailerList({
     setSelectedTrailerIds((current) => current.filter((id) => !eligibleRows.some((item) => item.id === id)));
   };
 
-  const selectedPanelCount = selectedTrailerIds.length;
+  const selectedPanelCount = visibleSelectedTrailerIds.length;
 
   const statusOptions = filterButtons.map((item) => ({ value: item.key, label: item.label }));
   const sortOptions = [
@@ -334,7 +344,7 @@ export function VesselTrailerList({
             <button
               type="button"
               onClick={clearSelected}
-              disabled={selectedTrailerIds.length === 0}
+              disabled={selectedPanelCount === 0}
               className="rounded-xl border border-white/10 bg-slate-800 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-700 disabled:opacity-50"
             >
               Clear
@@ -342,7 +352,7 @@ export function VesselTrailerList({
             <button
               type="button"
               onClick={() => void handleBatchArrived()}
-              disabled={selectedTrailerIds.length === 0 || actioningTrailerId !== null}
+              disabled={selectedPanelCount === 0 || actioningTrailerId !== null}
               className="rounded-xl bg-cyan-500 px-3 py-2 text-xs font-semibold text-slate-950 hover:bg-cyan-400 disabled:opacity-60"
             >
               Batch Arrived
@@ -362,9 +372,9 @@ export function VesselTrailerList({
           const expectedRear = resolveExpectedRearTemperature(trailer);
           const expectedUnit = normalizeExpectedTemperatureUnit(trailer.expected_temperature_unit);
           const canMarkArrived = operationStatus === "confirmed" && (trailer.status === "expected" || trailer.arrival_status === "available_for_arrival");
-          const canMarkCancelled = operationStatus === "confirmed" && (trailer.arrival_status === "expected" || trailer.arrival_status === "available_for_arrival");
+          const canMarkCancelled = operationStatus === "confirmed" && !isReadOnly && canCancelVesselTrailer(trailer);
           const canMarkNoShow = operationStatus === "confirmed" && (trailer.arrival_status === "expected" || trailer.arrival_status === "available_for_arrival");
-          const canUndoCancelled = operationStatus === "confirmed" && trailer.arrival_status === "cancelled";
+          const canUndoCancelled = operationStatus === "confirmed" && !isReadOnly && canUndoVesselTrailerCancellation(trailer);
           const canUndoNoShow = operationStatus === "confirmed" && trailer.arrival_status === "no_show";
           const canOpenInspection =
             operationStatus !== "draft" &&
@@ -423,6 +433,9 @@ export function VesselTrailerList({
                       <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${getVesselTrailerStatusClass(trailer.status)}`}>
                         {getVesselTrailerStatusLabel(trailer.status)}
                       </span>
+                      {trailer.arrival_status === "cancelled" ? (
+                        <span className="rounded-full border border-rose-400/40 bg-rose-500/10 px-3 py-1 text-xs font-semibold text-rose-200">CANCELLED</span>
+                      ) : null}
                       {trailer.added_after_confirmation ? (
                         <span className="rounded-full border border-amber-400/30 bg-amber-500/15 px-3 py-1 text-xs font-semibold text-amber-100">
                           Added After Confirmation
@@ -458,6 +471,28 @@ export function VesselTrailerList({
                         className="rounded-2xl bg-cyan-500 px-4 py-3 text-sm font-semibold text-slate-950 hover:bg-cyan-400 disabled:opacity-60"
                       >
                         Arrived
+                      </button>
+                    ) : null}
+
+                    {canMarkCancelled ? (
+                      <button
+                        type="button"
+                        onClick={() => setCancellationTrailer(trailer)}
+                        disabled={actioningTrailerId === trailer.id}
+                        className="rounded-2xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-sm font-semibold text-rose-100 hover:bg-rose-500/20 disabled:opacity-60"
+                      >
+                        Cancel
+                      </button>
+                    ) : null}
+
+                    {canUndoCancelled ? (
+                      <button
+                        type="button"
+                        onClick={() => void onUndoCancelled(trailer)}
+                        disabled={actioningTrailerId === trailer.id}
+                        className="rounded-2xl border border-cyan-500/30 bg-cyan-500/10 px-4 py-3 text-sm font-semibold text-cyan-100 hover:bg-cyan-500/20 disabled:opacity-60"
+                      >
+                        Undo Cancel
                       </button>
                     ) : null}
 
@@ -508,17 +543,6 @@ export function VesselTrailerList({
                           </button>
                         ) : null}
 
-                        {canMarkCancelled ? (
-                          <button
-                            type="button"
-                            onClick={() => void onMarkCancelled(trailer)}
-                            disabled={actioningTrailerId === trailer.id}
-                            className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-left text-xs font-semibold text-rose-200 hover:bg-rose-500/20 disabled:opacity-60"
-                          >
-                            Mark Cancelled
-                          </button>
-                        ) : null}
-
                         {canMarkNoShow ? (
                           <button
                             type="button"
@@ -527,17 +551,6 @@ export function VesselTrailerList({
                             className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-left text-xs font-semibold text-amber-100 hover:bg-amber-500/20 disabled:opacity-60"
                           >
                             Mark No Show
-                          </button>
-                        ) : null}
-
-                        {canUndoCancelled ? (
-                          <button
-                            type="button"
-                            onClick={() => void onUndoCancelled(trailer)}
-                            disabled={actioningTrailerId === trailer.id}
-                            className="rounded-xl border border-cyan-500/30 bg-cyan-500/10 px-3 py-2 text-left text-xs font-semibold text-cyan-100 hover:bg-cyan-500/20 disabled:opacity-60"
-                          >
-                            Undo Cancelled
                           </button>
                         ) : null}
 
@@ -573,6 +586,19 @@ export function VesselTrailerList({
           );
         })
       )}
+
+      {cancellationTrailer ? (
+        <CancelVesselTrailerModal
+          key={cancellationTrailer.id}
+          trailer={cancellationTrailer}
+          isSubmitting={actioningTrailerId === cancellationTrailer.id}
+          onClose={() => setCancellationTrailer(null)}
+          onConfirm={async (reason) => {
+            await onMarkCancelled(cancellationTrailer, reason);
+            setCancellationTrailer(null);
+          }}
+        />
+      ) : null}
 
       <TrailerHistoryDrawer
         isOpen={Boolean(historyTrailer)}

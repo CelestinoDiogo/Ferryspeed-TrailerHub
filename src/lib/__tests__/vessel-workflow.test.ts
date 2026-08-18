@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   applyPlanningOwnershipSelection,
+  canCancelVesselTrailer,
+  canUndoVesselTrailerCancellation,
+  computeVesselOperationSummary,
   deriveVesselWorkflowStep,
   getCompletionReadiness,
   getPlanningReadiness,
@@ -56,6 +59,41 @@ const makeTrailer = (overrides: Partial<VesselOperationTrailerRecord> = {}): Ves
 });
 
 describe("vessel workflow regression", () => {
+  it("allows cancellation only before arrival or reception history", () => {
+    expect(canCancelVesselTrailer(makeTrailer({ arrival_status: "expected" }))).toBe(true);
+    expect(canCancelVesselTrailer(makeTrailer({ arrival_status: "available_for_arrival" }))).toBe(true);
+    expect(canCancelVesselTrailer(makeTrailer({ arrival_status: "arrived", status: "arrived" }))).toBe(false);
+    expect(canCancelVesselTrailer(makeTrailer({ arrival_status: "available_for_arrival", arrival_record_id: "arrival-1" }))).toBe(false);
+    expect(canCancelVesselTrailer(makeTrailer({ arrival_status: "available_for_arrival", inspection_started_at: "2026-08-18T10:00:00.000Z" }))).toBe(false);
+  });
+
+  it("allows undo only for an unprogressed cancelled row", () => {
+    expect(canUndoVesselTrailerCancellation(makeTrailer({ arrival_status: "cancelled", status: "not_arrived" }))).toBe(true);
+    expect(canUndoVesselTrailerCancellation(makeTrailer({ arrival_status: "cancelled", status: "not_arrived", arrival_record_id: "arrival-1" }))).toBe(false);
+    expect(canUndoVesselTrailerCancellation(makeTrailer({ arrival_status: "expected" }))).toBe(false);
+  });
+
+  it("keeps cancelled and no-show rows historical without inflating operational totals", () => {
+    const summary = computeVesselOperationSummary([
+      makeTrailer({ id: "arrived", status: "arrived", arrival_status: "arrived" }),
+      makeTrailer({ id: "pending", status: "expected", arrival_status: "available_for_arrival" }),
+      makeTrailer({ id: "not-discharged", status: "not_arrived", arrival_status: "not_discharged" }),
+      makeTrailer({ id: "cancelled", status: "not_arrived", arrival_status: "cancelled" }),
+      makeTrailer({ id: "no-show", status: "not_arrived", arrival_status: "no_show" }),
+    ]);
+
+    expect(summary).toMatchObject({
+      expected: 3,
+      arrived: 1,
+      remaining: 1,
+      pending: 1,
+      inspectionPending: 1,
+      cancelled: 1,
+      noShow: 1,
+      notDischarged: 1,
+    });
+  });
+
   it("keeps physical load state independent from operational lifecycle state", () => {
     expect(resolveVesselReceptionLoadStatus("Empty", "Loaded")).toBe("Loaded");
     expect(resolveVesselReceptionLoadStatus("Loaded", "Empty")).toBe("Empty");

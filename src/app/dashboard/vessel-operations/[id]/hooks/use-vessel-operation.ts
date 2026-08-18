@@ -133,7 +133,7 @@ export type UseVesselOperationResult = {
   handleRemoveTrailer: (trailer: VesselOperationTrailerRecord) => Promise<void>;
   handleConfirmList: () => Promise<void>;
   handleMarkArrived: (trailer: VesselOperationTrailerRecord) => Promise<void>;
-  handleMarkCancelled: (trailer: VesselOperationTrailerRecord) => Promise<void>;
+  handleMarkCancelled: (trailer: VesselOperationTrailerRecord, reason: string) => Promise<void>;
   handleMarkNoShow: (trailer: VesselOperationTrailerRecord) => Promise<void>;
   handleUndoCancelled: (trailer: VesselOperationTrailerRecord) => Promise<void>;
   handleUndoNoShow: (trailer: VesselOperationTrailerRecord) => Promise<void>;
@@ -646,7 +646,7 @@ export function useVesselOperation(operationId: string): UseVesselOperationResul
     } finally {
       setIsSaving(false);
     }
-  }, [existingTrailerNumbers, formState, insertTrailers, isReadOnly, loadOperation, operation?.list_status]);
+  }, [existingTrailerNumbers, formState, insertTrailers, isReadOnly, loadOperation, operation]);
 
   const handleBulkAdd = useCallback(async () => {
     if (isReadOnly) {
@@ -696,7 +696,7 @@ export function useVesselOperation(operationId: string): UseVesselOperationResul
     } finally {
       setIsSaving(false);
     }
-  }, [bulkText, existingTrailerNumbers, insertTrailers, isReadOnly, loadOperation, operation?.list_status]);
+  }, [bulkText, existingTrailerNumbers, insertTrailers, isReadOnly, loadOperation, operation]);
 
   const handleTogglePriority = useCallback(
     async (trailer: VesselOperationTrailerRecord) => {
@@ -843,7 +843,7 @@ export function useVesselOperation(operationId: string): UseVesselOperationResul
         setActioningTrailerId(null);
       }
     },
-    [isReadOnly, loadOperation, operation?.list_status],
+    [isReadOnly, loadOperation, operation],
   );
 
   const handleConfirmList = useCallback(async () => {
@@ -1228,20 +1228,74 @@ export function useVesselOperation(operationId: string): UseVesselOperationResul
         setActioningTrailerId(null);
       }
     },
-    [isReadOnly, loadOperation, operation?.list_status],
+    [isReadOnly, loadOperation, operation],
   );
 
-  const handleMarkCancelled = useCallback(async (trailer: VesselOperationTrailerRecord) => {
-    await handleSetTrailerOutcome(trailer, "cancelled");
-  }, [handleSetTrailerOutcome]);
+  const executeCancellationAction = useCallback(async (
+    trailer: VesselOperationTrailerRecord,
+    actionType: "MARK_CANCELLED" | "UNDO_CANCELLED",
+    reason?: string,
+  ) => {
+    if (isReadOnly) {
+      setError("Trailer list is locked after completion.");
+      return;
+    }
+
+    setActioningTrailerId(trailer.id);
+    setError(null);
+    setSuccess(null);
+
+    try {
+      const sessionResult = await supabase.auth.getSession();
+      const accessToken = sessionResult.data.session?.access_token;
+      if (!accessToken) {
+        throw new Error("Authentication session not available.");
+      }
+
+      const response = await fetch("/api/mobile-actions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({
+          action: {
+            actionType,
+            payload: {
+              vesselTrailerId: trailer.id,
+              trailerNumber: trailer.trailer_number ?? undefined,
+              ...(actionType === "MARK_CANCELLED" ? { reason: reason?.trim() || null } : {}),
+            },
+          },
+        }),
+      });
+
+      const result = (await response.json()) as { error?: string; message?: string; status?: string; conflict?: { message?: string } | null };
+      if (!response.ok || result.status === "failed" || result.status === "conflict") {
+        throw new Error(result.conflict?.message ?? result.error ?? result.message ?? "Unable to update trailer cancellation.");
+      }
+
+      await loadOperation();
+      setSuccess(result.message ?? (actionType === "MARK_CANCELLED" ? "Trailer marked Cancelled." : "Trailer restored to pending arrival."));
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : "Unable to update trailer cancellation.");
+      await loadOperation();
+    } finally {
+      setActioningTrailerId(null);
+    }
+  }, [isReadOnly, loadOperation]);
+
+  const handleMarkCancelled = useCallback(async (trailer: VesselOperationTrailerRecord, reason: string) => {
+    await executeCancellationAction(trailer, "MARK_CANCELLED", reason);
+  }, [executeCancellationAction]);
 
   const handleMarkNoShow = useCallback(async (trailer: VesselOperationTrailerRecord) => {
     await handleSetTrailerOutcome(trailer, "no_show");
   }, [handleSetTrailerOutcome]);
 
   const handleUndoCancelled = useCallback(async (trailer: VesselOperationTrailerRecord) => {
-    await handleUndoTrailerOutcome(trailer, "cancelled");
-  }, [handleUndoTrailerOutcome]);
+    await executeCancellationAction(trailer, "UNDO_CANCELLED");
+  }, [executeCancellationAction]);
 
   const handleUndoNoShow = useCallback(async (trailer: VesselOperationTrailerRecord) => {
     await handleUndoTrailerOutcome(trailer, "no_show");

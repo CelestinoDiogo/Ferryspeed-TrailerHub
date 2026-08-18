@@ -511,6 +511,33 @@ describe("SupervisorMobileDashboard", () => {
     expect(screen.queryByText("FS1001")).not.toBeInTheDocument();
   });
 
+  it("keeps a cancelled vessel row visible and disables Arrived", async () => {
+    const baseData = buildBaseData();
+    baseData.vessel_operation_trailers.push({
+      id: "vt-cancelled",
+      vessel_operation_id: "op-1",
+      trailer_id: "trailer-cancelled",
+      trailer_number: "PFC-CANCELLED",
+      arrival_status: "cancelled",
+      status: "not_arrived",
+      inspection_started_at: null,
+      inspection_completed_at: null,
+      expected_front_temperature: null,
+      expected_rear_temperature: null,
+      expected_temperature_unit: "C",
+      has_temperature_alert: false,
+      has_damage: false,
+    });
+    tableData = baseData;
+
+    render(<SupervisorMobileDashboard />);
+    await openVesselWorkspace();
+
+    const card = getTrailerCard("PFC-CANCELLED");
+    expect(within(card).getByText("cancelled")).toBeInTheDocument();
+    expect(within(card).getByRole("button", { name: "Arrived" })).toBeDisabled();
+  });
+
   it("keeps vessel counts scoped to the selected operation when vessel names repeat", async () => {
     tableData = {
       ...buildBaseData(),

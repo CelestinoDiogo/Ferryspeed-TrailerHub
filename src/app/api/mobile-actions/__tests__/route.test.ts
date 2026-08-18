@@ -161,6 +161,35 @@ describe("POST /api/mobile-actions", () => {
     expect(json.actionId).toBe("q-arrived");
   });
 
+  it("requires vessel edit permission for cancellation", async () => {
+    executeMobileActionMock.mockResolvedValue({
+      ok: true,
+      status: "success",
+      message: "FS1234 marked Cancelled.",
+      retryable: false,
+    });
+
+    const { POST } = await importRoute();
+    await POST(
+      makeRequest({
+        action: {
+          actionType: "MARK_CANCELLED",
+          payload: {
+            vesselTrailerId: "22222222-2222-4222-8222-222222222222",
+            trailerNumber: "FS1234",
+          },
+        },
+      }),
+    );
+
+    expect(requireRbacPermissionMock).toHaveBeenCalledWith(
+      expect.anything(),
+      "11111111-1111-4111-8111-111111111111",
+      "vessel_operations",
+      "edit",
+    );
+  });
+
   it("handles idempotent arrival as success", async () => {
     executeMobileActionMock.mockResolvedValue({
       ok: true,
