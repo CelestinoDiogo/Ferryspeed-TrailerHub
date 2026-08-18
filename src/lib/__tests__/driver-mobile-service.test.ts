@@ -624,6 +624,7 @@ describe("driver mobile service", () => {
     expect(updateState.driverId).toBe("driver-a");
     expect(updateState.id).toBe("booking-a");
     expect(updateState.patch?.collected_temperature_c).toBe(1.2);
+    expect(updateState.patch?.collected_at).toBeUndefined();
     expect(updated.status).toBe("on_delivery");
     expect(trailerEventsInsert).toHaveBeenCalledTimes(1);
   });

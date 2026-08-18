@@ -7,6 +7,7 @@ import { SuccessToast } from "@/components/common/success-toast";
 import { TrailerHistoryDrawer } from "@/components/trailers/trailer-history-drawer";
 import { createTrailerActivity } from "@/lib/trailer-activity";
 import { logTrailerEvent, resolveAuditOperatorName } from "@/lib/trailer-audit-log";
+import { DepartureUndoConflictError, undoDeparture } from "@/lib/operations/departure-lifecycle";
 import { supabase } from "@/lib/supabase";
 
 type TrailerRecord = {
@@ -29,6 +30,7 @@ type TrailerRecord = {
 type DepartureTransitionSnapshot = {
   trailerId: string;
   trailerNumber: string | null;
+  expectedDepartureAt: string;
   previousDepartureDate: string | null;
   previousDepartureTime: string | null;
   previousCompoundPosition: string | null;
@@ -590,6 +592,7 @@ export default function DeparturePage() {
     const previousValue: DepartureTransitionSnapshot = {
       trailerId: currentTrailer.id,
       trailerNumber: currentTrailer.trailer_number ?? null,
+      expectedDepartureAt: nowIso,
       previousDepartureDate: currentTrailer.departure_date ?? null,
       previousDepartureTime: currentTrailer.departure_time ?? null,
       previousCompoundPosition: currentTrailer.compound_position ?? null,
@@ -753,50 +756,23 @@ export default function DeparturePage() {
     setError(null);
 
     try {
-      const nowIso = new Date().toISOString();
-      const { data: restoredTrailer, error: restoreError } = await supabase
-        .from("trailers")
-        .update({
-          departure_date: lastDepartureSnapshot.previousDepartureDate,
-          departure_time: lastDepartureSnapshot.previousDepartureTime,
-          operational_status: lastDepartureSnapshot.previousOperationalStatus,
-          compound_position: lastDepartureSnapshot.previousCompoundPosition,
-        })
-        .eq("id", lastDepartureSnapshot.trailerId)
-        .select("id, trailer_number, trailer_type, load_status, load_description, customer, consignee, container_number, compound_position, arrival_date, departure_date, departure_time, operational_status, is_local")
-        .single();
-
-      if (restoreError || !restoredTrailer) {
-        throw new Error(restoreError?.message || "Unable to undo last departure.");
-      }
-
       const operatorName = await resolveAuditOperatorName();
-
-      await createTrailerActivity({
-        trailerId: restoredTrailer.id,
-        trailerNumber: restoredTrailer.trailer_number ?? restoredTrailer.id,
-        eventType: "movement_undone",
-        eventTitle: "Departure undone",
-        eventDescription: "Departure action was undone from departure list.",
-        sourceModule: "operations",
-        sourceRecordId: restoredTrailer.id,
-        previousStatus: "Departed",
-        newStatus: lastDepartureSnapshot.previousOperationalStatus,
-        previousCompoundPosition: null,
-        newCompoundPosition: lastDepartureSnapshot.previousCompoundPosition,
-        metadata: {
-          undo_target: "departure_registered",
-          undone_at: nowIso,
-        },
+      const result = await undoDeparture(supabase, {
+        trailerId: lastDepartureSnapshot.trailerId,
+        expectedDepartureAt: lastDepartureSnapshot.expectedDepartureAt,
         performedBy: operatorName,
-        createdAt: nowIso,
       });
 
-      setTrailers((current) => [restoredTrailer as TrailerRecord, ...current]);
       await loadDepartureTrailers({ showLoading: false });
       setLastDepartureSnapshot(null);
-      setSuccess(`Undo applied for ${restoredTrailer.trailer_number ?? "trailer"}.`);
+      setSuccess(`Undo applied for ${result.trailerNumber ?? "trailer"}.`);
     } catch (undoErr) {
+      if (undoErr instanceof DepartureUndoConflictError) {
+        await loadDepartureTrailers({ showLoading: false });
+        if (undoErr.code === "already_restored" || undoErr.code === "stale_state") {
+          setLastDepartureSnapshot(null);
+        }
+      }
       setError(undoErr instanceof Error ? undoErr.message : "Unable to undo departure.");
     } finally {
       setIsSubmitting(false);

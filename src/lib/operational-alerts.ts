@@ -52,7 +52,7 @@ export type OperationalAlertSummary = {
 };
 
 export type GetOperationalAlertsInput = {
-  status?: OperationalAlertStatus[];
+  status?: Array<OperationalAlertStatus | "acknowledged">;
   severities?: OperationalAlertSeverity[];
   trailerId?: string | null;
   trailerNumber?: string | null;

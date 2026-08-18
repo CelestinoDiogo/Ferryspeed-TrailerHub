@@ -784,6 +784,38 @@ export type Database = {
           occurred_at: string;
         }[];
       };
+      undo_export_allocation_load_lifecycle: {
+        Args: {
+          p_allocation_id: string;
+          p_expected_current_status: string;
+          p_performed_by?: string | null;
+        };
+        Returns: {
+          transitioned: boolean;
+          trailer_id: string | null;
+          previous_status: string | null;
+          restored_compound_position: string | null;
+          fallback_position_used: boolean;
+          occurred_at: string;
+        }[];
+      };
+      undo_trailer_departure: {
+        Args: {
+          p_trailer_id: string;
+          p_expected_departure_at: string;
+          p_performed_by?: string | null;
+        };
+        Returns: {
+          transitioned: boolean;
+          conflict_code: string | null;
+          trailer_id: string;
+          trailer_number: string | null;
+          restored_operational_status: string | null;
+          restored_compound_position: string | null;
+          load_status: string | null;
+          occurred_at: string;
+        }[];
+      };
       complete_delivery_customer_collection: {
         Args: {
           p_booking_id: string;

@@ -7,7 +7,6 @@ import { PrintButton } from "@/components/print/print-button";
 import { loadVesselOperationSummaryAndPrintReportData } from "@/lib/reports/report-data";
 import { supabase } from "@/lib/supabase";
 import { getAcceptedTemperatureRange, getDefaultTemperatureToleranceSettings, isTemperatureOutOfRange } from "@/lib/temperature-tolerance";
-import { getTrailerOwnershipBadgeLabel } from "@/lib/trailer-ownership";
 import { formatVesselDateTime } from "@/lib/vessel-operations";
 import type { VesselOperationalReportData } from "@/lib/reports/types";
 import { VesselPrintStyles } from "./print-styles";
@@ -63,14 +62,6 @@ const getAcceptedRangeLabel = (trailer: VesselOperationalReportData["trailers"][
   return segments.length > 0 ? segments.join("; ") : "Not applicable";
 };
 
-const getInspectionStatusLabel = (trailer: VesselOperationalReportData["trailers"][number]) => {
-  if (trailer.arrivalStatusRaw === "arrived" && trailer.inspectionStatus !== "inspected") {
-    return "Inspection Pending";
-  }
-
-  return formatStatusLabel(trailer.inspectionStatus);
-};
-
 const loadPrintReport = async (operationId: string) => {
   try {
     const reportData = await loadVesselOperationSummaryAndPrintReportData(supabase, operationId);
@@ -90,7 +81,7 @@ export default function VesselOperationPrintPage() {
   const [reportData, setReportData] = useState<VesselOperationalReportData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [isPhotoGridReady, setIsPhotoGridReady] = useState(false);
+  const [photoReadyReport, setPhotoReadyReport] = useState<VesselOperationalReportData | null>(null);
 
   useEffect(() => {
     let isMounted = true;
@@ -127,26 +118,14 @@ export default function VesselOperationPrintPage() {
   const hasPhotosForPrint = useMemo(() => {
     return Boolean(reportData?.photos.some((photo) => photo.url));
   }, [reportData]);
+  const isPhotoGridReady = !hasPhotosForPrint || photoReadyReport === reportData;
 
   useEffect(() => {
-    if (!reportData) {
-      setIsPhotoGridReady(false);
+    if (!reportData || !hasPhotosForPrint) {
       return;
     }
-
-    if (!hasPhotosForPrint) {
-      setIsPhotoGridReady(true);
-      return;
-    }
-
-    setIsPhotoGridReady(false);
 
     const images = Array.from(document.querySelectorAll<HTMLImageElement>('img[data-print-photo="true"]'));
-    if (images.length === 0) {
-      setIsPhotoGridReady(true);
-      return;
-    }
-
     let resolved = false;
     let remaining = images.length;
     const detachListeners: Array<() => void> = [];
@@ -154,10 +133,15 @@ export default function VesselOperationPrintPage() {
     const complete = () => {
       if (!resolved) {
         resolved = true;
-        setIsPhotoGridReady(true);
+        setPhotoReadyReport(reportData);
         detachListeners.forEach((detach) => detach());
       }
     };
+
+    if (images.length === 0) {
+      queueMicrotask(complete);
+      return;
+    }
 
     const timeoutId = window.setTimeout(() => {
       complete();
@@ -189,7 +173,7 @@ export default function VesselOperationPrintPage() {
 
     if (remaining <= 0) {
       window.clearTimeout(timeoutId);
-      complete();
+      queueMicrotask(complete);
     }
 
     return () => {
@@ -296,6 +280,7 @@ export default function VesselOperationPrintPage() {
             </header>
 
             <section className="avoid-print-break mt-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-10">
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Total Listed</p><p className="mt-2 text-2xl font-bold text-slate-950">{reportData.statistics.totalTrailers}</p></div>
               <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Expected</p><p className="mt-2 text-2xl font-bold text-slate-950">{reportData.statistics.expectedTrailers}</p></div>
               <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Additional</p><p className="mt-2 text-2xl font-bold text-indigo-700">{reportData.statistics.additionalTrailers}</p></div>
               <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Arrived</p><p className="mt-2 text-2xl font-bold text-amber-700">{reportData.statistics.arrivedTrailers}</p></div>
@@ -318,17 +303,18 @@ export default function VesselOperationPrintPage() {
             ) : null}
 
             <section className="avoid-print-break mt-8">
-              <h2 className="text-lg font-semibold text-slate-950">Trailer Status Table</h2>
+              <h2 className="text-lg font-semibold text-slate-950">Consolidated Trailer Report</h2>
               <div className="mt-4 overflow-x-auto rounded-3xl border border-slate-200">
                 <table className="min-w-full border-collapse text-sm text-slate-800">
                   <thead className="bg-slate-100 text-slate-700">
                     <tr>
                       <th className="border border-slate-200 px-3 py-2 text-left">Trailer</th>
-                      <th className="border border-slate-200 px-3 py-2 text-left">Arrival</th>
-                      <th className="border border-slate-200 px-3 py-2 text-left">Inspection</th>
+                      <th className="border border-slate-200 px-3 py-2 text-left">Discharged Time</th>
+                      <th className="border border-slate-200 px-3 py-2 text-left">Front Temp</th>
+                      <th className="border border-slate-200 px-3 py-2 text-left">Rear Temp</th>
                       <th className="border border-slate-200 px-3 py-2 text-left">Damage</th>
-                      <th className="border border-slate-200 px-3 py-2 text-left">Temperature</th>
-                      <th className="border border-slate-200 px-3 py-2 text-left">Position</th>
+                      <th className="border border-slate-200 px-3 py-2 text-left">Priority</th>
+                      <th className="border border-slate-200 px-3 py-2 text-left">Notes</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -336,14 +322,13 @@ export default function VesselOperationPrintPage() {
                       <tr key={trailer.id} className="trailer-print-card align-top">
                         <td className="border border-slate-200 px-3 py-3">
                           <p className="font-semibold text-slate-950">{trailer.trailerNumber}</p>
-                          <p className="text-xs text-slate-600">{getTrailerOwnershipBadgeLabel(trailer.ownershipType)}</p>
-                          {trailer.bookingReference ? <p className="text-xs text-slate-600">Booking: {trailer.bookingReference}</p> : null}
                         </td>
-                        <td className="border border-slate-200 px-3 py-3">{trailer.arrivalStatus}</td>
-                        <td className="border border-slate-200 px-3 py-3">{getInspectionStatusLabel(trailer)}</td>
+                        <td className="border border-slate-200 px-3 py-3">{formatVesselDateTime(trailer.arrivedAt)}</td>
+                        <td className="border border-slate-200 px-3 py-3">{formatTemperature(trailer.frontTemperature, trailer.temperatureUnit)}</td>
+                        <td className="border border-slate-200 px-3 py-3">{formatTemperature(trailer.rearTemperature, trailer.temperatureUnit)}</td>
                         <td className="border border-slate-200 px-3 py-3">{trailer.hasDamage ? "Yes" : "No"}</td>
-                        <td className="border border-slate-200 px-3 py-3">{getTemperatureResultLabel(trailer)}</td>
-                        <td className="border border-slate-200 px-3 py-3">{trailer.compoundPosition?.trim() ? trailer.compoundPosition : "Not assigned"}</td>
+                        <td className="border border-slate-200 px-3 py-3">{trailer.priority === "priority" ? "Yes" : "No"}</td>
+                        <td className="border border-slate-200 px-3 py-3">{trailer.notes?.trim() || "-"}</td>
                       </tr>
                     ))}
                   </tbody>

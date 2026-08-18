@@ -101,7 +101,7 @@ const normalize = (value?: string | null) => (value ?? "").trim();
 export function buildVesselOperationCanonicalReport(data: VesselOperationalReportData): VesselOperationCanonicalReport {
   const trailers = data.trailers.map((trailer) => {
     const damages = data.damages
-      .filter((damage) => damage.trailerNumber.trim().toUpperCase() === trailer.trailerNumber.trim().toUpperCase())
+      .filter((damage) => damage.trailerId === trailer.id)
       .map((damage) => ({
         category: damage.category,
         damageLocation: damage.damageLocation,

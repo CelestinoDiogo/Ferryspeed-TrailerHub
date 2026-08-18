@@ -230,8 +230,9 @@ const collectPhotosForTrailer = (
   lookup: ReturnType<typeof buildPhotoLookup>,
   trailer: Pick<TrailerRow, "id" | "trailer_id" | "arrival_record_id" | "trailer_number">,
   mainTrailer: MainTrailerRow | null,
+  allowTrailerNumberFallback = true,
 ) => {
-  const trailerNumber = normalizeTrailerNumberForOwnership(mainTrailer?.trailer_number ?? trailer.trailer_number);
+  const trailerNumber = normalizeTrailerNumberForOwnership(trailer.trailer_number ?? mainTrailer?.trailer_number);
   const trailerIdCandidates = new Set(
     [trailer.trailer_id, trailer.arrival_record_id].filter((value): value is string => Boolean(value)),
   );
@@ -260,7 +261,7 @@ const collectPhotosForTrailer = (
     ...(trailer.id ? lookup.byVesselTrailerId.get(trailer.id) ?? [] : []),
     ...(trailer.trailer_id ? (lookup.byTrailerId.get(trailer.trailer_id) ?? []).filter(isEligibleForTrailerIdFallback) : []),
     ...(trailer.arrival_record_id ? (lookup.byTrailerId.get(trailer.arrival_record_id) ?? []).filter(isEligibleForTrailerIdFallback) : []),
-    ...(trailerNumber ? (lookup.byTrailerNumber.get(trailerNumber) ?? []).filter(isEligibleForTrailerNumberFallback) : []),
+    ...(allowTrailerNumberFallback && trailerNumber ? (lookup.byTrailerNumber.get(trailerNumber) ?? []).filter(isEligibleForTrailerNumberFallback) : []),
   ];
 
   const deduped = new Map<string, PhotoRow>();
@@ -287,12 +288,8 @@ const formatArrivalStatus = (value?: string | null) => {
   return value ?? "Unknown";
 };
 
-const formatReceptionStatus = (trailer: TrailerRow, mainTrailer?: MainTrailerRow | null) => {
-  if (mainTrailer?.is_local === true) {
-    return "Local Trailer";
-  }
-
-  if (mainTrailer?.compound_position?.trim() || trailer.assigned_position?.trim()) {
+const formatReceptionStatus = (trailer: TrailerRow) => {
+  if (trailer.assigned_position?.trim()) {
     return "Received in Compound";
   }
 
@@ -319,7 +316,7 @@ export async function getVesselOperationReport(
       .single(),
     supabase
       .from("vessel_operation_trailers")
-      .select("id, vessel_operation_id, trailer_id, trailer_number, customer, booking_reference, load_status, temperature_required, expected_front_temperature, expected_rear_temperature, expected_temperature_unit, priority_level, planning_notes, added_after_confirmation, status, arrived_at, arrival_status, arrival_confirmed_at, arrival_record_id, arrival_confirmed_by, inspection_started_at, inspection_completed_at, position_assigned_at, assigned_position, has_damage, has_temperature_alert")
+      .select("id, vessel_operation_id, trailer_id, trailer_number, customer, booking_reference, load_status, temperature_required, expected_front_temperature, expected_rear_temperature, expected_temperature_unit, priority_level, planning_notes, ownership_type, trailer_source, external_company, added_after_confirmation, status, arrived_at, arrival_status, arrival_confirmed_at, arrival_record_id, arrival_confirmed_by, inspection_started_at, inspection_completed_at, position_assigned_at, assigned_position, has_damage, has_temperature_alert")
       .eq("vessel_operation_id", vesselOperationId)
       .order("created_at", { ascending: true }),
   ]);
@@ -388,36 +385,33 @@ export async function getVesselOperationReport(
   const temperatures = (temperaturesResult.data ?? []) as TemperatureRow[];
   const photos = (photosResult.data ?? []) as PhotoRow[];
   const photoLookup = buildPhotoLookup(photos);
-
-  const trailerNumbersForOperation = Array.from(
-    new Set(
-      trailers
-        .map((row) => normalizeTrailerNumber(row.trailer_number))
-        .filter((value): value is string => Boolean(value)),
-    ),
-  );
+  const operationTrailerNumberCounts = trailers.reduce((counts, trailer) => {
+    const trailerNumber = normalizeTrailerNumberForOwnership(trailer.trailer_number);
+    if (trailerNumber) {
+      counts.set(trailerNumber, (counts.get(trailerNumber) ?? 0) + 1);
+    }
+    return counts;
+  }, new Map<string, number>());
 
   const [exportAllocationsResult, operationalAlertsResult, trailerActivityResult] = await Promise.all([
-    trailerNumbersForOperation.length
+    Promise.resolve({ data: [], error: null }),
+    vesselTrailerIds.length
       ? supabase
-          .from("export_allocations")
-          .select("id, trailer_id, trailer_number, customer, status, delivered_empty_at, waiting_loading_at, collected_loaded_at, completed_at, expected_return_at, updated_at")
-          .in("trailer_number", trailerNumbersForOperation)
-          .order("updated_at", { ascending: false })
+          .from("operational_alerts")
+          .select("id, trailer_id, trailer_number, severity, status, title, source_module, source_record_id, created_at")
+          .in("source_record_id", vesselTrailerIds)
+          .order("created_at", { ascending: false })
           .limit(1000)
       : Promise.resolve({ data: [], error: null }),
-    supabase
-      .from("operational_alerts")
-      .select("id, trailer_id, trailer_number, severity, status, title, source_module, created_at")
-      .in("trailer_number", trailerNumbersForOperation.length > 0 ? trailerNumbersForOperation : ["__none__"])
-      .order("created_at", { ascending: false })
-      .limit(1000),
-    supabase
-      .from("trailer_activity_log")
-      .select("id, trailer_id, trailer_number, event_type, event_title, created_at")
-      .in("trailer_number", trailerNumbersForOperation.length > 0 ? trailerNumbersForOperation : ["__none__"])
-      .order("created_at", { ascending: true })
-      .limit(2000),
+    vesselTrailerIds.length
+      ? supabase
+          .from("trailer_activity_log")
+          .select("id, trailer_id, trailer_number, event_type, event_title, source_module, source_record_id, created_at")
+          .in("source_record_id", vesselTrailerIds)
+          .in("source_module", ["vessel", "inspection"])
+          .order("created_at", { ascending: true })
+          .limit(2000)
+      : Promise.resolve({ data: [], error: null }),
   ]);
 
   if (exportAllocationsResult.error || operationalAlertsResult.error || trailerActivityResult.error) {
@@ -475,11 +469,11 @@ export async function getVesselOperationReport(
       row.arrival_status !== "no_show",
   );
   const damageTrailerIds = new Set(activeTrailers.filter((row) => row.has_damage === true).map((row) => row.id));
-  const totalTrailers = activeTrailers.length;
+  const totalTrailers = trailers.length;
   const arrivedTrailers = activeTrailers.filter((row) => row.arrival_status === "arrived").length;
-  const expectedTrailers = totalTrailers;
+  const expectedTrailers = activeTrailers.length;
   const additionalTrailers = trailers.filter((row) => row.added_after_confirmation === true).length;
-  const finalDischargedTrailers = activeTrailers.filter((row) => row.arrival_status === "arrived" || row.arrival_status === "not_discharged").length;
+  const finalDischargedTrailers = arrivedTrailers;
   const pendingTrailers = activeTrailers.filter((row) => row.arrival_status === "expected" || row.arrival_status === "available_for_arrival").length;
   const notDischargedTrailers = activeTrailers.filter((row) => row.arrival_status === "not_discharged").length;
   const cancelledTrailers = trailers.filter((row) => row.arrival_status === "cancelled" || row.status === "cancelled").length;
@@ -527,10 +521,10 @@ export async function getVesselOperationReport(
     }));
   });
 
-  const manifestRows = activeTrailers.map((trailer) => {
+  const manifestRows = trailers.map((trailer) => {
     const linkedMainTrailerId = trailer.arrival_record_id ?? trailer.trailer_id ?? null;
     const mainTrailer = linkedMainTrailerId ? mainTrailersById.get(linkedMainTrailerId) ?? null : null;
-    const trailerNumber = normalizeTrailerNumber(mainTrailer?.trailer_number ?? trailer.trailer_number) || "UNKNOWN";
+    const trailerNumber = normalizeTrailerNumber(trailer.trailer_number ?? mainTrailer?.trailer_number) || "UNKNOWN";
     const trailerTemperatures = temperatureRows.filter((row) => row.trailerId === trailer.id);
     const expectedUnit = (trailer.expected_temperature_unit ?? "C").trim() || "C";
     const frontTemperatureRow = trailerTemperatures.find((row) => row.readingPoint === "front") ?? null;
@@ -541,7 +535,12 @@ export async function getVesselOperationReport(
     const trailerDamages = damagesByTrailer.get(trailer.id) ?? [];
     const hasDamage = trailerDamages.length > 0 || trailer.has_damage === true;
     const primaryDamage = trailerDamages.at(-1) ?? null;
-    const trailerPhotos = collectPhotosForTrailer(photoLookup, trailer, mainTrailer).map((photo) => ({
+    const trailerPhotos = collectPhotosForTrailer(
+      photoLookup,
+      trailer,
+      mainTrailer,
+      (operationTrailerNumberCounts.get(normalizeTrailerNumberForOwnership(trailer.trailer_number) ?? "") ?? 0) <= 1,
+    ).map((photo) => ({
       id: photo.id,
       url: photo.storage_path ? photoUrlByStoragePath.get(photo.storage_path) ?? null : null,
       caption: photo.file_name ?? photo.category ?? "Inspection photo",
@@ -554,19 +553,19 @@ export async function getVesselOperationReport(
     }));
 
     const ownershipType = getTrailerOwnershipType({
-      trailerSource: mainTrailer?.trailer_source,
-      externalCompany: mainTrailer?.external_company,
-      isLocal: mainTrailer?.is_local,
+      trailerSource: trailer.trailer_source,
+      externalCompany: trailer.external_company,
+      isLocal: false,
       trailerNumber,
     });
 
     return {
       id: trailer.id,
       trailerNumber,
-      customer: mainTrailer?.customer ?? trailer.customer ?? null,
+      customer: trailer.customer ?? null,
       bookingReference: trailer.booking_reference ?? null,
       ownershipType,
-      loadStatus: mainTrailer?.load_status ?? trailer.load_status ?? null,
+      loadStatus: trailer.load_status ?? null,
       priority: trailer.priority_level ?? "normal",
       arrivalStatus: formatArrivalStatus(trailer.arrival_status),
       arrivalStatusRaw: trailer.arrival_status ?? null,
@@ -574,8 +573,8 @@ export async function getVesselOperationReport(
       arrivalTime: toIso(trailer.arrival_confirmed_at ?? trailer.arrived_at),
       inspectionStatus: trailer.status ?? "expected",
       inspectionCompletedAt: toIso(trailer.inspection_completed_at),
-      receptionStatus: formatReceptionStatus(trailer, mainTrailer),
-      compoundPosition: mainTrailer?.compound_position ?? trailer.assigned_position ?? null,
+      receptionStatus: formatReceptionStatus(trailer),
+      compoundPosition: trailer.assigned_position ?? null,
       damageStatus: hasDamage ? "damaged" : "clear",
       overallCondition: (hasDamage ? "attention_required" : "good") as "attention_required" | "good",
       hasDamage,
@@ -586,10 +585,10 @@ export async function getVesselOperationReport(
       frontTemperature: frontTemperatureRow?.recordedTemperature ?? null,
       rearTemperature: rearTemperatureRow?.recordedTemperature ?? null,
       temperatureUnit: frontTemperatureRow?.unit ?? rearTemperatureRow?.unit ?? expectedUnit,
-      operationalStatus: mainTrailer?.operational_status ?? trailer.status ?? "expected",
+      operationalStatus: trailer.status ?? "expected",
       notes: trailer.planning_notes ?? null,
       boatCheckNotes: trailer.planning_notes ?? null,
-      receptionNotes: mainTrailer?.notes ?? null,
+      receptionNotes: null,
       damageDetails: primaryDamage
         ? {
             category: primaryDamage.damage_type ?? null,
@@ -607,9 +606,14 @@ export async function getVesselOperationReport(
     const trailer = trailerById.get(trailerId);
     const linkedMainTrailerId = trailer?.arrival_record_id ?? trailer?.trailer_id ?? null;
     const mainTrailer = linkedMainTrailerId ? mainTrailersById.get(linkedMainTrailerId) ?? null : null;
-    const trailerNumber = normalizeTrailerNumber(mainTrailer?.trailer_number ?? trailer?.trailer_number) || "UNKNOWN";
+    const trailerNumber = normalizeTrailerNumber(trailer?.trailer_number ?? mainTrailer?.trailer_number) || "UNKNOWN";
     const attachedPhotos = (trailer
-      ? collectPhotosForTrailer(photoLookup, trailer, mainTrailer)
+      ? collectPhotosForTrailer(
+          photoLookup,
+          trailer,
+          mainTrailer,
+          (operationTrailerNumberCounts.get(normalizeTrailerNumberForOwnership(trailer.trailer_number) ?? "") ?? 0) <= 1,
+        )
       : [])
       .map((photo) => {
         return {
@@ -696,7 +700,7 @@ export async function getVesselOperationReport(
   }
 
   trailers.forEach((trailer) => {
-    const trailerNumber = normalizeTrailerNumber(mainTrailersById.get(trailer.arrival_record_id ?? trailer.trailer_id ?? "")?.trailer_number ?? trailer.trailer_number) || null;
+    const trailerNumber = normalizeTrailerNumber(trailer.trailer_number ?? mainTrailersById.get(trailer.arrival_record_id ?? trailer.trailer_id ?? "")?.trailer_number) || null;
     if (trailer.arrived_at) {
       timeline.push({ timestamp: new Date(trailer.arrived_at).toISOString(), event: "Trailer arrival confirmed.", trailerNumber });
     }
@@ -783,7 +787,7 @@ export async function getVesselOperationReport(
     : null;
 
   const photosCapturedPercent = expectedTrailers > 0
-    ? Math.round((manifestRows.filter((row) => row.photos.length > 0).length / expectedTrailers) * 1000) / 10
+    ? Math.round((manifestRows.filter((row) => activeTrailers.some((trailer) => trailer.id === row.id) && row.photos.length > 0).length / expectedTrailers) * 1000) / 10
     : 0;
 
   const damageIncidencePercent = expectedTrailers > 0
@@ -841,7 +845,7 @@ export async function getVesselOperationReport(
     .slice(0, 6)
     .map(([event, count]) => ({ event, count }));
 
-  const completedTrailers = trailers.filter((row) => row.status === "inspected" || row.status === "positioned").length;
+  const completedTrailers = activeTrailers.filter((row) => row.status === "inspected" || row.status === "positioned").length;
   const completionPercentage = expectedTrailers === 0 ? 0 : Math.round((completedTrailers / expectedTrailers) * 100);
 
   return {
@@ -901,7 +905,7 @@ export async function getVesselOperationReport(
       const linkedTrailer = trailerById.get(trailerId);
       const linkedMainTrailerId = linkedTrailer?.arrival_record_id ?? linkedTrailer?.trailer_id ?? null;
       const mainTrailer = linkedMainTrailerId ? mainTrailersById.get(linkedMainTrailerId) ?? null : null;
-      const trailerNumber = normalizeTrailerNumber(mainTrailer?.trailer_number ?? linkedTrailer?.trailer_number) || "UNKNOWN";
+      const trailerNumber = normalizeTrailerNumber(linkedTrailer?.trailer_number ?? mainTrailer?.trailer_number) || "UNKNOWN";
       return {
         id: photo.id,
         trailerId,

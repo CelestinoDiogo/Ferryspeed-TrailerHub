@@ -16,7 +16,6 @@ import { PrintReportLayout } from "@/components/print/print-report-layout";
 import { ReportPrintLayout } from "@/components/print/report-print-layout";
 import { PrintSummary } from "@/components/print/print-summary";
 import { PrintTable } from "@/components/print/print-table";
-import type { Database } from "@/lib/database.types";
 import { loadExportAllocationsForReport } from "@/lib/reports/report-data";
 import { supabase } from "@/lib/supabase";
 import { createTrailerActivity } from "@/lib/trailer-activity";
@@ -39,7 +38,6 @@ import {
   getPreviousExportAllocationStatus,
   getExportAllocationStatusClasses,
   getExportAllocationStatusLabel,
-  getExportAllocationTimestampField,
   getNextExportAllocationStatus,
   isExportAllocationOverdue,
   normalizeExportAllocationRecord,
@@ -48,7 +46,7 @@ import {
   type ExportAllocationStatus,
 } from "@/lib/export-allocation";
 import { getTrailerOwnershipBadgeLabel, getTrailerOwnershipType, type TrailerOwnershipType } from "@/lib/trailer-ownership";
-import { advanceExportAllocationStatus } from "@/lib/operations/export-lifecycle";
+import { advanceExportAllocationStatus, undoExportAllocationStatus } from "@/lib/operations/export-lifecycle";
 
 type TrailerLoadSnapshot = {
   id: string;
@@ -59,11 +57,6 @@ type TrailerLoadSnapshot = {
   compound_position?: string | null;
 };
 
-type CompoundRestoreResult = {
-  restoredPosition: string | null;
-  fallbackUsed: boolean;
-};
-
 type OwnershipFilter = "all" | "company" | "outsourcing";
 
 type ExportAllocationWithOwnership = ExportAllocationRecord & {
@@ -71,45 +64,6 @@ type ExportAllocationWithOwnership = ExportAllocationRecord & {
   external_company?: string | null;
   is_local?: boolean | null;
   ownershipType?: TrailerOwnershipType;
-};
-
-const COMPOUND_POSITIONS = Array.from({ length: 50 }, (_, index) => `P${String(index + 1).padStart(2, "0")}`);
-
-const normalizeCompoundPosition = (value?: string | null): string | null => {
-  const trimmed = value?.trim().toUpperCase();
-  if (!trimmed) {
-    return null;
-  }
-
-  const match = trimmed.match(/^(P|A)?0*(\d{1,2})$/);
-  if (!match) {
-    return null;
-  }
-
-  const numericValue = Number(match[2]);
-  if (numericValue < 1 || numericValue > 50) {
-    return null;
-  }
-
-  return `P${numericValue.toString().padStart(2, "0")}`;
-};
-
-const getNextAvailableCompoundPosition = async () => {
-  const { data, error } = await supabase
-    .from("trailers")
-    .select("compound_position, departure_date, is_local")
-    .is("departure_date", null)
-    .neq("is_local", true);
-
-  if (error) {
-    throw new Error(error.message || "Unable to determine available compound position.");
-  }
-
-  const occupied = new Set(
-    ((data ?? []) as Array<{ compound_position?: string | null }>).map((row) => normalizeCompoundPosition(row.compound_position)).filter((value): value is string => Boolean(value)),
-  );
-
-  return COMPOUND_POSITIONS.find((position) => !occupied.has(position)) ?? null;
 };
 
 const formatDate = (value?: string | null) => {
@@ -732,142 +686,6 @@ function ExportOperationsPageContent() {
     }
   };
 
-  const createStatusChangedEvent = async (
-    allocation: ExportAllocationRecord,
-    oldStatus: ExportAllocationStatus,
-    newStatus: ExportAllocationStatus,
-    movementMetadata?: Record<string, unknown>,
-    options?: { skipLegacyEvent?: boolean },
-  ) => {
-    const customer = allocation.customer?.trim() ? allocation.customer.trim() : "customer";
-    let eventType = "export_allocation_status_changed";
-    let eventDescription = `Export allocation status changed from ${getExportAllocationStatusLabel(oldStatus)} to ${getExportAllocationStatusLabel(newStatus)}.`;
-    let activityEventType: "export_status_changed" | "export_cancelled" = "export_status_changed";
-    let activityTitle = "Export status changed";
-
-    if (newStatus === "delivered_empty") {
-      eventDescription = `Empty trailer delivered to ${customer}.`;
-    } else if (newStatus === "waiting_loading") {
-      eventDescription = `Trailer waiting for loading at ${customer}.`;
-    } else if (newStatus === "collected_loaded") {
-      eventDescription = `Loaded trailer collected from ${customer}.`;
-    } else if (newStatus === "completed") {
-      eventType = "export_allocation_completed";
-      eventDescription = "Export allocation completed.";
-    } else if (newStatus === "cancelled") {
-      eventType = "export_allocation_cancelled";
-      activityEventType = "export_cancelled";
-      activityTitle = "Export allocation cancelled";
-      eventDescription = "Export allocation cancelled.";
-    }
-
-    const oldValuePayload = {
-      export_allocation_id: allocation.id,
-      status: oldStatus,
-      ...(movementMetadata ? { movement: movementMetadata } : {}),
-    } as Database["public"]["Tables"]["trailer_events"]["Insert"]["old_value"];
-
-    const newValuePayload = {
-      export_allocation_id: allocation.id,
-      status: newStatus,
-      ...(movementMetadata ? { movement: movementMetadata } : {}),
-    } as Database["public"]["Tables"]["trailer_events"]["Insert"]["new_value"];
-
-    if (!options?.skipLegacyEvent) {
-      const { error: eventError } = await supabase.from("trailer_events").insert({
-        trailer_id: allocation.trailer_id,
-        trailer_number: allocation.trailer_number,
-        event_type: eventType,
-        event_description: eventDescription,
-        old_value: oldValuePayload,
-        new_value: newValuePayload,
-      });
-
-      if (eventError) {
-        console.error("Failed to create export allocation status event:", eventError);
-      }
-    }
-
-    try {
-      await createTrailerActivity({
-        trailerId: allocation.trailer_id,
-        trailerNumber: allocation.trailer_number ?? "",
-        eventType: activityEventType,
-        eventTitle: activityTitle,
-        eventDescription,
-        sourceModule: "export",
-        sourceRecordId: allocation.id,
-        previousStatus: oldStatus,
-        newStatus,
-        previousCompoundPosition:
-          typeof movementMetadata?.previous_compound_position === "string" ? movementMetadata.previous_compound_position : null,
-        newCompoundPosition:
-          typeof movementMetadata?.new_compound_position === "string" ? movementMetadata.new_compound_position : null,
-        metadata: {
-          export_allocation_id: allocation.id,
-          customer: allocation.customer ?? null,
-          movement: movementMetadata ?? null,
-        },
-      });
-    } catch (activityError) {
-      console.error("Unable to log trailer activity for export allocation status change:", activityError);
-    }
-  };
-
-  const restoreTrailerToCompoundAfterUndo = async (
-    allocation: ExportAllocationRecord,
-    previousPosition?: string | null,
-  ): Promise<CompoundRestoreResult> => {
-    if (!allocation.trailer_id) {
-      return { restoredPosition: null, fallbackUsed: false };
-    }
-
-    const preferred = normalizeCompoundPosition(previousPosition);
-    let targetPosition = preferred;
-    let fallbackUsed = false;
-
-    if (targetPosition) {
-      const { data: existingOccupancy, error: occupancyError } = await supabase
-        .from("trailers")
-        .select("id")
-        .is("departure_date", null)
-        .neq("is_local", true)
-        .eq("compound_position", targetPosition)
-        .neq("id", allocation.trailer_id)
-        .limit(1);
-
-      if (occupancyError) {
-        throw new Error(occupancyError.message || "Unable to verify compound position availability.");
-      }
-
-      if ((existingOccupancy ?? []).length > 0) {
-        targetPosition = null;
-      }
-    }
-
-    if (!targetPosition) {
-      targetPosition = await getNextAvailableCompoundPosition();
-      fallbackUsed = Boolean(targetPosition);
-    }
-
-    if (!targetPosition) {
-      throw new Error("No available compound position to restore trailer after undo.");
-    }
-
-    const { error: restoreError } = await supabase
-      .from("trailers")
-      .update({
-        compound_position: targetPosition,
-      })
-      .eq("id", allocation.trailer_id);
-
-    if (restoreError) {
-      throw new Error(restoreError.message || "Unable to restore trailer compound position after undo.");
-    }
-
-    return { restoredPosition: targetPosition, fallbackUsed };
-  };
-
   const handleAdvanceStatus = async (allocation: ExportAllocationRecord) => {
     if (isActioning(allocation.id)) {
       return;
@@ -972,74 +790,22 @@ function ExportOperationsPageContent() {
     setSuccess(null);
 
     try {
-      const nowIso = new Date().toISOString();
-      const currentStatusTimestampField = getExportAllocationTimestampField(allocation.status);
-      let movementMetadata: Record<string, unknown> | undefined;
-      let fallbackRestoreMessage: string | null = null;
-      const updatePayload: Database["public"]["Tables"]["export_allocations"]["Update"] = {
-        status: previousStatus,
-        updated_at: nowIso,
-      };
-
-      if (currentStatusTimestampField) {
-        updatePayload[currentStatusTimestampField] = null;
-      }
-
-      const { error: undoError } = await supabase
-        .from("export_allocations")
-        .update(updatePayload)
-        .eq("id", allocation.id)
-        .eq("status", allocation.status);
-
-      if (undoError) {
-        throw new Error(undoError.message || "Unable to undo last movement.");
-      }
-
-      if (allocation.status === "delivered_empty" && previousStatus === "allocated") {
-        if (!allocation.trailer_id) {
-          throw new Error("Trailer is missing for undo operation.");
-        }
-
-        const workflowEvent = await supabase
-          .from("trailer_events")
-          .select("old_value, new_value")
-          .eq("trailer_id", allocation.trailer_id)
-          .eq("event_type", "export_allocation_status_changed")
-          .order("created_at", { ascending: false })
-          .limit(30);
-
-        if (workflowEvent.error) {
-          throw new Error(workflowEvent.error.message || "Unable to read export movement history for undo.");
-        }
-
-        const matchingEvent = (workflowEvent.data ?? []).find((row) => {
-          const oldValue = row.old_value as { export_allocation_id?: string; movement?: { previous_compound_position?: string | null } } | null;
-          const newValue = row.new_value as { status?: string } | null;
-          return oldValue?.export_allocation_id === allocation.id && newValue?.status === "delivered_empty";
-        }) as { old_value?: unknown } | undefined;
-
-        const previousPosition = (
-          matchingEvent?.old_value as { movement?: { previous_compound_position?: string | null } } | undefined
-        )?.movement?.previous_compound_position;
-
-        const restoreResult = await restoreTrailerToCompoundAfterUndo(allocation, previousPosition);
-        movementMetadata = {
-          reason: "export_undo_return",
-          previous_compound_position: previousPosition ?? null,
-          restored_compound_position: restoreResult.restoredPosition,
-          fallback_position_used: restoreResult.fallbackUsed,
-        };
-        if (restoreResult.fallbackUsed && restoreResult.restoredPosition) {
-          fallbackRestoreMessage = ` Trailer restored to next free position ${restoreResult.restoredPosition}.`;
-        }
-      }
-
-      await createStatusChangedEvent(allocation, allocation.status, previousStatus, movementMetadata);
+      const operatorName = await resolveAuditOperatorName();
+      const undoResult = await undoExportAllocationStatus(supabase, {
+        allocation,
+        performedBy: operatorName,
+      });
+      const fallbackRestoreMessage = undoResult.fallbackPositionUsed && undoResult.restoredCompoundPosition
+        ? ` Trailer restored to next free position ${undoResult.restoredCompoundPosition}.`
+        : "";
       setUndoCandidateAllocationId(null);
       setSuccess(
-        `Last movement undone. Status is now ${getExportAllocationStatusLabel(previousStatus)}.${fallbackRestoreMessage ?? ""}`,
+        `Last movement undone. Status is now ${getExportAllocationStatusLabel(undoResult.previousStatus)}.${fallbackRestoreMessage}`,
       );
       await loadAllocations({ showLoading: false });
+      if (undoResult.restoredCompoundPosition && typeof window !== "undefined") {
+        window.localStorage.setItem(COMPOUND_REFRESH_STORAGE_KEY, Date.now().toString());
+      }
     } catch (undoErr) {
       setError(undoErr instanceof Error ? undoErr.message : "Unable to undo last movement.");
     } finally {

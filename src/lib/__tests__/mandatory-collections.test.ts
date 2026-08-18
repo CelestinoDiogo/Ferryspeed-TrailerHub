@@ -5,6 +5,16 @@ const delivery = { id: "delivery-a", trailer_id: "trailer-a", trailer_number: "F
 const exportAllocation = { id: "export-a", trailer_id: "trailer-b", trailer_number: "FS200", customer: "Customer B", collection_address: "Export Customer Yard", booking_reference: "EXP-1", collection_date: "2026-08-13", expected_return_at: "2026-08-14T10:00:00.000Z", delivered_empty_at: "2026-08-13T07:00:00.000Z", waiting_loading_at: null, collected_loaded_at: null, completed_at: null, cancelled_at: null, status: "delivered_empty" };
 
 describe("mandatory collections", () => {
+  it("does not treat a stale collected timestamp on a delivered booking as completed collection", () => {
+    expect(projectDeliveryCollection({
+      id: "delivery-stale",
+      trailer_id: "trailer-stale",
+      status: "delivered",
+      delivery_date: "2026-08-15",
+      delivered_at: "2026-08-15T09:00:00.000Z",
+      collected_at: "2026-08-15T08:00:00.000Z",
+    }, "2026-08-17T09:00:00.000Z")).toBeNull();
+  });
   it.each([[0, "green"], [23 + 59 / 60, "green"], [24, "green"], [24 + 1 / 60, "orange"], [47 + 59 / 60, "orange"], [48, "orange"], [48 + 1 / 60, "red"]] as const)("classifies %s elapsed hours as %s", (hours, expected) => {
     const referenceAt = new Date(Date.parse("2026-08-14T00:00:00.000Z") + hours * 3_600_000);
     expect(getMandatoryCollectionAge("2026-08-14T00:00:00.000Z", referenceAt).ageLevel).toBe(expected);

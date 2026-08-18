@@ -2,7 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { describe, expect, it, vi } from "vitest";
 import type { Database } from "@/lib/database.types";
 import type { ExportAllocationRecord, ExportAllocationStatus } from "@/lib/export-allocation";
-import { advanceExportAllocationStatus } from "@/lib/operations/export-lifecycle";
+import { advanceExportAllocationStatus, undoExportAllocationStatus } from "@/lib/operations/export-lifecycle";
 
 const makeAllocation = (status: ExportAllocationStatus): ExportAllocationRecord => ({
   id: `allocation-${status}`,
@@ -14,10 +14,20 @@ const makeAllocation = (status: ExportAllocationStatus): ExportAllocationRecord 
 });
 
 const makeClient = (error: { message: string } | null = null) => {
-  const rpc = vi.fn(async (_name: string, args: Record<string, unknown>) => ({
+  const rpc = vi.fn(async (name: string, args: Record<string, unknown>) => ({
     data: error ? null : [{
       transitioned: true,
       trailer_id: "trailer-a",
+      previous_status: name === "undo_export_allocation_load_lifecycle"
+        ? ({
+            delivered_empty: "allocated",
+            waiting_loading: "delivered_empty",
+            collected_loaded: "waiting_loading",
+            completed: "collected_loaded",
+          } as Record<string, string>)[String(args.p_expected_current_status)]
+        : null,
+      restored_compound_position: args.p_expected_current_status === "delivered_empty" ? "P01" : null,
+      fallback_position_used: false,
       previous_compound_position: args.p_target_status === "delivered_empty" ? "P01" : null,
       previous_load_status: args.p_target_status === "delivered_empty" ? "Loaded" : "Empty",
       new_load_status: args.p_target_status === "collected_loaded" ? "Loaded" : "Empty",
@@ -71,6 +81,28 @@ describe("atomic export load lifecycle", () => {
       skipWaitingAutoAssign: true,
     })).rejects.toThrow("transaction rejected");
 
+    expect(from).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["delivered_empty", "allocated"],
+    ["waiting_loading", "delivered_empty"],
+    ["collected_loaded", "waiting_loading"],
+    ["completed", "collected_loaded"],
+  ] as const)("undoes %s to %s through one authoritative RPC", async (status, targetStatus) => {
+    const { client, rpc, from } = makeClient();
+
+    const result = await undoExportAllocationStatus(client, {
+      allocation: makeAllocation(status),
+      performedBy: "Operator",
+    });
+
+    expect(result.previousStatus).toBe(targetStatus);
+    expect(rpc).toHaveBeenCalledWith("undo_export_allocation_load_lifecycle", {
+      p_allocation_id: `allocation-${status}`,
+      p_expected_current_status: status,
+      p_performed_by: "Operator",
+    });
     expect(from).not.toHaveBeenCalled();
   });
 });

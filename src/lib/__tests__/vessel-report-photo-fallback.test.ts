@@ -340,3 +340,134 @@ describe("getVesselOperationReport photo fallback behavior", () => {
     expect(report.trailers[0]?.photos.map((photo) => photo.id)).toEqual(["p-1", "p-2"]);
   });
 });
+
+describe("getVesselOperationReport operation scoping", () => {
+  const makeRepeatedDataset = (): MockDataset => ({
+    vessel_operations: [
+      { id: "op-a", vessel_name: "Vessel A", sailing_reference: "A", status: "completed", list_status: "confirmed", created_at: "2026-08-01T07:00:00.000Z", updated_at: "2026-08-01T12:00:00.000Z" },
+      { id: "op-b", vessel_name: "Vessel B", sailing_reference: "B", status: "completed", list_status: "confirmed", created_at: "2026-08-10T07:00:00.000Z", updated_at: "2026-08-10T12:00:00.000Z" },
+    ],
+    vessel_operation_trailers: [
+      { id: "vt-a", vessel_operation_id: "op-a", trailer_id: "tr-a", trailer_number: "PFC01", priority_level: "priority", planning_notes: "Note A", status: "inspected", arrival_status: "arrived", arrived_at: "2026-08-01T09:00:00.000Z", arrival_confirmed_at: "2026-08-01T09:00:00.000Z", inspection_completed_at: "2026-08-01T09:30:00.000Z", has_damage: false, has_temperature_alert: false, expected_temperature_unit: "C" },
+      { id: "vt-b", vessel_operation_id: "op-b", trailer_id: "tr-b", trailer_number: "PFC01", priority_level: "normal", planning_notes: "Note B", status: "inspected", arrival_status: "arrived", arrived_at: "2026-08-10T10:00:00.000Z", arrival_confirmed_at: "2026-08-10T10:00:00.000Z", inspection_completed_at: "2026-08-10T10:30:00.000Z", has_damage: true, has_temperature_alert: true, expected_temperature_unit: "C" },
+    ],
+    trailers: [
+      { id: "tr-a", trailer_number: "CURRENT-A", load_status: "Empty", customer: "Current A", trailer_source: "company", operational_status: "Current A" },
+      { id: "tr-b", trailer_number: "CURRENT-B", load_status: "Empty", customer: "Current B", trailer_source: "company", operational_status: "Current B" },
+    ],
+    vessel_inspection_temperatures: [
+      { id: "ta-f", vessel_trailer_id: "vt-a", trailer_id: "tr-a", trailer_number: "PFC01", reading_point: "front", temperature_value: 5, temperature_unit: "C", recorded_at: "2026-08-01T09:15:00.000Z" },
+      { id: "ta-r", vessel_trailer_id: "vt-a", trailer_id: "tr-a", trailer_number: "PFC01", reading_point: "rear", temperature_value: 6, temperature_unit: "C", recorded_at: "2026-08-01T09:16:00.000Z" },
+      { id: "tb-f", vessel_trailer_id: "vt-b", trailer_id: "tr-b", trailer_number: "PFC01", reading_point: "front", temperature_value: -18, temperature_unit: "C", recorded_at: "2026-08-10T10:15:00.000Z" },
+      { id: "tb-r", vessel_trailer_id: "vt-b", trailer_id: "tr-b", trailer_number: "PFC01", reading_point: "rear", temperature_value: -17, temperature_unit: "C", recorded_at: "2026-08-10T10:16:00.000Z" },
+    ],
+    vessel_inspection_damages: [
+      { id: "damage-b", vessel_trailer_id: "vt-b", trailer_id: "tr-b", trailer_number: "PFC01", damage_type: "impact", damage_location: "rear", severity: "major", description: "Damage B", recorded_at: "2026-08-10T10:20:00.000Z" },
+    ],
+    vessel_inspection_photos: [
+      makePhoto({ id: "photo-a", vessel_operation_id: "op-a", vessel_trailer_id: "vt-a", trailer_id: "tr-a", storage_path: "op-a/photo-a.jpg" }),
+      makePhoto({ id: "photo-b", vessel_operation_id: "op-b", vessel_trailer_id: "vt-b", trailer_id: "tr-b", storage_path: "op-b/photo-b.jpg" }),
+    ],
+    export_allocations: [{ id: "unsafe-export", trailer_id: "tr-b", trailer_number: "PFC01", status: "completed" }],
+    operational_alerts: [
+      { id: "alert-a", trailer_id: "tr-a", trailer_number: "PFC01", source_module: "vessel", source_record_id: "vt-a", title: "Alert A" },
+      { id: "alert-b", trailer_id: "tr-b", trailer_number: "PFC01", source_module: "vessel", source_record_id: "vt-b", title: "Alert B" },
+      { id: "alert-unsafe", trailer_id: null, trailer_number: "PFC01", source_module: "vessel", source_record_id: null, title: "Unsafe fallback" },
+    ],
+    trailer_activity_log: [
+      { id: "activity-a", trailer_id: "tr-a", trailer_number: "PFC01", source_module: "vessel", source_record_id: "vt-a", event_title: "Activity A", created_at: "2026-08-01T09:10:00.000Z" },
+      { id: "activity-b", trailer_id: "tr-b", trailer_number: "PFC01", source_module: "vessel", source_record_id: "vt-b", event_title: "Activity B", created_at: "2026-08-10T10:10:00.000Z" },
+      { id: "activity-unsafe", trailer_id: null, trailer_number: "PFC01", source_module: "vessel", source_record_id: null, event_title: "Unsafe activity", created_at: "2026-08-05T10:10:00.000Z" },
+    ],
+  });
+
+  it("keeps repeated-trailer inspection facts inside the selected operation", async () => {
+    const { supabase } = makeSupabaseMock(makeRepeatedDataset());
+    const reportA = await getVesselOperationReport(supabase as never, "op-a");
+    const reportB = await getVesselOperationReport(supabase as never, "op-b");
+
+    expect(reportA.trailers).toHaveLength(1);
+    expect(reportA.trailers[0]).toMatchObject({ trailerNumber: "PFC01", customer: null, loadStatus: null, operationalStatus: "inspected", compoundPosition: null, frontTemperature: 5, rearTemperature: 6, hasDamage: false, priority: "priority", notes: "Note A", arrivedAt: "2026-08-01T09:00:00.000Z" });
+    expect(reportA.trailers[0]?.photos.map((photo) => photo.id)).toEqual(["photo-a"]);
+    expect(reportA.damages).toHaveLength(0);
+    expect(reportB.trailers[0]).toMatchObject({ frontTemperature: -18, rearTemperature: -17, hasDamage: true, priority: "normal", notes: "Note B", arrivedAt: "2026-08-10T10:00:00.000Z" });
+    expect(reportB.trailers[0]?.photos.map((photo) => photo.id)).toEqual(["photo-b"]);
+    expect(reportB.damages.map((damage) => damage.id)).toEqual(["damage-b"]);
+  });
+
+  it("does not backfill number-only or another-operation intelligence", async () => {
+    const { supabase } = makeSupabaseMock(makeRepeatedDataset());
+    const reportA = await getVesselOperationReport(supabase as never, "op-a");
+
+    expect(reportA.exportActivity.allocationsAffected).toBe(0);
+    expect(reportA.operationalAlerts.map((alert) => alert.title)).toEqual(["Alert A"]);
+    expect(reportA.timeline.map((entry) => entry.event)).toContain("Activity A");
+    expect(reportA.timeline.map((entry) => entry.event)).not.toEqual(expect.arrayContaining(["Activity B", "Unsafe activity"]));
+  });
+
+  it("keeps discharged, pending, cancelled, no-show, and not-discharged totals distinct", async () => {
+    const dataset = makeRepeatedDataset();
+    dataset.vessel_operation_trailers = [
+      { id: "vt-arrived", vessel_operation_id: "op-a", trailer_number: "ARRIVED", status: "inspected", arrival_status: "arrived" },
+      { id: "vt-expected", vessel_operation_id: "op-a", trailer_number: "EXPECTED", status: "expected", arrival_status: "expected" },
+      { id: "vt-not-discharged", vessel_operation_id: "op-a", trailer_number: "NOTDISCHARGED", status: "not_discharged", arrival_status: "not_discharged" },
+      { id: "vt-cancelled", vessel_operation_id: "op-a", trailer_number: "CANCELLED", status: "cancelled", arrival_status: "cancelled" },
+      { id: "vt-no-show", vessel_operation_id: "op-a", trailer_number: "NOSHOW", status: "no_show", arrival_status: "no_show" },
+      { id: "vt-inspection", vessel_operation_id: "op-a", trailer_number: "INSPECTION", status: "in_progress", arrival_status: "arrived" },
+    ];
+    dataset.vessel_inspection_temperatures = [];
+    dataset.vessel_inspection_damages = [];
+    dataset.vessel_inspection_photos = [];
+    dataset.operational_alerts = [];
+    dataset.trailer_activity_log = [];
+    const { supabase } = makeSupabaseMock(dataset);
+
+    const report = await getVesselOperationReport(supabase as never, "op-a");
+
+    expect(report.statistics).toMatchObject({
+      totalTrailers: 6,
+      expectedTrailers: 4,
+      arrivedTrailers: 2,
+      finalDischargedTrailers: 2,
+      pendingTrailers: 1,
+      notDischargedTrailers: 1,
+      cancelledTrailers: 1,
+      noShowTrailers: 1,
+      pendingInspections: 1,
+      completionPercentage: 25,
+    });
+    expect(report.trailers).toHaveLength(6);
+    expect(report.trailers.map((trailer) => trailer.trailerNumber)).toEqual([
+      "ARRIVED",
+      "EXPECTED",
+      "NOTDISCHARGED",
+      "CANCELLED",
+      "NOSHOW",
+      "INSPECTION",
+    ]);
+  });
+
+  it("leaves selected-operation inspection facts missing instead of borrowing them", async () => {
+    const dataset = makeRepeatedDataset();
+    dataset.vessel_inspection_temperatures = dataset.vessel_inspection_temperatures?.filter((row) => row.vessel_trailer_id !== "vt-a");
+    dataset.vessel_inspection_photos = dataset.vessel_inspection_photos?.filter((row) => row.vessel_trailer_id !== "vt-a");
+    const { supabase } = makeSupabaseMock(dataset);
+
+    const reportA = await getVesselOperationReport(supabase as never, "op-a");
+    const reportB = await getVesselOperationReport(supabase as never, "op-b");
+
+    expect(reportA.trailers).toHaveLength(1);
+    expect(reportA.trailers[0]).toMatchObject({
+      frontTemperature: null,
+      rearTemperature: null,
+      hasDamage: false,
+      priority: "priority",
+      notes: "Note A",
+      arrivedAt: "2026-08-01T09:00:00.000Z",
+    });
+    expect(reportA.trailers[0]?.photos).toEqual([]);
+    expect(reportA.damages).toEqual([]);
+    expect(reportB.trailers[0]).toMatchObject({ frontTemperature: -18, rearTemperature: -17, hasDamage: true });
+    expect(reportB.trailers[0]?.photos.map((photo) => photo.id)).toEqual(["photo-b"]);
+  });
+});

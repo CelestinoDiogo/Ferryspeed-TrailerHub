@@ -299,6 +299,21 @@ describe("vessel operation report model", () => {
     expect(report.trailers[1].temperatureAlert).toBe(true);
   });
 
+  it("associates damage by operation trailer id rather than repeated trailer number", () => {
+    const source = makeReportData();
+    const repeated = {
+      ...source.trailers[0],
+      id: "vt-second",
+      trailerNumber: source.trailers[1].trailerNumber,
+      hasDamage: false,
+      damageDetails: null,
+    };
+    const report = buildVesselOperationCanonicalReport({ ...source, trailers: [...source.trailers, repeated] });
+
+    expect(report.trailers[1].damages).toHaveLength(1);
+    expect(report.trailers[3].damages).toHaveLength(0);
+  });
+
   it("creates a deterministic fallback draft from the same operational data", () => {
     const draft = buildDeterministicVesselOperationAiReportDraft(makeReportData());
 

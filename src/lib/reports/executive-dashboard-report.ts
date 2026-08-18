@@ -205,7 +205,7 @@ export async function loadExecutiveDashboardReportData(
       .order("created_at", { ascending: false })
       .limit(1)
       .maybeSingle(),
-    getOperationalAlerts({ includeResolved: false, status: ["active"], limit: 25 }, supabase),
+    getOperationalAlerts({ includeResolved: false, status: ["active", "acknowledged"], limit: 25 }, supabase),
     supabase
       .from("trailer_activity_log")
       .select("created_at, event_type")

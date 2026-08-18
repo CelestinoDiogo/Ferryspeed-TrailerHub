@@ -29,6 +29,17 @@ export type AdvanceExportStatusResult = {
   warning: string | null;
 };
 
+export type UndoExportStatusInput = {
+  allocation: ExportAllocationRecord;
+  performedBy?: string | null;
+};
+
+export type UndoExportStatusResult = {
+  previousStatus: ExportAllocationStatus;
+  restoredCompoundPosition: string | null;
+  fallbackPositionUsed: boolean;
+};
+
 const normalizeCompoundPosition = (value?: string | null) => {
   const trimmed = (value ?? "").trim().toUpperCase();
   if (!trimmed) {
@@ -243,5 +254,32 @@ export const advanceExportAllocationStatus = async (
     occurredAt,
     movementMetadata,
     warning,
+  };
+};
+
+export const undoExportAllocationStatus = async (
+  supabaseClient: SupabaseClient<Database>,
+  input: UndoExportStatusInput,
+): Promise<UndoExportStatusResult> => {
+  const currentStatus = normalizeExportAllocationStatus(input.allocation.status);
+  const rpcResult = await supabaseClient.rpc("undo_export_allocation_load_lifecycle", {
+    p_allocation_id: input.allocation.id,
+    p_expected_current_status: currentStatus,
+    p_performed_by: input.performedBy ?? null,
+  });
+
+  if (rpcResult.error) {
+    throw new Error(rpcResult.error.message || "Unable to undo export allocation lifecycle.");
+  }
+
+  const row = rpcResult.data?.[0];
+  if (!row?.transitioned) {
+    throw new Error("Allocation status changed by another user. Refresh and try again.");
+  }
+
+  return {
+    previousStatus: normalizeExportAllocationStatus(row.previous_status),
+    restoredCompoundPosition: normalizeCompoundPosition(row.restored_compound_position),
+    fallbackPositionUsed: row.fallback_position_used,
   };
 };
