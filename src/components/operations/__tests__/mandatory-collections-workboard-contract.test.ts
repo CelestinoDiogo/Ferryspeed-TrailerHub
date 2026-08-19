@@ -7,7 +7,7 @@ const source = readFileSync(path.resolve(process.cwd(), "src/components/operatio
 describe("mandatory Collections workboard contract", () => {
   it("loads authoritative Delivery and Export states without a date cutoff", () => {
     expect(source).toContain('.from("delivery_bookings")');
-    expect(source).toContain('.or("status.eq.waiting_collection,collected_at.not.is.null")');
+    expect(source).toContain('.in("status", ["waiting_collection", "delivered", "collected"])');
     expect(source).toContain('.from("export_allocations")');
     expect(source).toContain('.in("status", ["delivered_empty", "waiting_loading", "collected_loaded", "completed"])');
     expect(source).not.toContain("collected_by_haulier");
@@ -17,7 +17,8 @@ describe("mandatory Collections workboard contract", () => {
   it("uses authoritative atomic completion APIs", () => {
     expect(source).toContain('supabase.rpc("complete_delivery_customer_collection"');
     expect(source).toContain("advanceExportAllocationStatus(supabase");
-    expect(source).toContain('p_resulting_load_status: result');
+    expect(source).toContain('row.status === "delivered"');
+    expect(source).toContain('p_expected_current_status: "waiting_collection"');
   });
 
   it("offers explicit Delivery outcomes and source traceability", () => {

@@ -1513,6 +1513,22 @@ const buildTargetAlerts = (
       });
     }
 
+    if (vesselTrailer.has_damage === true) {
+      candidates.push({
+        severity: "high",
+        title: "Damage alert",
+        description: `Trailer ${vesselTrailer.trailer_number ?? "unknown"} has recorded damage.`,
+        sourceModule: "vessel",
+        sourceRecordId: vesselTrailer.id,
+        trailerId: vesselTrailer.trailer_id ?? null,
+        trailerNumber: vesselTrailer.trailer_number ?? null,
+        metadata: buildAlertMetadata({
+          vessel_trailer_id: vesselTrailer.id,
+          vessel_operation_id: vesselTrailer.vessel_operation_id,
+        }),
+      });
+    }
+
     if (settings.inspectionMissingPhotosEnabled && vesselTrailer.inspection_completed_at) {
       const hasPhotos = data.photos.some((photo) => photo.vessel_trailer_id === vesselTrailer.id);
       if (!hasPhotos) {

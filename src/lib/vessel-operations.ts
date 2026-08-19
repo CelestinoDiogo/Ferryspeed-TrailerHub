@@ -317,12 +317,26 @@ export const VESSEL_OPERATION_FILTERS = ["today", "tomorrow", "upcoming", "compl
 
 const normalizeTrimmed = (value?: string | null) => value?.trim() ?? "";
 
-export const getLocalDateInputValue = () => {
-  const now = new Date();
-  const offset = now.getTimezoneOffset();
-  const localDate = new Date(now.getTime() - offset * 60_000);
+export const toLocalDateKey = (date: Date = new Date()) => {
+  const offset = date.getTimezoneOffset();
+  const localDate = new Date(date.getTime() - offset * 60_000);
   return localDate.toISOString().split("T")[0];
 };
+
+export const getLocalDateInputValue = () => toLocalDateKey(new Date());
+
+export const getVesselOperationExpectedDateKey = (expectedArrivalAt?: string | null) =>
+  expectedArrivalAt?.slice(0, 10) ?? "";
+
+export const isVesselOperationScheduledOnLocalDate = (
+  operation: {
+    expected_arrival_at?: string | null;
+    actual_arrival_at?: string | null;
+    created_at?: string | null;
+    status?: string | null;
+  },
+  dateKey: string,
+) => getVesselOperationExpectedDateKey(operation.expected_arrival_at) === dateKey && operation.status !== "cancelled";
 
 export const getLocalDateTimeInputValue = () => {
   const now = new Date();

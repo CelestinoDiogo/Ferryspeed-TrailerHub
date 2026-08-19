@@ -407,8 +407,8 @@ export function OperationalAlertsSection({
       <div className="border-b border-slate-200 px-5 py-4 sm:px-6">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div>
-            <p className="text-[11px] font-semibold uppercase tracking-[0.3em] text-slate-500">Operational Alerts</p>
-            <p className="mt-1 text-sm text-slate-600">Compact live alert workflow for supervisors.</p>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.3em] text-slate-500">Damage & Temperature Alerts</p>
+            <p className="mt-1 text-sm text-slate-600">Live damage and out-of-range temperature alerts for supervisors.</p>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
@@ -501,7 +501,7 @@ export function OperationalAlertsSection({
           <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-5 text-sm text-slate-500">Loading alerts...</div>
         ) : visibleAlerts.length === 0 ? (
           <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-5 text-sm text-slate-500">
-            {statusView === "resolved" ? "No resolved operational alerts." : "No active operational alerts."}
+            {statusView === "resolved" ? "No resolved damage or temperature alerts." : "No active damage or temperature alerts."}
           </div>
         ) : (
           visibleAlerts.map((alert) => {

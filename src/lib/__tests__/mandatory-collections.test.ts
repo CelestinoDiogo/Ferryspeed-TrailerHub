@@ -48,8 +48,22 @@ describe("mandatory collections", () => {
     expect(history).toHaveLength(1);
   });
 
+  it("treats an eligible Delivery as pending collection until it is collected", () => {
+    const delivered = projectDeliveryCollection({ ...delivery, status: "delivered", waiting_collection_since: null }, "2026-08-16T12:00:00.000Z");
+    const later = projectDeliveryCollection({ ...delivery, status: "delivered", waiting_collection_since: null }, "2026-08-17T12:00:00.000Z");
+    expect(delivered).toMatchObject({ key: "delivery:delivery-a", isOutstanding: true, source: "delivery" });
+    expect(later?.isOutstanding).toBe(true);
+    expect(later?.ageHours).toBeGreaterThan(delivered?.ageHours ?? 0);
+    expect(projectDeliveryCollection({ ...delivery, status: "collected", collected_at: "2026-08-16T12:00:00.000Z" }, "2026-08-17T12:00:00.000Z")?.isOutstanding).toBe(false);
+    expect(deriveMandatoryCollections({
+      deliveries: [{ ...delivery, status: "collected", collected_at: "2026-08-16T12:00:00.000Z" }],
+      exports: [],
+    })).toHaveLength(0);
+  });
+
   it("does not infer an obligation from an ambiguous Delivery status", () => {
-    expect(projectDeliveryCollection({ ...delivery, status: "delivered", waiting_collection_since: null })).toBeNull();
+    expect(projectDeliveryCollection({ ...delivery, status: "scheduled", waiting_collection_since: null })).toBeNull();
+    expect(projectDeliveryCollection({ ...delivery, status: "on_delivery", waiting_collection_since: null })).toBeNull();
     expect(projectDeliveryCollection({ ...delivery, status: "collected", collected_at: null })).toBeNull();
     expect(projectDeliveryCollection({ ...delivery, status: "cancelled", collected_at: "2026-08-15T12:00:00.000Z" })).toBeNull();
   });

@@ -4,7 +4,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import type { ReactNode } from "react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Anchor, BarChart3, ChevronRight, ClipboardList, Package, PlusCircle, ScanSearch, Ship, Truck } from "lucide-react";
 import { PrintButton } from "@/components/print/print-button";
 import { PrintFilters } from "@/components/print/print-filters";
@@ -39,6 +39,14 @@ import {
   type OperationalAlertSummary,
 } from "@/lib/operational-alerts";
 import { useOperationalRealtime } from "@/lib/realtime/operational-realtime";
+import {
+  isVesselOperationScheduledOnLocalDate,
+  getLocalDateInputValue,
+} from "@/lib/vessel-operations";
+import {
+  isDashboardSafetyAlert,
+  summarizeDashboardSafetyAlerts,
+} from "@/lib/dashboard-safety-alerts";
 
 type DashboardStats = {
   totalTrailers: number;
@@ -261,6 +269,19 @@ export function TrailerDashboard() {
   const saved = searchParams.get("saved");
   const notice = saved === "1" ? "Operation saved successfully. Dashboard refreshed." : null;
 
+  const dashboardSafetyAlerts = useMemo(
+    () => operationalAlerts.filter(isDashboardSafetyAlert),
+    [operationalAlerts],
+  );
+  const dashboardResolvedSafetyAlerts = useMemo(
+    () => resolvedOperationalAlerts.filter(isDashboardSafetyAlert),
+    [resolvedOperationalAlerts],
+  );
+  const dashboardSafetySummary = useMemo(
+    () => summarizeDashboardSafetyAlerts(dashboardSafetyAlerts, operationalAlertSummary.raw),
+    [dashboardSafetyAlerts, operationalAlertSummary.raw],
+  );
+
   useEffect(() => {
     dashboardMountStartRef.current = typeof performance !== "undefined" ? performance.now() : Date.now();
   }, []);
@@ -381,7 +402,7 @@ export function TrailerDashboard() {
       return;
     }
 
-    const currentRows = alertStatusView === "resolved" ? resolvedOperationalAlerts : operationalAlerts;
+    const currentRows = alertStatusView === "resolved" ? dashboardResolvedSafetyAlerts : dashboardSafetyAlerts;
     console.info("[alerts-ui] rows passed to OperationalAlertsSection", {
       statusView: alertStatusView,
       rowsPassed: currentRows.length,
@@ -393,7 +414,7 @@ export function TrailerDashboard() {
         title: alert.title,
       })),
     });
-  }, [alertStatusView, operationalAlerts, resolvedOperationalAlerts]);
+  }, [alertStatusView, dashboardSafetyAlerts, dashboardResolvedSafetyAlerts]);
 
   const loadResolvedAlerts = useCallback(async () => {
     if (resolvedAlertsPromiseRef.current) {
@@ -432,7 +453,7 @@ export function TrailerDashboard() {
       setError(null);
 
       try {
-        const todayKey = getDateKey(new Date().toISOString());
+        const todayKey = getLocalDateInputValue();
 
         const [
           { data, error: supabaseError },
@@ -464,7 +485,7 @@ export function TrailerDashboard() {
             supabase
               .from("delivery_bookings")
               .select("id, trailer_id, delivery_date, delivered_at, waiting_collection_since, collection_due_date, trailers(trailer_number)")
-              .eq("status", "waiting_collection"),
+              .in("status", ["waiting_collection", "delivered"]),
             supabase
               .from("export_allocations")
               .select("id, trailer_id, status, expected_return_at, shipped_at, updated_at"),
@@ -507,13 +528,7 @@ export function TrailerDashboard() {
 
         const allVesselOperations = (vesselData ?? []) as VesselOperationCard[];
         setVesselOpsTodayCount(
-          allVesselOperations.filter((operation) => {
-            const operationDate =
-              getDateKey(operation.actual_arrival_at) ??
-              getDateKey(operation.expected_arrival_at);
-
-            return operationDate === todayKey;
-          }).length,
+          allVesselOperations.filter((operation) => isVesselOperationScheduledOnLocalDate(operation, todayKey)).length,
         );
 
         const exportAllocations = ((exportAllocationsData ?? []) as ExportAllocationRecord[]).map((row) =>
@@ -892,7 +907,7 @@ export function TrailerDashboard() {
         />
 
         <PrintTable
-          rows={operationalAlerts.slice(0, 8)}
+          rows={dashboardSafetyAlerts.slice(0, 8)}
           columns={[
             { key: "title", header: "Urgent / Exception", render: (alert) => alert.title },
             { key: "severity", header: "Severity", render: (alert) => alert.severity },
@@ -1028,9 +1043,9 @@ export function TrailerDashboard() {
           </section>
 
           <OperationalAlertsSection
-            summary={operationalAlertSummary}
-            activeAlerts={operationalAlerts}
-            resolvedAlerts={resolvedOperationalAlerts}
+            summary={dashboardSafetySummary}
+            activeAlerts={dashboardSafetyAlerts}
+            resolvedAlerts={dashboardResolvedSafetyAlerts}
             resolvedAlertsLoaded={resolvedAlertsLoaded}
             resolvedAlertsLoading={resolvedAlertsLoading}
             statusView={alertStatusView}

@@ -97,11 +97,16 @@ export const getMandatoryCollectionAge = (originalDueAt: string, referenceAt: st
   return { ageHours, ageLevel, ageLabel };
 };
 
+export const isDeliveryPendingMandatoryCollection = (row: Pick<DeliveryCollectionSourceRow, "status" | "collected_at">) => {
+  const status = normalizeStatus(row.status);
+  return !row.collected_at && (status === "waiting_collection" || status === "delivered");
+};
+
 export const projectDeliveryCollection = (row: DeliveryCollectionSourceRow, referenceAt?: string | Date): MandatoryCollection | null => {
   const status = normalizeStatus(row.status);
   const isCancelled = status === "cancelled";
   const isCompleted = status === "collected" && Boolean(row.collected_at);
-  const isOutstanding = status === "waiting_collection" && !row.collected_at;
+  const isOutstanding = isDeliveryPendingMandatoryCollection(row);
   if (isCancelled || (!isOutstanding && !isCompleted)) return null;
 
   const pendingSince = row.waiting_collection_since ?? row.delivered_at ?? toIsoAtOperationalBoundary(row.delivery_date);

@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { BarChart3, Download, FileSpreadsheet, FileText, RefreshCw, ShieldAlert, Ship, TrendingUp, Truck } from "lucide-react";
+import { BarChart3, Download, FileSpreadsheet, FileText, RefreshCw, Ship, TrendingUp, Truck } from "lucide-react";
 import { HistoryDateRangeFilter } from "@/components/common/history-date-range-filter";
 import { PrintButton } from "@/components/print/print-button";
 import { PrintFooter } from "@/components/print/print-footer";
@@ -57,9 +57,7 @@ const buildDelimitedExport = (reportData: ExecutiveDashboardReportData, delimite
   pushRow(["Today's arrivals", reportData.summary.todaysArrivals]);
   pushRow(["Today's departures", reportData.summary.todaysDepartures]);
   pushRow(["Inspection completion", formatPercent(reportData.summary.inspectionCompletionRate)]);
-  pushRow(["Priority SLA", formatPercent(reportData.summary.prioritySlaPercent)]);
   pushRow(["Temperature alerts", reportData.summary.temperatureAlerts]);
-  pushRow(["Stock check accuracy", formatPercent(reportData.summary.stockCheckAccuracyPercent)]);
   pushRow(["Waiting collection overdue", reportData.summary.waitingCollectionOverdue]);
   pushRow(["Active alerts", reportData.summary.activeAlerts]);
 
@@ -125,9 +123,7 @@ const buildExcelMarkup = (reportData: ExecutiveDashboardReportData) => {
             ["Today's arrivals", reportData.summary.todaysArrivals],
             ["Today's departures", reportData.summary.todaysDepartures],
             ["Inspection completion", formatPercent(reportData.summary.inspectionCompletionRate)],
-            ["Priority SLA", formatPercent(reportData.summary.prioritySlaPercent)],
             ["Temperature alerts", reportData.summary.temperatureAlerts],
-            ["Stock check accuracy", formatPercent(reportData.summary.stockCheckAccuracyPercent)],
             ["Waiting collection overdue", reportData.summary.waitingCollectionOverdue],
             ["Active alerts", reportData.summary.activeAlerts],
           ],
@@ -288,9 +284,7 @@ export function ExecutiveDashboard() {
         { label: "Arrivals", value: reportData.summary.todaysArrivals },
         { label: "Departures", value: reportData.summary.todaysDepartures },
         { label: "Inspection", value: formatPercent(reportData.summary.inspectionCompletionRate) },
-        { label: "Priority SLA", value: formatPercent(reportData.summary.prioritySlaPercent) },
         { label: "Alerts", value: reportData.summary.activeAlerts },
-        { label: "Stock Accuracy", value: formatPercent(reportData.summary.stockCheckAccuracyPercent) },
       ]
     : [];
 
@@ -376,8 +370,8 @@ export function ExecutiveDashboard() {
       <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <MetricCard icon={<Truck className="h-5 w-5" />} label="Compound Trailers" value={reportData?.summary.compoundTrailers ?? unresolvedValue} accent="from-slate-950 to-slate-700" />
         <MetricCard icon={<BarChart3 className="h-5 w-5" />} label="Occupancy" value={reportData ? formatPercent(reportData.summary.compoundOccupancyPercent) : unresolvedValue} accent="from-emerald-600 to-teal-500" />
-        <MetricCard icon={<TrendingUp className="h-5 w-5" />} label="Priority SLA" value={reportData ? formatPercent(reportData.summary.prioritySlaPercent) : unresolvedValue} accent="from-amber-500 to-orange-500" />
-        <MetricCard icon={<ShieldAlert className="h-5 w-5" />} label="Stock Accuracy" value={reportData ? formatPercent(reportData.summary.stockCheckAccuracyPercent) : unresolvedValue} accent="from-indigo-600 to-cyan-500" />
+        <MetricCard icon={<Ship className="h-5 w-5" />} label="Arrivals" value={reportData?.summary.todaysArrivals ?? unresolvedValue} accent="from-cyan-600 to-blue-600" />
+        <MetricCard icon={<TrendingUp className="h-5 w-5" />} label="Departures" value={reportData?.summary.todaysDepartures ?? unresolvedValue} accent="from-slate-800 to-slate-600" />
       </section>
 
       <section className="grid gap-4 xl:grid-cols-[1.3fr_1fr]">
@@ -444,7 +438,7 @@ export function ExecutiveDashboard() {
         </Panel>
       </section>
 
-      <section className="grid gap-4 xl:grid-cols-[1.25fr_0.95fr]">
+      <section className="grid gap-4">
         <Panel title="Customer Metrics" subtitle="Operational concentration by customer">
           <PrintTable
             rows={reportData?.customers ?? []}
@@ -456,18 +450,6 @@ export function ExecutiveDashboard() {
               { key: "averageCompoundDwellHours", header: "Avg Dwell", render: (row) => formatHours(row.averageCompoundDwellHours) },
             ]}
           />
-        </Panel>
-
-        <Panel title="SLA & Risk" subtitle="Waiting collection, alerts and stock check quality">
-          <div className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50 p-4">
-            <MetricLine label="Waiting collection overdue" value={reportData?.summary.waitingCollectionOverdue ?? 0} />
-            <MetricLine label="Temperature alerts" value={reportData?.summary.temperatureAlerts ?? 0} />
-            <MetricLine label="Active alerts" value={reportData?.summary.activeAlerts ?? 0} />
-            <MetricLine label="Export overdue" value={reportData?.exportSla.overdue ?? 0} />
-            <MetricLine label="Delivered empty" value={reportData?.exportSla.deliveredEmpty ?? 0} />
-            <MetricLine label="Collected loaded" value={reportData?.exportSla.collectedLoaded ?? 0} />
-            <MetricLine label="Latest check discrepancies" value={reportData?.stockCheck.discrepancyTotal ?? 0} />
-          </div>
         </Panel>
       </section>
 

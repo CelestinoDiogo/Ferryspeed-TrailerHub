@@ -66,7 +66,7 @@ export function MandatoryCollectionsWorkboard() {
         supabase
           .from("delivery_bookings")
           .select("id, trailer_id, customer, delivery_location, booking_reference, delivery_date, delivered_at, waiting_collection_since, collection_due_date, collected_at, status, temperature_required, trailers(trailer_number)")
-          .or("status.eq.waiting_collection,collected_at.not.is.null"),
+          .in("status", ["waiting_collection", "delivered", "collected"]),
         supabase
           .from("export_allocations")
           .select("id, trailer_id, trailer_number, customer, collection_address, booking_reference, collection_date, expected_return_at, delivered_empty_at, waiting_loading_at, collected_loaded_at, completed_at, cancelled_at, status, priority")
@@ -141,6 +141,21 @@ export function MandatoryCollectionsWorkboard() {
     setActionKey(item.key);
     setError(null);
     try {
+      if (row.status === "delivered") {
+        const now = new Date().toISOString();
+        const { error: promoteError } = await supabase
+          .from("delivery_bookings")
+          .update({
+            status: "waiting_collection",
+            waiting_collection_since: row.waiting_collection_since ?? now,
+            delivered_at: row.delivered_at ?? now,
+            updated_at: now,
+          })
+          .eq("id", row.id)
+          .eq("status", "delivered");
+        if (promoteError) throw promoteError;
+      }
+
       const { error: actionError } = await supabase.rpc("complete_delivery_customer_collection", {
         p_booking_id: row.id,
         p_expected_current_status: "waiting_collection",

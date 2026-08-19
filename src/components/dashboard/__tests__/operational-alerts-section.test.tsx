@@ -95,7 +95,7 @@ describe("OperationalAlertsSection live loading states", () => {
     );
 
     expect(screen.queryByText("Loading alerts...")).toBeNull();
-    expect(screen.getByText("No active operational alerts.")).toBeInTheDocument();
+    expect(screen.getByText("No active damage or temperature alerts.")).toBeInTheDocument();
   });
 
   it("renders alert rows after successful response", () => {
@@ -132,7 +132,7 @@ describe("OperationalAlertsSection live loading states", () => {
     });
 
     expect(screen.queryByText("Loading alerts...")).toBeNull();
-    expect(screen.getByText("No resolved operational alerts.")).toBeInTheDocument();
+    expect(screen.getByText("No resolved damage or temperature alerts.")).toBeInTheDocument();
   });
 
   it("resets the severity filter when switching status views so active rows do not stay hidden", async () => {
@@ -212,6 +212,6 @@ describe("OperationalAlertsSection live loading states", () => {
       expect(screen.queryByText("Loading alerts...")).toBeNull();
     });
 
-    expect(screen.getAllByText("No active operational alerts.").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("No active damage or temperature alerts.").length).toBeGreaterThan(0);
   });
 });

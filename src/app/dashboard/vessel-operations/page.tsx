@@ -18,7 +18,9 @@ import {
   getVesselOperationFilterLabel,
   getVesselOperationStatusClass,
   getVesselOperationStatusLabel,
+  isVesselOperationScheduledOnLocalDate,
   logVesselSupabaseError,
+  toLocalDateKey,
   type VesselOperationRecord,
   type VesselOperationTrailerRecord,
   VESSEL_OPERATION_FILTERS,
@@ -40,7 +42,7 @@ const filterOperations = (
   const todayKey = getLocalDateInputValue();
   const tomorrow = new Date();
   tomorrow.setDate(tomorrow.getDate() + 1);
-  const tomorrowKey = getLocalDateInputValueFromDate(tomorrow);
+  const tomorrowKey = toLocalDateKey(tomorrow);
   const upcomingThreshold = tomorrowKey;
 
   return items.filter((item) => {
@@ -48,7 +50,7 @@ const filterOperations = (
 
     switch (filter) {
       case "today":
-        return expectedKey === todayKey;
+        return isVesselOperationScheduledOnLocalDate(item, todayKey);
       case "tomorrow":
         return expectedKey === tomorrowKey;
       case "upcoming":
@@ -60,12 +62,6 @@ const filterOperations = (
         return true;
     }
   });
-};
-
-const getLocalDateInputValueFromDate = (date: Date) => {
-  const offset = date.getTimezoneOffset();
-  const localDate = new Date(date.getTime() - offset * 60_000);
-  return localDate.toISOString().split("T")[0];
 };
 
 const getPrintedDateTime = () =>

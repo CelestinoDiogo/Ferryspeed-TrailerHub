@@ -5,6 +5,7 @@ import { loadTrailerOperationalProfile, type TrailerOperationalProfile } from "@
 import { buildActiveExportStatusByTrailerId, isExportAllocationOverdue, isTrailerEligibleForCompoundViews, isTrailerPresentInCompoundInventory, normalizeExportAllocationRecord, type ExportAllocationRecord } from "@/lib/export-allocation";
 import { getTrailerCurrentLocationLabel } from "@/lib/trailer-location";
 import { getLocalDateKey } from "@/lib/operational-readiness";
+import { isVesselOperationScheduledOnLocalDate } from "@/lib/vessel-operations";
 import type { Database } from "@/lib/database.types";
 import { aiAssistantIntentSchema, allowedExportStatuses, type AiAssistantAlert, type AiAssistantIntent, type AiAssistantLink, type AiAssistantRecord, type AiAssistantResponse, type AiAssistantSection, type AiAssistantSummaryItem, type AiAssistantUiResultType } from "@/lib/ai-assistant-types";
 import { runAiAssistantFoundationQuery } from "@/lib/ai-assistant-foundation";
@@ -496,7 +497,7 @@ const fetchOperationalKpis = async (supabase: SupabaseClient<Database>, date: st
       .select("id", { count: "exact", head: true }),
     supabase
       .from("vessel_operations")
-      .select("id, expected_arrival_at, actual_arrival_at"),
+      .select("id, expected_arrival_at, actual_arrival_at, status"),
     supabase
       .from("vessel_operation_trailers")
       .select("id, vessel_operation_id, arrival_status, inspection_completed_at, has_damage, has_temperature_alert"),
@@ -530,11 +531,9 @@ const fetchOperationalKpis = async (supabase: SupabaseClient<Database>, date: st
   const loadedCount = compoundInventoryTrailers.filter((item) => normalizedLoadStatus(item.load_status) === "loaded").length;
   const arrivalsToday = trailers.filter((item) => getDateKey(item.arrival_date) === date).length;
   const departuresToday = trailers.filter((item) => getDateKey(item.departure_date) === date).length;
-  const operationsToday = ((vesselData ?? []) as Array<{ expected_arrival_at?: string | null; actual_arrival_at?: string | null }>).filter((row) => {
-    const expected = getDateKey(row.expected_arrival_at);
-    const actual = getDateKey(row.actual_arrival_at);
-    return expected === date || actual === date;
-  }).length;
+  const operationsToday = ((vesselData ?? []) as Array<{ expected_arrival_at?: string | null; actual_arrival_at?: string | null; status?: string | null }>).filter((row) =>
+    isVesselOperationScheduledOnLocalDate(row, date),
+  ).length;
 
   const vesselTrailerRows = (vesselTrailerData ?? []) as Array<{ arrival_status?: string | null; inspection_completed_at?: string | null; has_damage?: boolean | null; has_temperature_alert?: boolean | null }>;
   const inspectionsPending = vesselTrailerRows.filter((row) => normalizeText(row.arrival_status) === "arrived" && !row.inspection_completed_at).length;
@@ -580,7 +579,7 @@ const fetchOperationsSummaryData = async (supabase: SupabaseClient<Database>, da
       .select("id", { count: "exact", head: true }),
     supabase
       .from("vessel_operations")
-      .select("id, expected_arrival_at, actual_arrival_at"),
+      .select("id, expected_arrival_at, actual_arrival_at, status"),
     supabase
       .from("vessel_operation_trailers")
       .select("vessel_operation_id, arrival_status, inspection_started_at, inspection_completed_at, has_damage, has_temperature_alert"),
@@ -596,7 +595,7 @@ const fetchOperationsSummaryData = async (supabase: SupabaseClient<Database>, da
 
   const trailers = (trailersData ?? []) as Array<Pick<TrailerRow, "id" | "load_status" | "arrival_date" | "departure_date" | "compound_position" | "is_local">>;
   const allocations = ((exportAllocationsData ?? []) as ExportAllocationRecord[]).map((row) => normalizeExportAllocationRecord(row));
-  const vesselOperations = (vesselData ?? []) as Array<Pick<VesselOperationRow, "id" | "expected_arrival_at" | "actual_arrival_at">>;
+  const vesselOperations = (vesselData ?? []) as Array<Pick<VesselOperationRow, "id" | "expected_arrival_at" | "actual_arrival_at" | "status">>;
   const vesselTrailers = (vesselTrailerData ?? []) as Array<Pick<VesselOperationTrailerRow, "vessel_operation_id" | "arrival_status" | "inspection_started_at" | "inspection_completed_at" | "has_damage" | "has_temperature_alert">>;
 
   const activeExportAllocations = allocations.filter((item) => item.status !== "completed" && item.status !== "cancelled");
@@ -622,10 +621,7 @@ const fetchOperationsSummaryData = async (supabase: SupabaseClient<Database>, da
   const occupancyPercentRaw = parseNumberLike(occupancyRow?.occupancy_percentage);
   const compoundOccupancy = occupancyPercentRaw === null ? Math.round((occupiedPositions / Math.max(compoundCapacity, 1)) * 100) : Math.round(occupancyPercentRaw);
 
-  const todaysOperations = vesselOperations.filter((operation) => {
-    const operationDate = getDateKey(operation.actual_arrival_at) ?? getDateKey(operation.expected_arrival_at);
-    return operationDate === date;
-  });
+  const todaysOperations = vesselOperations.filter((operation) => isVesselOperationScheduledOnLocalDate(operation, date));
   const todaysOperationIds = new Set(todaysOperations.map((operation) => operation.id));
   const vesselTrailersToday = vesselTrailers.filter((row) => todaysOperationIds.has(row.vessel_operation_id));
   const expectedTrailersToday = vesselTrailersToday.length;
