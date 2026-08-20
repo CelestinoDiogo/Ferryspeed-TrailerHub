@@ -22,8 +22,10 @@ describe("Vessel Report consolidated print contract", () => {
     }
   });
 
-  it("excludes Customer and Position from the consolidated table", () => {
-    expect(consolidatedTable).not.toContain(">Customer</th>");
-    expect(consolidatedTable).not.toContain(">Position</th>");
+  it("limits the consolidated table to temperature-required or damaged trailers", () => {
+    expect(printSource).toContain("selectBoatReportTrailers");
+    expect(printSource).toContain("Temperature-required and damaged trailers only.");
+    expect(printSource).toContain("{boatReportTrailers.map((trailer) => (");
+    expect(printSource).not.toContain("{reportData.trailers.map((trailer) => (");
   });
 });

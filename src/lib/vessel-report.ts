@@ -579,6 +579,10 @@ export async function getVesselOperationReport(
       overallCondition: (hasDamage ? "attention_required" : "good") as "attention_required" | "good",
       hasDamage,
       hasTemperatureAlert: trailer.has_temperature_alert === true,
+      temperatureRequired:
+        typeof trailer.expected_front_temperature === "number"
+        || typeof trailer.expected_rear_temperature === "number"
+        || Boolean((trailer.temperature_required ?? "").trim()),
       temperatureResult,
       expectedFrontTemperature: getExpectedTemperatureForReading(trailer, "front"),
       expectedRearTemperature: getExpectedTemperatureForReading(trailer, "rear"),

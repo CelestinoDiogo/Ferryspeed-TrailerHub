@@ -289,7 +289,7 @@ export function OperationsAssistantDrawer({
           "absolute bg-[#F8FAFC] shadow-2xl border-slate-200",
           mobile
             ? "inset-x-0 bottom-0 top-[8vh] rounded-t-3xl border-t px-4 pb-4 pt-3"
-            : "right-0 top-0 h-full w-full max-w-[640px] border-l px-5 pb-5 pt-4",
+            : "right-0 top-0 h-full w-[min(92vw,80rem)] border-l px-6 pb-5 pt-4",
         ].join(" ")}
       >
         <div className="flex h-full flex-col">
@@ -342,7 +342,7 @@ export function OperationsAssistantDrawer({
             </div>
           </section>
 
-          <div className="min-h-0 flex-1 overflow-y-auto rounded-2xl border border-slate-200 bg-white p-3">
+          <div className="min-h-0 flex-1 overflow-y-auto rounded-2xl border border-slate-200 bg-white p-4 sm:p-5">
             {messages.length === 0 ? (
               <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-slate-500">
                 <Bot className="h-7 w-7 text-cyan-700" />
@@ -368,7 +368,7 @@ export function OperationsAssistantDrawer({
                       </p>
                       <p className="text-[11px] text-slate-500">{formatTime(message.createdAt)}</p>
                     </div>
-                    <p className="text-sm text-slate-900">{message.text}</p>
+                    <p className="whitespace-pre-wrap text-sm leading-6 text-slate-900 sm:text-base">{message.text}</p>
 
                     {message.response ? (
                       <div className="mt-3 space-y-2">

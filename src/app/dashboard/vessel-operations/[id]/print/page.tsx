@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { PrintButton } from "@/components/print/print-button";
+import { selectBoatReportTrailers } from "@/lib/reports/boat-report-trailers";
 import { loadVesselOperationSummaryAndPrintReportData } from "@/lib/reports/report-data";
 import { supabase } from "@/lib/supabase";
 import { getAcceptedTemperatureRange, getDefaultTemperatureToleranceSettings, isTemperatureOutOfRange } from "@/lib/temperature-tolerance";
@@ -212,9 +213,11 @@ export default function VesselOperationPrintPage() {
   }
 
   const generatedAt = new Date().toISOString();
-  const damagedTrailers = reportData.trailers.filter((trailer) => trailer.hasDamage);
+  const boatReportTrailers = selectBoatReportTrailers(reportData.trailers);
+  const damagedTrailers = boatReportTrailers.filter((trailer) => trailer.hasDamage);
   const operationNotes = reportData.operation.notes?.trim() ?? "";
   const hasNoTrailers = reportData.trailers.length === 0;
+  const hasNoRelevantTrailers = !hasNoTrailers && boatReportTrailers.length === 0;
   const overviewRows = [
     { label: "Vessel", value: reportData.operation.vesselName?.trim() || null },
     { label: "Voyage / Sailing Reference", value: reportData.operation.voyageReference?.trim() || null },
@@ -302,8 +305,15 @@ export default function VesselOperationPrintPage() {
               </section>
             ) : null}
 
+            {hasNoRelevantTrailers ? (
+              <section className="avoid-print-break mt-8 rounded-3xl border border-slate-200 bg-slate-50 p-5 text-sm text-slate-700">
+                No trailers require temperature control or have recorded damage for this vessel operation.
+              </section>
+            ) : null}
+
             <section className="avoid-print-break mt-8">
               <h2 className="text-lg font-semibold text-slate-950">Consolidated Trailer Report</h2>
+              <p className="mt-1 text-sm text-slate-600">Temperature-required and damaged trailers only.</p>
               <div className="mt-4 overflow-x-auto rounded-3xl border border-slate-200">
                 <table className="min-w-full border-collapse text-sm text-slate-800">
                   <thead className="bg-slate-100 text-slate-700">
@@ -318,7 +328,7 @@ export default function VesselOperationPrintPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {reportData.trailers.map((trailer) => (
+                    {boatReportTrailers.map((trailer) => (
                       <tr key={trailer.id} className="trailer-print-card align-top">
                         <td className="border border-slate-200 px-3 py-3">
                           <p className="font-semibold text-slate-950">{trailer.trailerNumber}</p>
@@ -384,7 +394,7 @@ export default function VesselOperationPrintPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {reportData.trailers.map((trailer) => (
+                    {boatReportTrailers.map((trailer) => (
                       <tr key={trailer.id} className="trailer-print-card align-top">
                         <td className="border border-slate-200 px-3 py-3 font-semibold text-slate-950">{trailer.trailerNumber}</td>
                         <td className="border border-slate-200 px-3 py-3">{formatTemperature(trailer.expectedFrontTemperature, trailer.temperatureUnit)}</td>
@@ -400,11 +410,11 @@ export default function VesselOperationPrintPage() {
                 </div>
             </section>
 
-            {reportData.photos.some((photo) => photo.url) ? (
+            {boatReportTrailers.some((trailer) => trailer.photos.some((photo) => photo.url)) ? (
               <section className="mt-8">
                 <h2 className="text-lg font-semibold text-slate-950">Inspection Photos</h2>
                 <div className="mt-4 space-y-5">
-                  {reportData.trailers.filter((trailer) => trailer.photos.some((photo) => photo.url)).map((trailer) => (
+                  {boatReportTrailers.filter((trailer) => trailer.photos.some((photo) => photo.url)).map((trailer) => (
                     <div key={trailer.id} className="detail-print-card rounded-3xl border border-slate-200 bg-slate-50 p-4">
                       <p className="text-base font-semibold text-slate-950">{trailer.trailerNumber}</p>
                       <div className="print-photo-grid mt-3 grid gap-3 sm:grid-cols-2">

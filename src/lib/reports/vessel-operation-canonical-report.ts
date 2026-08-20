@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { selectBoatReportTrailers } from "@/lib/reports/boat-report-trailers";
 import type { VesselOperationalReportData } from "@/lib/reports/types";
 
 const photoLinkSchema = z.object({
@@ -99,7 +100,7 @@ export type VesselOperationCanonicalReport = z.infer<typeof canonicalReportSchem
 const normalize = (value?: string | null) => (value ?? "").trim();
 
 export function buildVesselOperationCanonicalReport(data: VesselOperationalReportData): VesselOperationCanonicalReport {
-  const trailers = data.trailers.map((trailer) => {
+  const trailers = selectBoatReportTrailers(data.trailers).map((trailer) => {
     const damages = data.damages
       .filter((damage) => damage.trailerId === trailer.id)
       .map((damage) => ({

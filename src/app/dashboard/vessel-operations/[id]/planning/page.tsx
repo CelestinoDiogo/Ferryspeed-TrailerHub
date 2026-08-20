@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import type { Json } from "@/lib/database.types";
+import { previewVesselTrailerImport, type VesselTrailerImportPreview } from "@/lib/imports/vessel-trailer-list-import";
 import { supabase } from "@/lib/supabase";
 import {
   applyPlanningOwnershipSelection,
@@ -27,6 +28,7 @@ import {
   type VesselTrailerStatus,
 } from "@/lib/vessel-operations";
 import type { TrailerOwnershipType } from "@/lib/trailer-ownership";
+import { getSessionToken } from "@/lib/voice/session";
 
 type FleetTrailer = {
   id: string;
@@ -115,82 +117,6 @@ const parseLegacyFrontExpectedTemperature = (value?: string | null) => {
   return match ? match[0] : "";
 };
 
-type ImportedTrailerRow = {
-  trailer_number: string;
-  expected_front_temperature: string;
-  expected_rear_temperature: string;
-  expected_temperature_unit: string;
-};
-
-const normalizeImportHeader = (value: string) => value.trim().toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-
-const IMPORT_HEADER_ALIASES: Record<string, keyof ImportedTrailerRow> = {
-  "trailer": "trailer_number",
-  "trailer number": "trailer_number",
-  "expected front temperature": "expected_front_temperature",
-  "front temperature": "expected_front_temperature",
-  "expected rear temperature": "expected_rear_temperature",
-  "rear temperature": "expected_rear_temperature",
-  "temperature unit": "expected_temperature_unit",
-};
-
-const parseImportedRows = (rawText: string) => {
-  const lines = rawText.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-  if (lines.length === 0) {
-    return [] as ImportedTrailerRow[];
-  }
-
-  const looksDelimited = lines[0].includes(",") || lines[0].includes("\t");
-  if (!looksDelimited) {
-    return lines.map((line) => ({
-      trailer_number: normalizeTrailerNumber(line),
-      expected_front_temperature: "",
-      expected_rear_temperature: "",
-      expected_temperature_unit: "C",
-    })).filter((row) => Boolean(row.trailer_number));
-  }
-
-  const delimiter = lines[0].includes("\t") ? "\t" : ",";
-  const cells = lines.map((line) => line.split(delimiter).map((cell) => cell.trim()));
-  const header = cells[0];
-  const headerMap = new Map<number, keyof ImportedTrailerRow>();
-
-  header.forEach((headerCell, index) => {
-    const normalizedHeader = normalizeImportHeader(headerCell);
-    const mapped = IMPORT_HEADER_ALIASES[normalizedHeader];
-    if (mapped) {
-      headerMap.set(index, mapped);
-    }
-  });
-
-  const hasTrailerColumn = Array.from(headerMap.values()).includes("trailer_number");
-  if (!hasTrailerColumn) {
-    return [] as ImportedTrailerRow[];
-  }
-
-  return cells.slice(1).map((row) => {
-    const imported: ImportedTrailerRow = {
-      trailer_number: "",
-      expected_front_temperature: "",
-      expected_rear_temperature: "",
-      expected_temperature_unit: "C",
-    };
-
-    row.forEach((value, index) => {
-      const key = headerMap.get(index);
-      if (!key) {
-        return;
-      }
-
-      imported[key] = value;
-    });
-
-    imported.trailer_number = normalizeTrailerNumber(imported.trailer_number);
-    imported.expected_temperature_unit = normalizeExpectedTemperatureUnit(imported.expected_temperature_unit || "C");
-    return imported;
-  }).filter((row) => Boolean(row.trailer_number));
-};
-
 const resolveOperatorName = async () => {
   const { data } = await supabase.auth.getUser();
   const user = data.user;
@@ -216,6 +142,10 @@ function VesselPlanningPageContent() {
   const [fleetTrailers, setFleetTrailers] = useState<FleetTrailer[]>([]);
   const [newDraft, setNewDraft] = useState<DraftTrailer>(emptyDraft);
   const [importText, setImportText] = useState("");
+  const [importPreview, setImportPreview] = useState<VesselTrailerImportPreview | null>(null);
+  const [importFileName, setImportFileName] = useState<string | null>(null);
+  const [importKind, setImportKind] = useState<"excel" | "pdf" | null>(null);
+  const [isImporting, setIsImporting] = useState(false);
   const [fleetSearch, setFleetSearch] = useState("");
   const [selectedFleetTrailerId, setSelectedFleetTrailerId] = useState("");
   const [isLoading, setIsLoading] = useState(true);
@@ -497,36 +427,110 @@ function VesselPlanningPageContent() {
     setError(null);
   };
 
-  const importTrailers = () => {
-    const rows = parseImportedRows(importText);
-
+  const applyImportedRows = (rows: VesselTrailerImportPreview["accepted"]) => {
     if (rows.length === 0) {
-      setError("No valid trailer rows found. Add trailer numbers or include a header with Trailer Number.");
-      return;
-    }
-
-    const existing = new Set(trailers.map((item) => normalizeTrailerNumber(item.trailer_number)));
-    const uniqueImported = rows.filter((row, index) => rows.findIndex((candidate) => candidate.trailer_number === row.trailer_number) === index);
-    const imported = uniqueImported.filter((row) => !existing.has(row.trailer_number));
-
-    if (imported.length === 0) {
       setError("No new trailer numbers to import.");
-      return;
+      return false;
     }
 
-    const nextItems = imported.map((row) => ({
+    const nextItems = rows.map((row) => ({
       ...emptyDraft(),
       clientId: crypto.randomUUID(),
       trailer_number: row.trailer_number,
+      customer: row.customer,
+      booking_reference: row.booking_reference,
+      load_description: row.load_description,
       expected_front_temperature: row.expected_front_temperature,
       expected_rear_temperature: row.expected_rear_temperature,
-      expected_temperature_unit: normalizeExpectedTemperatureUnit(row.expected_temperature_unit),
+      expected_temperature_unit: normalizeExpectedTemperatureUnit(row.expected_temperature_unit || "C"),
+      priority_level: row.priority_level === "priority" ? "priority" as const : "normal" as const,
+      planned_destination: row.planned_destination.trim() || "Compound",
+      planning_notes: row.planning_notes,
       status: "expected" as VesselTrailerStatus,
     }));
 
     setTrailers((current) => sortVesselOperationTrailersForArrivals([...current, ...nextItems]));
-    setImportText("");
+    return true;
+  };
+
+  const importTrailers = () => {
+    const preview = previewVesselTrailerImport(
+      importText,
+      trailers.map((item) => item.trailer_number),
+    );
+
+    if (preview.accepted.length === 0) {
+      setError(preview.invalid[0]?.reason ?? preview.duplicates[0]?.reason ?? "No valid trailer rows found. Add trailer numbers or include a header with Trailer Number.");
+      return;
+    }
+
+    if (applyImportedRows(preview.accepted)) {
+      setImportText("");
+      setError(null);
+      if (preview.duplicates.length > 0 || preview.invalid.length > 0) {
+        setSuccess(`Imported ${preview.accepted.length} trailer${preview.accepted.length === 1 ? "" : "s"}. Review skipped rows if needed.`);
+      }
+    }
+  };
+
+  const handleImportFileSelected = async (file: File | null, kind: "excel" | "pdf") => {
+    if (!file || !isEditable) {
+      return;
+    }
+
+    setIsImporting(true);
     setError(null);
+    setSuccess(null);
+    setImportPreview(null);
+    setImportFileName(file.name);
+    setImportKind(kind);
+
+    try {
+      const token = await getSessionToken();
+      const formData = new FormData();
+      formData.set("file", file);
+      formData.set("purpose", "vessel_list");
+      formData.set("existingTrailerNumbers", JSON.stringify(trailers.map((item) => item.trailer_number)));
+
+      const endpoint = kind === "excel"
+        ? "/api/imports/spreadsheet?purpose=vessel_list"
+        : "/api/imports/pdf?purpose=vessel_list";
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+        body: formData,
+      });
+
+      const payload = (await response.json()) as { preview?: VesselTrailerImportPreview; error?: string };
+      if (!response.ok || !payload.preview) {
+        throw new Error(payload.error || (kind === "excel" ? "Unable to read this Excel file." : "Unable to read this PDF."));
+      }
+
+      setImportPreview(payload.preview);
+    } catch (importError) {
+      setImportFileName(null);
+      setImportKind(null);
+      setError(importError instanceof Error ? importError.message : "Unable to read this file.");
+    } finally {
+      setIsImporting(false);
+    }
+  };
+
+  const confirmImport = () => {
+    if (!importPreview) {
+      return;
+    }
+
+    if (applyImportedRows(importPreview.accepted)) {
+      const sourceLabel = importKind === "excel" ? "Excel" : "PDF";
+      setImportPreview(null);
+      setImportFileName(null);
+      setImportKind(null);
+      setError(null);
+      setSuccess(`Added ${importPreview.accepted.length} trailer${importPreview.accepted.length === 1 ? "" : "s"} from ${sourceLabel} for review. Save the vessel list to persist them.`);
+    }
   };
 
   const savePlanning = async () => {
@@ -1050,7 +1054,118 @@ function VesselPlanningPageContent() {
                 <button type="button" onClick={importTrailers} disabled={!isEditable} className="rounded-2xl border border-white/10 bg-slate-800 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60">
                   Import Trailers
                 </button>
+                <label className={`rounded-2xl bg-cyan-500 px-4 py-2 text-sm font-semibold text-slate-950 ${isEditable && !isImporting ? "hover:bg-cyan-400 cursor-pointer" : "cursor-not-allowed opacity-60"}`}>
+                  {isImporting && importKind === "excel" ? "Reading Excel..." : "Import Excel"}
+                  <input
+                    type="file"
+                    accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    className="sr-only"
+                    disabled={!isEditable || isImporting}
+                    onChange={(event) => {
+                      const file = event.target.files?.[0] ?? null;
+                      event.target.value = "";
+                      void handleImportFileSelected(file, "excel");
+                    }}
+                  />
+                </label>
+                <label className={`rounded-2xl border border-white/10 bg-slate-800 px-4 py-2 text-sm font-semibold text-white ${isEditable && !isImporting ? "hover:bg-slate-700 cursor-pointer" : "cursor-not-allowed opacity-60"}`}>
+                  {isImporting && importKind === "pdf" ? "Reading PDF..." : "Import PDF"}
+                  <input
+                    type="file"
+                    accept="application/pdf,.pdf"
+                    className="sr-only"
+                    disabled={!isEditable || isImporting}
+                    onChange={(event) => {
+                      const file = event.target.files?.[0] ?? null;
+                      event.target.value = "";
+                      void handleImportFileSelected(file, "pdf");
+                    }}
+                  />
+                </label>
               </div>
+
+              {importFileName ? (
+                <p className="mt-3 text-xs text-slate-400">Previewing {importFileName}. The file is not saved.</p>
+              ) : null}
+
+              {importPreview ? (
+                <div className="mt-4 space-y-3 rounded-2xl border border-white/10 bg-slate-900/80 p-4 text-sm">
+                  <p className="font-semibold text-white">{importKind === "excel" ? "Excel" : "PDF"} import preview</p>
+                  <p className="text-slate-300">{importPreview.accepted.length} accepted, {importPreview.warnings.length} warning{importPreview.warnings.length === 1 ? "" : "s"}, {importPreview.invalid.length} unrecognized, {importPreview.duplicates.length} duplicate{importPreview.duplicates.length === 1 ? "" : "s"}.</p>
+                  {importPreview.accepted.length > 0 ? (
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.16em] text-slate-500">Accepted</p>
+                      <ul className="mt-1 max-h-40 overflow-auto text-slate-200">
+                        {importPreview.accepted.map((row) => (
+                          <li key={row.trailer_number}>
+                            {row.trailer_number}
+                            {row.load_description ? ` · ${row.load_description}` : row.customer ? ` · ${row.customer}` : ""}
+                            {row.raw_temperature || row.expected_front_temperature ? ` · ${row.raw_temperature || row.expected_front_temperature}` : ""}
+                            {row.planned_destination ? ` · ${row.planned_destination}` : ""}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+                  {importPreview.warnings.length > 0 ? (
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.16em] text-amber-400">Warnings</p>
+                      <ul className="mt-1 text-amber-100">{importPreview.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul>
+                    </div>
+                  ) : null}
+                  {(importPreview.standBy?.length ?? 0) > 0 ? (
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.16em] text-slate-500">Stand-by</p>
+                      <ul className="mt-1 text-slate-300">{importPreview.standBy.map((row) => <li key={`standby-${row.trailer_number}`}>{row.trailer_number} was listed under STAND-BY and was not added as shipping.</li>)}</ul>
+                    </div>
+                  ) : null}
+                  {(importPreview.outstanding?.length ?? 0) > 0 ? (
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.16em] text-slate-500">Outstanding</p>
+                      <ul className="mt-1 text-slate-300">{importPreview.outstanding.map((row) => <li key={`outstanding-${row.trailer_number}`}>{row.trailer_number} was listed under OUTSTANDING and was not added as shipping.</li>)}</ul>
+                    </div>
+                  ) : null}
+                  {(importPreview.cancelled?.length ?? 0) > 0 ? (
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.16em] text-orange-400">Cancelled</p>
+                      <ul className="mt-1 text-orange-100">{importPreview.cancelled.map((row) => <li key={`cancelled-${row.trailer_number}`}>{row.trailer_number} is marked CANCELLED.</li>)}</ul>
+                    </div>
+                  ) : null}
+                  {importPreview.duplicates.length > 0 ? (
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.16em] text-slate-500">Duplicates</p>
+                      <ul className="mt-1 text-slate-300">{importPreview.duplicates.map((item) => <li key={`${item.row.trailer_number}-${item.reason}`}>{item.reason}</li>)}</ul>
+                    </div>
+                  ) : null}
+                  {importPreview.invalid.length > 0 ? (
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.16em] text-rose-400">Unrecognized</p>
+                      <ul className="mt-1 text-rose-100">{importPreview.invalid.map((item) => <li key={`${item.sourceLine}-${item.reason}`}>{item.sourceLine ? `${item.sourceLine}: ` : ""}{item.reason}</li>)}</ul>
+                    </div>
+                  ) : null}
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={confirmImport}
+                      disabled={!isEditable || importPreview.accepted.length === 0}
+                      className="rounded-2xl bg-cyan-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-cyan-400 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      Add accepted trailers
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setImportPreview(null);
+                        setImportFileName(null);
+                        setImportKind(null);
+                      }}
+                      className="rounded-2xl border border-white/10 bg-slate-800 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700"
+                    >
+                      Discard preview
+                    </button>
+                  </div>
+                </div>
+              ) : null}
 
               <div className="mt-4">
                 <label className="mb-2 block text-sm font-medium text-slate-200">Existing Trailer Search</label>

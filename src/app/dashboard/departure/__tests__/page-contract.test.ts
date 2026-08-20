@@ -12,6 +12,16 @@ describe("Departure page lifecycle contract", () => {
     expect(pageSource.match(/await performDeparture\(/g)).toHaveLength(2);
   });
 
+  it("does not create departures during Excel or PDF upload preview", () => {
+    const importHandler = pageSource.match(/const handleImportFileSelected[\s\S]*?const handleConfirmImportedDepartures/)?.[0] ?? "";
+    expect(importHandler).toContain("/api/imports/spreadsheet?purpose=departure");
+    expect(importHandler).toContain("/api/imports/pdf?purpose=departure");
+    expect(importHandler).not.toContain("await performDeparture(");
+    expect(pageSource).toContain("await runConfirmedDepartures(");
+    expect(pageSource).toContain("Import Excel");
+    expect(pageSource).toContain("Import PDF");
+  });
+
   it("routes Undo through the authoritative helper with the exact departure token", () => {
     const undoHandler = pageSource.match(/const handleUndoLastDeparture[\s\S]*?\n  return \(/)?.[0] ?? "";
 

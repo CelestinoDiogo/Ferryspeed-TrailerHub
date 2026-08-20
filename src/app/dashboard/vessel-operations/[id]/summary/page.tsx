@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabase";
+import { selectBoatReportTrailers } from "@/lib/reports/boat-report-trailers";
 import { buildDeterministicVesselOperationAiReportDraft } from "@/lib/reports/vessel-operation-ai-report-shared";
 import { loadVesselOperationSummaryAndPrintReportData } from "@/lib/reports/report-data";
 import { getTrailerOwnershipBadgeLabel } from "@/lib/trailer-ownership";
@@ -782,7 +783,7 @@ export default function VesselSummaryPage() {
       return [];
     }
 
-    return reportData.trailers.filter((trailer) => {
+    return selectBoatReportTrailers(reportData.trailers).filter((trailer) => {
       switch (activeFilter) {
         case "arrived":
           return trailer.arrivalStatusRaw === "arrived";
@@ -837,6 +838,8 @@ export default function VesselSummaryPage() {
   const { operation, statistics } = reportData;
   const completed = operation.status === "completed";
   const operationHasNoTrailers = reportData.trailers.length === 0;
+  const boatReportTrailerCount = selectBoatReportTrailers(reportData.trailers).length;
+  const hasNoRelevantTrailers = !operationHasNoTrailers && boatReportTrailerCount === 0;
   const operationHeaderRows = [
     { label: "Vessel Name", value: operation.vesselName?.trim() || null },
     { label: "Voyage / Sailing Ref", value: operation.voyageReference?.trim() || null },
@@ -1060,7 +1063,7 @@ export default function VesselSummaryPage() {
               ))}
             </div>
             <div className="mt-6 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
-              Showing <span className="font-semibold text-slate-950">{filteredTrailers.length}</span> trailer report{filteredTrailers.length === 1 ? "" : "s"}.
+              Showing <span className="font-semibold text-slate-950">{filteredTrailers.length}</span> temperature-required or damaged trailer report{filteredTrailers.length === 1 ? "" : "s"}.
             </div>
           </div>
         </section>
@@ -1086,7 +1089,11 @@ export default function VesselSummaryPage() {
             <div className="rounded-3xl border border-slate-200 bg-white p-6 text-sm text-slate-500 shadow-sm">No trailer records found for this vessel operation yet.</div>
           ) : null}
 
-          {filteredTrailers.length === 0 ? (
+          {hasNoRelevantTrailers ? (
+            <div className="rounded-3xl border border-slate-200 bg-white p-6 text-sm text-slate-500 shadow-sm">No trailers require temperature control or have recorded damage for this vessel operation.</div>
+          ) : null}
+
+          {filteredTrailers.length === 0 && !operationHasNoTrailers && !hasNoRelevantTrailers ? (
             <div className="rounded-3xl border border-slate-200 bg-white p-6 text-sm text-slate-500 shadow-sm">No trailers match the current filter.</div>
           ) : (
             filteredTrailers.map((trailer) => (

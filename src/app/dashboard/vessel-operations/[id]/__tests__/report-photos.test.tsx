@@ -92,7 +92,7 @@ const makeReport = (overrides?: { photoUrl?: string | null; includePhotos?: bool
       hasDamage: false,
       hasTemperatureAlert: false,
       temperatureResult: "not_assessed",
-      expectedFrontTemperature: null,
+      expectedFrontTemperature: 2,
       expectedRearTemperature: null,
       frontTemperature: null,
       rearTemperature: null,

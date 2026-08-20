@@ -8,7 +8,9 @@ import { TrailerHistoryDrawer } from "@/components/trailers/trailer-history-draw
 import { createTrailerActivity } from "@/lib/trailer-activity";
 import { logTrailerEvent, resolveAuditOperatorName } from "@/lib/trailer-audit-log";
 import { DepartureUndoConflictError, undoDeparture } from "@/lib/operations/departure-lifecycle";
+import { isEligibleForDeparture, type DepartureImportPreview } from "@/lib/imports/departure-import";
 import { supabase } from "@/lib/supabase";
+import { getSessionToken } from "@/lib/voice/session";
 
 type TrailerRecord = {
   id: string;
@@ -45,14 +47,6 @@ const normalizeFilterValue = (value?: string | null) => value?.trim() ?? "";
 const isAllFilterValue = (value?: string | null) => normalizeText(value) === "all";
 const normalizeOperationalStatus = (value?: string | null) => normalizeText(value);
 
-const isMissingDepartureDate = (value?: string | null) => {
-  if (value === null || value === undefined) {
-    return true;
-  }
-
-  return value.trim().length === 0;
-};
-
 const normalizeTrailerPrefix = (value?: string | null) => {
   const trailer = value?.trim().toUpperCase() ?? "";
   if (!trailer) {
@@ -61,28 +55,6 @@ const normalizeTrailerPrefix = (value?: string | null) => {
 
   const match = trailer.match(/^[A-Z]+/);
   return match?.[0] ?? "";
-};
-
-const isEligibleForDeparture = (trailer: TrailerRecord) => {
-  if (!trailer.trailer_number?.trim()) {
-    return false;
-  }
-
-  if (!isMissingDepartureDate(trailer.departure_date)) {
-    return false;
-  }
-
-  const isLocal = trailer.is_local === true;
-  if (isLocal) {
-    return false;
-  }
-
-  const operationalStatus = normalizeText(trailer.operational_status);
-  if (operationalStatus === "departed") {
-    return false;
-  }
-
-  return true;
 };
 
 const readDepartureQueryState = () => {
@@ -151,6 +123,10 @@ export default function DeparturePage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [importPreview, setImportPreview] = useState<DepartureImportPreview | null>(null);
+  const [importFileName, setImportFileName] = useState<string | null>(null);
+  const [importKind, setImportKind] = useState<"excel" | "pdf" | null>(null);
+  const [isImporting, setIsImporting] = useState(false);
 
   const loadDepartureTrailers = useCallback(async (options?: { showLoading?: boolean }) => {
     const showLoading = options?.showLoading ?? true;
@@ -698,19 +674,15 @@ export default function DeparturePage() {
     }
   };
 
-  const handleConfirmBatchDeparture = async () => {
-    const targets = selectedTrailerIds.filter((id) => {
-      const row = trailers.find((item) => item.id === id);
-      return Boolean(row && isEligibleForDeparture(row));
-    });
+  const runConfirmedDepartures = async (targets: string[], confirmMessage: string) => {
     if (targets.length === 0 || isSubmitting) {
       setError("Select at least one trailer for batch departure.");
-      return;
+      return false;
     }
 
-    const confirmed = window.confirm(`Confirm departure for ${targets.length} trailer${targets.length === 1 ? "" : "s"}?`);
+    const confirmed = window.confirm(confirmMessage);
     if (!confirmed) {
-      return;
+      return false;
     }
 
     setIsSubmitting(true);
@@ -726,7 +698,9 @@ export default function DeparturePage() {
         const result = await performDeparture(targetId);
         succeeded.push({ id: targetId, number: result.trailerNumber, snapshot: result.snapshot });
       } catch (err) {
-        const trailerNumber = trailers.find((row) => row.id === targetId)?.trailer_number ?? targetId;
+        const trailerNumber = trailers.find((row) => row.id === targetId)?.trailer_number
+          ?? importPreview?.accepted.find((row) => row.trailer.id === targetId)?.trailer_number
+          ?? targetId;
         const message = err instanceof Error ? err.message : "Unable to confirm departure.";
         failed.push(`${trailerNumber}: ${message}`);
       }
@@ -745,6 +719,77 @@ export default function DeparturePage() {
 
     setProcessingTrailerIds([]);
     setIsSubmitting(false);
+    return succeeded.length > 0;
+  };
+
+  const handleConfirmBatchDeparture = async () => {
+    const targets = selectedTrailerIds.filter((id) => {
+      const row = trailers.find((item) => item.id === id);
+      return Boolean(row && isEligibleForDeparture(row));
+    });
+    await runConfirmedDepartures(targets, `Confirm departure for ${targets.length} trailer${targets.length === 1 ? "" : "s"}?`);
+  };
+
+  const handleImportFileSelected = async (file: File | null, kind: "excel" | "pdf") => {
+    if (!file) {
+      return;
+    }
+
+    setIsImporting(true);
+    setError(null);
+    setSuccess(null);
+    setImportPreview(null);
+    setImportFileName(file.name);
+    setImportKind(kind);
+
+    try {
+      const token = await getSessionToken();
+      const formData = new FormData();
+      formData.set("file", file);
+      formData.set("purpose", "departure");
+
+      const endpoint = kind === "excel"
+        ? "/api/imports/spreadsheet?purpose=departure"
+        : "/api/imports/pdf?purpose=departure";
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+        body: formData,
+      });
+
+      const payload = (await response.json()) as { preview?: DepartureImportPreview; error?: string };
+      if (!response.ok || !payload.preview) {
+        throw new Error(payload.error || (kind === "excel" ? "Unable to read this Excel file." : "Unable to read this PDF."));
+      }
+
+      setImportPreview(payload.preview);
+    } catch (importError) {
+      setImportFileName(null);
+      setImportKind(null);
+      setError(importError instanceof Error ? importError.message : "Unable to read this file.");
+    } finally {
+      setIsImporting(false);
+    }
+  };
+
+  const handleConfirmImportedDepartures = async () => {
+    const accepted = importPreview?.accepted ?? [];
+    const targets = accepted
+      .map((row) => trailers.find((item) => item.id === row.trailer.id) ?? row.trailer)
+      .filter((row) => isEligibleForDeparture(row))
+      .map((row) => row.id);
+
+    const departed = await runConfirmedDepartures(
+      targets,
+      `Confirm departure for ${targets.length} trailer${targets.length === 1 ? "" : "s"} from the ${importKind === "excel" ? "Excel" : "PDF"} preview?`,
+    );
+    if (departed) {
+      setImportPreview(null);
+      setImportFileName(null);
+      setImportKind(null);
+    }
   };
 
   const handleUndoLastDeparture = async () => {
@@ -789,6 +834,97 @@ export default function DeparturePage() {
             Search active trailers and confirm departures quickly and accurately.
           </p>
         </header>
+
+        <section className="rounded-3xl border border-white/10 bg-slate-900/70 p-4 shadow-lg shadow-black/20 backdrop-blur sm:p-5">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-400">List import</p>
+              <p className="mt-1 text-sm text-slate-300">Import an Excel voyage list to preview trailers before confirming departures. PDF remains available as a fallback.</p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <label className={`rounded-xl bg-cyan-500 px-3 py-2 text-xs font-semibold text-slate-950 ${isImporting ? "opacity-60" : "hover:bg-cyan-400 cursor-pointer"}`}>
+                {isImporting && importKind === "excel" ? "Reading Excel..." : "Import Excel"}
+                <input
+                  type="file"
+                  accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                  className="sr-only"
+                  disabled={isImporting || isSubmitting}
+                  onChange={(event) => {
+                    const file = event.target.files?.[0] ?? null;
+                    event.target.value = "";
+                    void handleImportFileSelected(file, "excel");
+                  }}
+                />
+              </label>
+              <label className={`rounded-xl border border-white/10 bg-slate-800 px-3 py-2 text-xs font-semibold text-slate-200 ${isImporting ? "opacity-60" : "hover:bg-slate-700 cursor-pointer"}`}>
+                {isImporting && importKind === "pdf" ? "Reading PDF..." : "Import PDF"}
+                <input
+                  type="file"
+                  accept="application/pdf,.pdf"
+                  className="sr-only"
+                  disabled={isImporting || isSubmitting}
+                  onChange={(event) => {
+                    const file = event.target.files?.[0] ?? null;
+                    event.target.value = "";
+                    void handleImportFileSelected(file, "pdf");
+                  }}
+                />
+              </label>
+            </div>
+          </div>
+          {importFileName ? <p className="mt-3 text-xs text-slate-400">Previewing {importFileName}. The file is not saved.</p> : null}
+          {importPreview ? (
+            <div className="mt-4 space-y-3 text-sm">
+              <p className="text-slate-200">
+                {importPreview.accepted.length} accepted, {importPreview.warnings.length} warning{importPreview.warnings.length === 1 ? "" : "s"}, {importPreview.cancelled.length} cancelled, {importPreview.alreadyDeparted.length} already departed, {importPreview.ineligible.length} ineligible, {importPreview.invalid.length} unrecognized, {importPreview.duplicates.length} duplicate{importPreview.duplicates.length === 1 ? "" : "s"}.
+              </p>
+              {importPreview.accepted.length > 0 ? (
+                <div>
+                  <p className="text-xs uppercase tracking-[0.16em] text-slate-500">Accepted</p>
+                  <ul className="mt-1 max-h-40 overflow-auto text-slate-200">
+                    {importPreview.accepted.map((row) => (
+                      <li key={row.trailer.id}>
+                        {row.trailer_number}
+                        {row.customer ? ` · ${row.customer}` : ""}
+                        {row.destination ? ` · ${row.destination}` : ""}
+                        {row.haz ? ` · Haz ${row.haz}` : ""}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+              {importPreview.warnings.map((warning) => <p key={warning} className="text-amber-200">{warning}</p>)}
+              {importPreview.cancelled.map((item) => <p key={`cancelled-${item.reason}`} className="text-orange-200">{item.reason}</p>)}
+              {importPreview.standBy.map((item) => <p key={`standby-${item.reason}`} className="text-slate-400">{item.reason}</p>)}
+              {importPreview.outstanding.map((item) => <p key={`outstanding-${item.reason}`} className="text-slate-400">{item.reason}</p>)}
+              {importPreview.alreadyDeparted.map((item) => <p key={`departed-${item.reason}`} className="text-slate-400">{item.reason}</p>)}
+              {importPreview.ineligible.map((item) => <p key={`ineligible-${item.reason}`} className="text-orange-200">{item.reason}</p>)}
+              {importPreview.duplicates.map((item) => <p key={`dup-${item.reason}`} className="text-slate-400">{item.reason}</p>)}
+              {importPreview.invalid.map((item) => <p key={`invalid-${item.reason}`} className="text-rose-200">{item.sourceLine ? `${item.sourceLine}: ` : ""}{item.reason}</p>)}
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => void handleConfirmImportedDepartures()}
+                  disabled={isSubmitting || importPreview.accepted.length === 0}
+                  className="rounded-xl bg-cyan-500 px-3 py-2 text-xs font-semibold text-slate-950 hover:bg-cyan-400 disabled:opacity-60"
+                >
+                  Confirm listed departures
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setImportPreview(null);
+                    setImportFileName(null);
+                    setImportKind(null);
+                  }}
+                  className="rounded-xl border border-white/10 bg-slate-800 px-3 py-2 text-xs font-semibold text-slate-200 hover:bg-slate-700"
+                >
+                  Discard preview
+                </button>
+              </div>
+            </div>
+          ) : null}
+        </section>
 
         {error ? (
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">

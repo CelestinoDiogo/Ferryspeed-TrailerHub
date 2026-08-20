@@ -293,7 +293,8 @@ describe("vessel operation report model", () => {
     expect(report.totals.priority).toBe(1);
     expect(report.totals.temperatureAlerts).toBe(1);
     expect(report.totals.damageReports).toBe(1);
-    expect(report.trailers).toHaveLength(3);
+    expect(report.trailers).toHaveLength(2);
+    expect(report.trailers.map((trailer) => trailer.trailerNumber)).toEqual(["PRO810", "PRO811"]);
     expect(report.trailers[0].photoCount).toBe(1);
     expect(report.trailers[1].damages).toHaveLength(1);
     expect(report.trailers[1].temperatureAlert).toBe(true);
@@ -310,8 +311,9 @@ describe("vessel operation report model", () => {
     };
     const report = buildVesselOperationCanonicalReport({ ...source, trailers: [...source.trailers, repeated] });
 
+    expect(report.trailers).toHaveLength(3);
     expect(report.trailers[1].damages).toHaveLength(1);
-    expect(report.trailers[3].damages).toHaveLength(0);
+    expect(report.trailers[2].damages).toHaveLength(0);
   });
 
   it("creates a deterministic fallback draft from the same operational data", () => {
@@ -322,5 +324,11 @@ describe("vessel operation report model", () => {
     expect(draft.bcc).toEqual([]);
     expect(draft.body).toContain("Operation Overview");
     expect(draft.body).toContain("Recommendations");
+    expect(draft.body).toContain("PRO810");
+    expect(draft.body).toContain("PRO811");
+    const trailerStatusTable = draft.body.split("Trailer Status Table")[1]?.split("Temperature Compliance")[0] ?? "";
+    expect(trailerStatusTable).toContain("PRO810");
+    expect(trailerStatusTable).toContain("PRO811");
+    expect(trailerStatusTable).not.toContain("PRO812");
   });
 });

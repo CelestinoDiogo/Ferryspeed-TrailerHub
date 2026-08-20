@@ -72,6 +72,7 @@ export type VesselOperationalReportData = {
     overallCondition: "good" | "attention_required";
     hasDamage: boolean;
     hasTemperatureAlert: boolean;
+    temperatureRequired?: boolean;
     temperatureResult: TemperatureResult;
     expectedFrontTemperature: number | null;
     expectedRearTemperature: number | null;

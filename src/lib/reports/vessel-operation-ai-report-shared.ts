@@ -1,3 +1,4 @@
+import { selectBoatReportTrailers } from "@/lib/reports/boat-report-trailers";
 import type { VesselOperationalReportData, VesselOperationAiReportDraft, VesselOperationAiReportSections } from "@/lib/reports/types";
 import { getAcceptedTemperatureRange, getDefaultTemperatureToleranceSettings, isTemperatureOutOfRange } from "@/lib/temperature-tolerance";
 
@@ -59,7 +60,7 @@ const countOutstandingTrailers = (data: VesselOperationalReportData) => {
 };
 
 const buildCompactTrailerTable = (data: VesselOperationalReportData) => {
-  const rows = data.trailers.map((trailer) => {
+  const rows = selectBoatReportTrailers(data.trailers).map((trailer) => {
     const temperatureState = trailer.hasTemperatureAlert ? "Alert" : trailer.frontTemperature === null && trailer.rearTemperature === null ? "Not recorded" : "Recorded";
     const position = trailer.compoundPosition?.trim() ? trailer.compoundPosition.trim() : "Not assigned";
 
@@ -76,7 +77,7 @@ const buildCompactTrailerTable = (data: VesselOperationalReportData) => {
 const buildTemperatureRows = (data: VesselOperationalReportData) => {
   const tolerance = getDefaultTemperatureToleranceSettings();
 
-  return data.trailers.map((trailer) => {
+  return selectBoatReportTrailers(data.trailers).map((trailer) => {
     const expectedFront = trailer.expectedFrontTemperature;
     const expectedRear = trailer.expectedRearTemperature;
     const measuredFront = trailer.frontTemperature;
