@@ -2,7 +2,8 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { AlertTriangle, Bot, CheckCircle2, Loader2, Mic, MicOff, Send, Trash2, X } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import type { AiAssistantContext, AiAssistantResponse } from "@/lib/ai-assistant-types";
@@ -268,32 +269,72 @@ export function OperationsAssistantDrawer({
     setConfirmedPreparedActions({});
   };
 
+  const closeAssistant = () => {
+    stopListening();
+    onClose();
+  };
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") {
+        return;
+      }
+
+      event.preventDefault();
+      recognitionRef.current?.stop();
+      recognitionRef.current = null;
+      setIsListening(false);
+      onClose();
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [open, onClose]);
+
   if (!open) {
     return null;
   }
 
-  return (
-    <div className="fixed inset-0 z-[85]" role="dialog" aria-modal="true" aria-label="AI operations assistant">
+  const dialog = (
+    <div
+      className={[
+        "fixed inset-0 z-[85]",
+        mobile ? "" : "md:flex md:items-center md:justify-center md:p-6",
+      ].join(" ")}
+      role="dialog"
+      aria-modal="true"
+      aria-label="AI operations assistant"
+      data-assistant-presentation={mobile ? "mobile-sheet" : "desktop-modal"}
+    >
       <button
         type="button"
-        className="absolute inset-0 bg-black/40"
-        onClick={() => {
-          stopListening();
-          onClose();
-        }}
-        aria-label="Close AI assistant"
+        className={[
+          "absolute inset-0",
+          mobile ? "bg-black/40" : "bg-black/40 md:bg-slate-950/55 md:backdrop-blur-[2px]",
+        ].join(" ")}
+        onClick={closeAssistant}
+        aria-label="Close AI assistant backdrop"
+        data-assistant-backdrop="true"
       />
 
       <aside
         className={[
-          "absolute bg-[#F8FAFC] shadow-2xl border-slate-200",
+          "z-[1] flex flex-col overflow-hidden bg-[#F8FAFC] shadow-2xl border-slate-200",
           mobile
-            ? "inset-x-0 bottom-0 top-[8vh] rounded-t-3xl border-t px-4 pb-4 pt-3"
-            : "right-0 top-0 h-full w-[min(92vw,80rem)] border-l px-6 pb-5 pt-4",
+            ? "absolute inset-x-0 bottom-0 top-[8vh] rounded-t-3xl border-t px-4 pb-4 pt-3"
+            : [
+                "absolute right-0 top-0 h-full w-[min(92vw,80rem)] border-l px-6 pb-5 pt-4",
+                "md:relative md:right-auto md:top-auto md:h-[88vh] md:w-[min(78vw,1080px)] md:max-h-[min(90vh,100%)] md:max-w-full md:rounded-3xl md:border md:shadow-[0_24px_90px_rgba(15,23,42,0.32)]",
+              ].join(" "),
         ].join(" ")}
+        data-assistant-surface={mobile ? "mobile-sheet" : "desktop-modal"}
       >
-        <div className="flex h-full flex-col">
-          <header className="mb-3 flex items-start justify-between gap-3">
+        <div className="flex h-full min-h-0 flex-col">
+          <header className="mb-3 flex shrink-0 items-start justify-between gap-3">
             <div>
               <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-500">Read-only</p>
               <h2 className="text-lg font-semibold text-slate-900">{title}</h2>
@@ -301,18 +342,15 @@ export function OperationsAssistantDrawer({
             </div>
             <button
               type="button"
-              onClick={() => {
-                stopListening();
-                onClose();
-              }}
-              className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-700"
+              onClick={closeAssistant}
+              className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-700"
               aria-label="Close AI assistant"
             >
               <X className="h-5 w-5" />
             </button>
           </header>
 
-          <div className="mb-3 flex flex-wrap items-center gap-2">
+          <div className="mb-3 flex shrink-0 flex-wrap items-center gap-2">
             <button
               type="button"
               onClick={clearConversation}
@@ -326,7 +364,7 @@ export function OperationsAssistantDrawer({
             </span>
           </div>
 
-          <section className="mb-3">
+          <section className="mb-3 shrink-0">
             <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-500">Suggested</p>
             <div className="mt-2 flex flex-wrap gap-2">
               {SUGGESTED_QUESTIONS.map((item) => (
@@ -342,40 +380,46 @@ export function OperationsAssistantDrawer({
             </div>
           </section>
 
-          <div className="min-h-0 flex-1 overflow-y-auto rounded-2xl border border-slate-200 bg-white p-4 sm:p-5">
+          <div
+            className="min-h-0 flex-1 overflow-y-auto overscroll-contain rounded-2xl border border-slate-200 bg-slate-50 p-4 sm:p-5"
+            data-assistant-conversation="true"
+          >
             {messages.length === 0 ? (
-              <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-slate-500">
+              <div className="flex h-full min-h-[12rem] flex-col items-center justify-center gap-2 text-center text-slate-500">
                 <Bot className="h-7 w-7 text-cyan-700" />
                 <p className="text-sm">No conversation yet. Ask an operational question to begin.</p>
               </div>
             ) : (
-              <div className="space-y-3">
+              <div className="space-y-4">
                 {messages.map((message) => (
                   <article
                     key={message.id}
                     className={[
-                      "rounded-xl border p-3",
+                      "rounded-2xl border",
                       message.role === "user"
-                        ? "border-cyan-200 bg-cyan-50"
+                        ? "ml-auto w-fit max-w-[min(100%,36rem)] border-cyan-200 bg-cyan-50 px-4 py-3"
                         : message.role === "error"
-                          ? "border-rose-200 bg-rose-50"
-                          : "border-slate-200 bg-slate-50",
+                          ? "w-full border-rose-200 bg-rose-50 p-4"
+                          : "w-full border-slate-200 bg-white p-4 shadow-sm sm:p-5",
                     ].join(" ")}
                   >
-                    <div className="mb-1 flex items-center justify-between gap-2">
+                    <div className="mb-2 flex items-center justify-between gap-2">
                       <p className="text-xs font-semibold uppercase tracking-[0.15em] text-slate-500">
                         {message.role === "user" ? "Operator" : message.role === "error" ? "Error" : "Assistant"}
                       </p>
                       <p className="text-[11px] text-slate-500">{formatTime(message.createdAt)}</p>
                     </div>
+                    {message.response?.title ? (
+                      <h3 className="mb-1 text-base font-semibold text-slate-900 sm:text-lg">{message.response.title}</h3>
+                    ) : null}
                     <p className="whitespace-pre-wrap text-sm leading-6 text-slate-900 sm:text-base">{message.text}</p>
 
                     {message.response ? (
-                      <div className="mt-3 space-y-2">
+                      <div className="mt-4 space-y-3">
                         {message.response.primaryMetrics && message.response.primaryMetrics.length > 0 ? (
-                          <div className="grid grid-cols-2 gap-2">
+                          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
                             {message.response.primaryMetrics.map((metric, index) => (
-                              <div key={`${message.id}-metric-${index}`} className="rounded-lg border border-slate-200 bg-white px-2.5 py-2">
+                              <div key={`${message.id}-metric-${index}`} className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5">
                                 <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500">{metric.label}</p>
                                 <p className="mt-1 text-sm font-semibold text-slate-900">{metric.value}</p>
                               </div>
@@ -384,22 +428,40 @@ export function OperationsAssistantDrawer({
                         ) : null}
 
                         {typeof message.response.count === "number" ? (
-                          <p className="text-xs text-slate-600">Count: {message.response.count}</p>
+                          <p className="text-xs font-medium text-slate-600">Count: {message.response.count}</p>
                         ) : null}
 
                         {message.response.items && message.response.items.length > 0 ? (
-                          <div className="space-y-2">
+                          <div className="space-y-3">
                             {message.response.items.map((item, index) => (
-                              <div key={`${message.id}-item-${index}`} className="rounded-lg border border-slate-200 bg-white p-2.5 text-sm">
-                                <p className="font-semibold text-slate-900">{item.trailerNumber}</p>
-                                <p className="text-slate-700">
-                                  {item.status ?? "Status unavailable"}
-                                  {item.compoundPosition ? ` · ${item.compoundPosition}` : ""}
-                                </p>
-                                {item.customer ? <p className="text-slate-600">{item.customer}</p> : null}
-                                {item.detail ? <p className="text-slate-600">{item.detail}</p> : null}
+                              <div key={`${message.id}-item-${index}`} className="rounded-xl border border-slate-200 bg-slate-50 p-3.5 text-sm">
+                                <p className="text-base font-semibold text-slate-900">{item.trailerNumber}</p>
+                                <dl className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                                  <div>
+                                    <dt className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500">Load status</dt>
+                                    <dd className="text-sm text-slate-800">{item.status ?? "Status unavailable"}</dd>
+                                  </div>
+                                  {item.compoundPosition ? (
+                                    <div>
+                                      <dt className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500">Position</dt>
+                                      <dd className="text-sm text-slate-800">{item.compoundPosition}</dd>
+                                    </div>
+                                  ) : null}
+                                  {item.customer ? (
+                                    <div>
+                                      <dt className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500">Customer</dt>
+                                      <dd className="text-sm text-slate-800">{item.customer}</dd>
+                                    </div>
+                                  ) : null}
+                                  {item.detail ? (
+                                    <div className="sm:col-span-2">
+                                      <dt className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500">Notes</dt>
+                                      <dd className="text-sm text-slate-800">{item.detail}</dd>
+                                    </div>
+                                  ) : null}
+                                </dl>
                                 {item.route ? (
-                                  <Link href={item.route} className="mt-1 inline-block text-xs font-semibold text-cyan-700 hover:text-cyan-800">
+                                  <Link href={item.route} className="mt-2 inline-block text-xs font-semibold text-cyan-700 hover:text-cyan-800">
                                     Open
                                   </Link>
                                 ) : null}
@@ -496,6 +558,15 @@ export function OperationsAssistantDrawer({
                             })}
                           </div>
                         ) : null}
+
+                        {message.response.queriedAt || (message.response.sourceModules?.length ?? 0) > 0 ? (
+                          <p className="pt-1 text-[11px] text-slate-500">
+                            {message.response.queriedAt ? formatTime(message.response.queriedAt) : null}
+                            {(message.response.sourceModules?.length ?? 0) > 0
+                              ? `${message.response.queriedAt ? " · " : ""}Source: ${message.response.sourceModules.join(", ")}`
+                              : null}
+                          </p>
+                        ) : null}
                       </div>
                     ) : null}
                   </article>
@@ -516,7 +587,8 @@ export function OperationsAssistantDrawer({
               event.preventDefault();
               void sendQuestion(question);
             }}
-            className="mt-3 rounded-2xl border border-slate-200 bg-white p-3"
+            className="mt-3 shrink-0 rounded-2xl border border-slate-200 bg-white p-3"
+            data-assistant-input="true"
           >
             <label htmlFor="assistant-question" className="mb-1 block text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
               Ask question
@@ -568,4 +640,10 @@ export function OperationsAssistantDrawer({
       </aside>
     </div>
   );
+
+  if (typeof document === "undefined") {
+    return dialog;
+  }
+
+  return createPortal(dialog, document.body);
 }

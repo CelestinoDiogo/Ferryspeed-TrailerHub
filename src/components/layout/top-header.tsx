@@ -59,6 +59,7 @@ export function TopHeader({ title, subtitle: _subtitle, onMenuClick }: TopHeader
   const userStatus = isActive === false ? "Inactive" : "Active";
 
   return (
+    <>
     <header className="sticky top-0 z-30 border-b border-slate-200/70 bg-[rgba(255,255,255,0.92)] px-4 py-3 backdrop-blur-xl print:hidden md:px-6">
       <div className="mx-auto flex max-w-[1600px] items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-3">
@@ -131,7 +132,8 @@ export function TopHeader({ title, subtitle: _subtitle, onMenuClick }: TopHeader
       </div>
 
       <OperationsToolsDrawer open={toolsOpen} onClose={() => setToolsOpen(false)} />
-      <OperationsAssistantDrawer open={assistantOpen} onClose={() => setAssistantOpen(false)} />
     </header>
+    <OperationsAssistantDrawer open={assistantOpen} onClose={() => setAssistantOpen(false)} />
+    </>
   );
 }
