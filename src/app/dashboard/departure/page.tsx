@@ -9,6 +9,12 @@ import { createTrailerActivity } from "@/lib/trailer-activity";
 import { logTrailerEvent, resolveAuditOperatorName } from "@/lib/trailer-audit-log";
 import { DepartureUndoConflictError, undoDeparture } from "@/lib/operations/departure-lifecycle";
 import { isEligibleForDeparture, type DepartureImportPreview } from "@/lib/imports/departure-import";
+import {
+  DELIVERY_BOOKING_RELEASE_STATUS_QUERY,
+  getTrailerIdsReservedByActiveDeliveryBookings,
+} from "@/lib/delivery-booking-availability";
+import { EXPORT_ACTIVE_STATUS_QUERY_VALUES } from "@/lib/export-allocation";
+import { getActiveExportStatusByTrailerId, withTrailerJobCommitments } from "@/lib/trailer-job-eligibility";
 import { supabase } from "@/lib/supabase";
 import { getSessionToken } from "@/lib/voice/session";
 
@@ -27,6 +33,8 @@ type TrailerRecord = {
   departure_time?: string | null;
   operational_status?: string | null;
   is_local?: boolean | null;
+  hasActiveDelivery?: boolean | null;
+  activeExportStatus?: string | null;
 };
 
 type DepartureTransitionSnapshot = {
@@ -136,17 +144,38 @@ export default function DeparturePage() {
     setError(null);
 
     try {
-      const { data, error: supabaseError } = await supabase
-        .from("trailers")
-        .select("id, trailer_number, trailer_type, load_status, load_description, customer, consignee, container_number, compound_position, arrival_date, departure_date, departure_time, operational_status, is_local")
-        .is("departure_date", null)
-        .order("arrival_date", { ascending: false });
+      const [{ data, error: supabaseError }, { data: activeDeliveries, error: deliveryError }, { data: activeExports, error: exportError }] = await Promise.all([
+        supabase
+          .from("trailers")
+          .select("id, trailer_number, trailer_type, load_status, load_description, customer, consignee, container_number, compound_position, arrival_date, departure_date, departure_time, operational_status, is_local")
+          .is("departure_date", null)
+          .order("arrival_date", { ascending: false }),
+        supabase
+          .from("delivery_bookings")
+          .select("trailer_id, status")
+          .not("status", "in", DELIVERY_BOOKING_RELEASE_STATUS_QUERY),
+        supabase
+          .from("export_allocations")
+          .select("trailer_id, status")
+          .in("status", [...EXPORT_ACTIVE_STATUS_QUERY_VALUES]),
+      ]);
 
       if (supabaseError) {
         throw supabaseError;
       }
 
-      const loadedRaw = (data ?? []) as TrailerRecord[];
+      if (deliveryError) {
+        throw deliveryError;
+      }
+
+      if (exportError) {
+        throw exportError;
+      }
+
+      const loadedRaw = withTrailerJobCommitments((data ?? []) as TrailerRecord[], {
+        reservedByDelivery: getTrailerIdsReservedByActiveDeliveryBookings(activeDeliveries ?? []),
+        exportStatusByTrailerId: getActiveExportStatusByTrailerId(activeExports ?? []),
+      });
       const deduped = new Map<string, TrailerRecord>();
       for (const trailer of loadedRaw) {
         if (!trailer.id) {
@@ -565,6 +594,40 @@ export default function DeparturePage() {
       throw new Error(`Trailer ${currentTrailer.trailer_number ?? targetTrailerId} is already departed.`);
     }
 
+    const [{ data: activeDeliveries, error: deliveryError }, { data: activeExports, error: exportError }] = await Promise.all([
+      supabase
+        .from("delivery_bookings")
+        .select("trailer_id, status")
+        .eq("trailer_id", targetTrailerId)
+        .not("status", "in", DELIVERY_BOOKING_RELEASE_STATUS_QUERY)
+        .limit(1),
+      supabase
+        .from("export_allocations")
+        .select("trailer_id, status")
+        .eq("trailer_id", targetTrailerId)
+        .in("status", [...EXPORT_ACTIVE_STATUS_QUERY_VALUES])
+        .limit(1),
+    ]);
+
+    if (deliveryError) {
+      throw new Error(deliveryError.message || "Unable to check delivery reservations before departure.");
+    }
+
+    if (exportError) {
+      throw new Error(exportError.message || "Unable to check export reservations before departure.");
+    }
+
+    if (!isEligibleForDeparture({
+      trailer_number: currentTrailer.trailer_number,
+      departure_date: currentTrailer.departure_date,
+      is_local: currentTrailer.is_local,
+      operational_status: currentTrailer.operational_status,
+      hasActiveDelivery: getTrailerIdsReservedByActiveDeliveryBookings(activeDeliveries ?? []).has(targetTrailerId),
+      activeExportStatus: getActiveExportStatusByTrailerId(activeExports ?? []).get(targetTrailerId) ?? null,
+    })) {
+      throw new Error(`Trailer ${currentTrailer.trailer_number ?? targetTrailerId} is reserved or is no longer available for departure.`);
+    }
+
     const previousValue: DepartureTransitionSnapshot = {
       trailerId: currentTrailer.id,
       trailerNumber: currentTrailer.trailer_number ?? null,
@@ -876,7 +939,7 @@ export default function DeparturePage() {
           {importPreview ? (
             <div className="mt-4 space-y-3 text-sm">
               <p className="text-slate-200">
-                {importPreview.accepted.length} accepted, {importPreview.warnings.length} warning{importPreview.warnings.length === 1 ? "" : "s"}, {importPreview.cancelled.length} cancelled, {importPreview.alreadyDeparted.length} already departed, {importPreview.ineligible.length} ineligible, {importPreview.invalid.length} unrecognized, {importPreview.duplicates.length} duplicate{importPreview.duplicates.length === 1 ? "" : "s"}.
+                {importPreview.accepted.length} accepted, {importPreview.warnings.length} warning{importPreview.warnings.length === 1 ? "" : "s"}, {importPreview.cancelled.length} cancelled, {importPreview.standBy.length} stand-by, {importPreview.outstanding.length} outstanding, {importPreview.alreadyDeparted.length} already departed, {importPreview.ineligible.length} ineligible, {importPreview.invalid.length} unrecognized, {importPreview.duplicates.length} duplicate{importPreview.duplicates.length === 1 ? "" : "s"}.
               </p>
               {importPreview.accepted.length > 0 ? (
                 <div>
@@ -884,7 +947,7 @@ export default function DeparturePage() {
                   <ul className="mt-1 max-h-40 overflow-auto text-slate-200">
                     {importPreview.accepted.map((row) => (
                       <li key={row.trailer.id}>
-                        {row.trailer_number}
+                        {row.trailer_number}{row.list_section === "additional" ? " (ADDITIONAL)" : ""}
                         {row.customer ? ` · ${row.customer}` : ""}
                         {row.destination ? ` · ${row.destination}` : ""}
                         {row.haz ? ` · Haz ${row.haz}` : ""}

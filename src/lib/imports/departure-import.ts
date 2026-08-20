@@ -3,6 +3,7 @@ import {
   parseFerryspeedPresentationList,
   type PresentationListRow,
 } from "@/lib/imports/spreadsheet";
+import { isTrailerEligibleForCompoundDeparture } from "@/lib/trailer-job-eligibility";
 import { normalizeTrailerNumber } from "@/lib/vessel-operations";
 
 export type DepartureImportCandidate = {
@@ -17,6 +18,8 @@ export type DepartureImportCandidate = {
   operational_status?: string | null;
   is_local?: boolean | null;
   load_status?: string | null;
+  hasActiveDelivery?: boolean | null;
+  activeExportStatus?: string | null;
 };
 
 export type DepartureImportParsedRow = {
@@ -64,7 +67,7 @@ const isMissingDepartureDate = (value?: string | null) => {
   return value.trim().length === 0;
 };
 
-export function isEligibleForDeparture(trailer: Pick<DepartureImportCandidate, "trailer_number" | "departure_date" | "is_local" | "operational_status">) {
+export function isEligibleForDeparture(trailer: Pick<DepartureImportCandidate, "trailer_number" | "departure_date" | "is_local" | "operational_status" | "hasActiveDelivery" | "activeExportStatus">) {
   if (!trailer.trailer_number?.trim()) {
     return false;
   }
@@ -81,7 +84,10 @@ export function isEligibleForDeparture(trailer: Pick<DepartureImportCandidate, "
     return false;
   }
 
-  return true;
+  return isTrailerEligibleForCompoundDeparture({
+    hasActiveDelivery: trailer.hasActiveDelivery === true,
+    activeExportStatus: trailer.activeExportStatus ?? null,
+  });
 }
 
 const emptyDepartureParsedRow = (sourceLine = ""): DepartureImportParsedRow => ({

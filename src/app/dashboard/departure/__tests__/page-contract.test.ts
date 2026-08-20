@@ -37,4 +37,11 @@ describe("Departure page lifecycle contract", () => {
     expect(undoHandler).toContain("await loadDepartureTrailers({ showLoading: false })");
     expect(undoHandler).not.toContain("router.push");
   });
+
+  it("excludes reserved trailers from departure eligibility and re-checks on write", () => {
+    expect(pageSource).toContain("withTrailerJobCommitments");
+    expect(pageSource).toContain(".from(\"delivery_bookings\")");
+    expect(pageSource).toContain(".from(\"export_allocations\")");
+    expect(pageSource).toContain("is no longer available for departure");
+  });
 });

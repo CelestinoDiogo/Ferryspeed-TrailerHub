@@ -1,5 +1,14 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/lib/database.types";
+import { EXPORT_ACTIVE_STATUS_QUERY_VALUES } from "@/lib/export-allocation";
+import {
+  getActiveExportStatusByTrailerId,
+  hasActiveExportReservation,
+  isTrailerEligibleForNewDeliveryJob,
+  TRAILER_ACTIVE_EXPORT_ALLOCATION_CODE,
+  TRAILER_ACTIVE_EXPORT_ALLOCATION_MESSAGE,
+  TrailerJobConflictError,
+} from "@/lib/trailer-job-eligibility";
 
 type TrailerHubSupabaseClient = SupabaseClient<Database>;
 
@@ -135,7 +144,7 @@ export async function listTrailerIdsWithActiveDeliveryBookings(
 export async function listTrailersAvailableForDeliveryBooking(
   supabaseClient: TrailerHubSupabaseClient,
 ) {
-  const [trailersResult, activeBookingsResult] = await Promise.all([
+  const [trailersResult, activeBookingsResult, activeExportsResult] = await Promise.all([
     supabaseClient
       .from("trailers")
       .select("id, trailer_number, container_number, customer, consignee")
@@ -145,6 +154,10 @@ export async function listTrailersAvailableForDeliveryBooking(
       .from("delivery_bookings")
       .select("id, trailer_id, status")
       .not("status", "in", DELIVERY_BOOKING_RELEASE_STATUS_QUERY),
+    supabaseClient
+      .from("export_allocations")
+      .select("trailer_id, status")
+      .in("status", [...EXPORT_ACTIVE_STATUS_QUERY_VALUES]),
   ]);
 
   if (trailersResult.error) {
@@ -155,10 +168,45 @@ export async function listTrailersAvailableForDeliveryBooking(
     throw new Error(activeBookingsResult.error.message || "Unable to load active delivery bookings.");
   }
 
-  return excludeTrailersReservedByActiveDeliveryBookings(
+  if (activeExportsResult.error) {
+    throw new Error(activeExportsResult.error.message || "Unable to load active export allocations.");
+  }
+
+  const withoutActiveDeliveries = excludeTrailersReservedByActiveDeliveryBookings(
     (trailersResult.data ?? []) as DeliveryBookingTrailerOption[],
     activeBookingsResult.data ?? [],
   );
+  const exportStatusByTrailerId = getActiveExportStatusByTrailerId(activeExportsResult.data ?? []);
+
+  return withoutActiveDeliveries.filter((trailer) =>
+    isTrailerEligibleForNewDeliveryJob({
+      hasActiveDelivery: false,
+      activeExportStatus: exportStatusByTrailerId.get(trailer.id) ?? null,
+    }),
+  );
+}
+
+export async function findActiveExportAllocationForTrailer(
+  supabaseClient: TrailerHubSupabaseClient,
+  trailerId: string,
+) {
+  const { data, error } = await supabaseClient
+    .from("export_allocations")
+    .select("id, trailer_id, status")
+    .eq("trailer_id", trailerId)
+    .in("status", [...EXPORT_ACTIVE_STATUS_QUERY_VALUES])
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(error.message || "Unable to check existing export allocations.");
+  }
+
+  if (!data || !hasActiveExportReservation(data.status)) {
+    return null;
+  }
+
+  return data;
 }
 
 export async function findActiveDeliveryBookingForTrailer(
@@ -192,6 +240,15 @@ export async function assertTrailerAvailableForNewDeliveryBooking(
 
   if (activeBooking) {
     throw new DeliveryBookingAvailabilityError();
+  }
+
+  const activeExport = await findActiveExportAllocationForTrailer(supabaseClient, trailerId);
+
+  if (activeExport) {
+    throw new TrailerJobConflictError(
+      TRAILER_ACTIVE_EXPORT_ALLOCATION_CODE,
+      TRAILER_ACTIVE_EXPORT_ALLOCATION_MESSAGE,
+    );
   }
 }
 

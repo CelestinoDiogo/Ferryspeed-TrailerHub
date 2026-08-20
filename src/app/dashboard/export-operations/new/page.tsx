@@ -12,6 +12,11 @@ import {
   type ExportAllocationPriority,
   type ExportAllocationStatus,
 } from "@/lib/export-allocation";
+import {
+  DELIVERY_BOOKING_RELEASE_STATUS_QUERY,
+  getTrailerIdsReservedByActiveDeliveryBookings,
+} from "@/lib/delivery-booking-availability";
+import { isTrailerEligibleForNewExportJob } from "@/lib/trailer-job-eligibility";
 
 type AllocationSource = "existing" | "outsourced";
 
@@ -72,6 +77,7 @@ export default function NewExportAllocationPage() {
   const router = useRouter();
   const [trailers, setTrailers] = useState<TrailerOption[]>([]);
   const [activeAllocationTrailerIds, setActiveAllocationTrailerIds] = useState<Set<string>>(new Set());
+  const [activeDeliveryTrailerIds, setActiveDeliveryTrailerIds] = useState<Set<string>>(new Set());
   const [formState, setFormState] = useState<FormState>(INITIAL_FORM);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
@@ -80,10 +86,14 @@ export default function NewExportAllocationPage() {
   const availableTrailers = useMemo(() => {
     return trailers
       .filter((trailer) =>
-        isTrailerAvailableForExportAllocation(trailer, activeAllocationTrailerIds.has(trailer.id)),
+        isTrailerAvailableForExportAllocation(trailer, activeAllocationTrailerIds.has(trailer.id))
+        && isTrailerEligibleForNewExportJob({
+          hasActiveDelivery: activeDeliveryTrailerIds.has(trailer.id),
+          activeExportStatus: null,
+        }),
       )
       .sort((a, b) => (a.trailer_number ?? "").localeCompare(b.trailer_number ?? ""));
-  }, [trailers, activeAllocationTrailerIds]);
+  }, [trailers, activeAllocationTrailerIds, activeDeliveryTrailerIds]);
 
   useEffect(() => {
     const loadData = async () => {
@@ -92,7 +102,7 @@ export default function NewExportAllocationPage() {
 
       try {
         const activeStatuses = [...EXPORT_ACTIVE_STATUS_QUERY_VALUES];
-        const [{ data: trailerData, error: trailerError }, { data: activeAllocations, error: allocationsError }] = await Promise.all([
+        const [{ data: trailerData, error: trailerError }, { data: activeAllocations, error: allocationsError }, { data: activeDeliveries, error: deliveriesError }] = await Promise.all([
           supabase
             .from("trailers")
             .select("id, trailer_number, load_status, departure_date, compound_position, trailer_source, is_local, operational_status")
@@ -102,6 +112,10 @@ export default function NewExportAllocationPage() {
             .from("export_allocations")
             .select("trailer_id, status")
             .in("status", activeStatuses),
+          supabase
+            .from("delivery_bookings")
+            .select("trailer_id, status")
+            .not("status", "in", DELIVERY_BOOKING_RELEASE_STATUS_QUERY),
         ]);
 
         if (trailerError) {
@@ -110,6 +124,10 @@ export default function NewExportAllocationPage() {
 
         if (allocationsError) {
           throw allocationsError;
+        }
+
+        if (deliveriesError) {
+          throw deliveriesError;
         }
 
         const trailerRows = (trailerData ?? []) as TrailerOption[];
@@ -123,6 +141,7 @@ export default function NewExportAllocationPage() {
 
         setTrailers(trailerRows);
         setActiveAllocationTrailerIds(trailerIds);
+        setActiveDeliveryTrailerIds(getTrailerIdsReservedByActiveDeliveryBookings(activeDeliveries ?? []));
       } catch (loadErr) {
         setError(loadErr instanceof Error ? loadErr.message : "Unable to load trailers for export allocation.");
       } finally {
@@ -141,7 +160,7 @@ export default function NewExportAllocationPage() {
 
   const validateTrailerAvailability = async (trailerId: string) => {
     const activeStatuses = [...EXPORT_ACTIVE_STATUS_QUERY_VALUES];
-    const [{ data: trailerData, error: trailerError }, { data: allocationsData, error: allocationsError }] = await Promise.all([
+    const [{ data: trailerData, error: trailerError }, { data: allocationsData, error: allocationsError }, { data: deliveryData, error: deliveryError }] = await Promise.all([
       supabase
         .from("trailers")
         .select("id, trailer_number, load_status, departure_date, compound_position, trailer_source, is_local, operational_status")
@@ -153,6 +172,12 @@ export default function NewExportAllocationPage() {
         .eq("trailer_id", trailerId)
         .in("status", activeStatuses)
         .limit(1),
+      supabase
+        .from("delivery_bookings")
+        .select("id, trailer_id, status")
+        .eq("trailer_id", trailerId)
+        .not("status", "in", DELIVERY_BOOKING_RELEASE_STATUS_QUERY)
+        .limit(1),
     ]);
 
     if (trailerError || !trailerData) {
@@ -163,10 +188,19 @@ export default function NewExportAllocationPage() {
       throw allocationsError;
     }
 
+    if (deliveryError) {
+      throw deliveryError;
+    }
+
     const hasActiveAllocation = (allocationsData ?? []).length > 0;
     const trailer = trailerData as TrailerOption;
 
-    const isAvailable = isTrailerAvailableForExportAllocation(trailer, hasActiveAllocation) && normalizeLoadStatus(trailer.load_status) === "empty";
+    const isAvailable = isTrailerAvailableForExportAllocation(trailer, hasActiveAllocation)
+      && normalizeLoadStatus(trailer.load_status) === "empty"
+      && isTrailerEligibleForNewExportJob({
+        hasActiveDelivery: getTrailerIdsReservedByActiveDeliveryBookings(deliveryData ?? []).has(trailerId),
+        activeExportStatus: null,
+      });
 
     return isAvailable ? trailer : null;
   };
@@ -237,6 +271,23 @@ export default function NewExportAllocationPage() {
 
           if ((activeForTrailer ?? []).length > 0) {
             setError("This outsourced trailer already has an active export allocation.");
+            setIsSaving(false);
+            return;
+          }
+
+          const { data: activeDeliveryForTrailer, error: activeDeliveryError } = await supabase
+            .from("delivery_bookings")
+            .select("id, trailer_id, status")
+            .eq("trailer_id", existingTrailer.id)
+            .not("status", "in", DELIVERY_BOOKING_RELEASE_STATUS_QUERY)
+            .limit(1);
+
+          if (activeDeliveryError) {
+            throw new Error(activeDeliveryError.message || "Unable to validate delivery bookings for outsourced trailer.");
+          }
+
+          if (getTrailerIdsReservedByActiveDeliveryBookings(activeDeliveryForTrailer ?? []).has(existingTrailer.id)) {
+            setError("This trailer already has an active delivery booking and cannot be allocated for export.");
             setIsSaving(false);
             return;
           }

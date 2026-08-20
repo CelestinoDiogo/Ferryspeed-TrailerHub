@@ -279,7 +279,7 @@ export const VESSEL_OPERATION_STATUS_LABELS: Record<VesselOperationStatus, strin
   arriving: "Confirmed",
   discharging: "Confirmed",
   inspection: "Confirmed",
-  cancelled: "Completed",
+  cancelled: "Cancelled",
 };
 
 export const VESSEL_TRAILER_STATUS_LABELS: Record<VesselTrailerStatus, string> = {
@@ -619,8 +619,9 @@ export const getVesselOperationStatusClass = (status: VesselOperationStatus) => 
     case "inspection":
       return "border-cyan-500/30 bg-cyan-500/10 text-cyan-200";
     case "completed":
-    case "cancelled":
       return "border-emerald-500/30 bg-emerald-500/10 text-emerald-200";
+    case "cancelled":
+      return "border-slate-500/30 bg-slate-500/10 text-slate-300";
     default:
       return "border-slate-500/30 bg-slate-500/10 text-slate-200";
   }

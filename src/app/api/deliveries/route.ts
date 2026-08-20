@@ -4,6 +4,7 @@ import {
   DeliveryBookingAvailabilityError,
   DELIVERY_BOOKING_STATUSES,
 } from "@/lib/delivery-booking-availability";
+import { TrailerJobConflictError } from "@/lib/trailer-job-eligibility";
 import { bootstrapCurrentUserRole, RbacPermissionError, requireRbacPermission } from "@/lib/rbac/route";
 import {
   createAuthenticatedRouteSupabaseClient,
@@ -55,7 +56,7 @@ export async function POST(request: Request) {
       return Response.json({ error: error.message }, { status: error.status });
     }
 
-    if (error instanceof DeliveryBookingAvailabilityError) {
+    if (error instanceof DeliveryBookingAvailabilityError || error instanceof TrailerJobConflictError) {
       return Response.json({ error: error.message, code: error.code }, { status: error.status });
     }
 

@@ -15,4 +15,10 @@ describe("outsourced Export ownership contract", () => {
     expect(source.match(/trailer_source: formState\.source === "outsourced"/g)).toHaveLength(2);
     expect(source.match(/external_company: formState\.source === "outsourced"/g)).toHaveLength(2);
   });
+
+  it("blocks trailers that already have an active delivery booking", () => {
+    expect(source).toContain("isTrailerEligibleForNewExportJob");
+    expect(source).toContain(".from(\"delivery_bookings\")");
+    expect(source).toContain("DELIVERY_BOOKING_RELEASE_STATUS_QUERY");
+  });
 });

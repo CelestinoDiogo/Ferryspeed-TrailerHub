@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isVesselOperationScheduledOnLocalDate } from "@/lib/vessel-operations";
+import { getVesselOperationStatusLabel, isVesselOperationScheduledOnLocalDate } from "@/lib/vessel-operations";
 
 describe("vessel operations today KPI", () => {
   it("counts today's expected arrival and ignores yesterday even if actual arrival is today", () => {
@@ -32,5 +32,21 @@ describe("vessel operations today KPI", () => {
       actual_arrival_at: "2026-08-20T00:15:00.000Z",
       status: "confirmed",
     }, "2026-08-19")).toBe(true);
+  });
+
+  it("excludes cancelled operations from tomorrow using the same local-date helper as today", () => {
+    expect(isVesselOperationScheduledOnLocalDate({
+      expected_arrival_at: "2026-08-20T07:00:00.000Z",
+      status: "confirmed",
+    }, "2026-08-20")).toBe(true);
+    expect(isVesselOperationScheduledOnLocalDate({
+      expected_arrival_at: "2026-08-20T07:00:00.000Z",
+      status: "cancelled",
+    }, "2026-08-20")).toBe(false);
+  });
+
+  it("labels cancelled vessel operations as Cancelled rather than Completed", () => {
+    expect(getVesselOperationStatusLabel("cancelled")).toBe("Cancelled");
+    expect(getVesselOperationStatusLabel("completed")).toBe("Completed");
   });
 });

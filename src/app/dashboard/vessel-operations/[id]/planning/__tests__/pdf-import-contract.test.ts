@@ -23,4 +23,12 @@ describe("Vessel list import contract", () => {
     expect(pageSource).toContain("applyImportedRows(importPreview.accepted)");
     expect(pageSource).toContain("applyImportedRows(preview.accepted)");
   });
+
+  it("shows cancelled, stand-by, outstanding counts and ADDITIONAL accepted markers before write", () => {
+    expect(pageSource).toContain("importPreview.cancelled.length} cancelled");
+    expect(pageSource).toContain("importPreview.standBy.length} stand-by");
+    expect(pageSource).toContain("importPreview.outstanding.length} outstanding");
+    expect(pageSource).toContain('(ADDITIONAL)');
+    expect(pageSource).toContain("Add accepted trailers");
+  });
 });

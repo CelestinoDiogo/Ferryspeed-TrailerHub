@@ -5,6 +5,11 @@ import {
   TRAILER_ACTIVE_DELIVERY_BOOKING_CODE,
   TRAILER_ACTIVE_DELIVERY_BOOKING_MESSAGE,
 } from "@/lib/delivery-booking-availability";
+import {
+  TRAILER_ACTIVE_EXPORT_ALLOCATION_CODE,
+  TRAILER_ACTIVE_EXPORT_ALLOCATION_MESSAGE,
+  TrailerJobConflictError,
+} from "@/lib/trailer-job-eligibility";
 
 const getRouteBearerTokenMock = vi.hoisted(() => vi.fn());
 const createAuthenticatedRouteSupabaseClientMock = vi.hoisted(() => vi.fn());
@@ -107,6 +112,7 @@ describe("/api/deliveries", () => {
 
     expect(source).toContain("createDeliveryBookingIfTrailerAvailable");
     expect(source).toContain("DeliveryBookingAvailabilityError");
+    expect(source).toContain("TrailerJobConflictError");
     expect(source).toContain('requireRbacPermission(supabase, user.id, "arrivals", "create")');
     expect(source).not.toContain(".insert(");
   });
@@ -127,6 +133,30 @@ describe("/api/deliveries", () => {
     expect(body).toEqual({
       error: TRAILER_ACTIVE_DELIVERY_BOOKING_MESSAGE,
       code: TRAILER_ACTIVE_DELIVERY_BOOKING_CODE,
+    });
+  });
+
+  it("rejects a delivery booking when the trailer already has an active export allocation", async () => {
+    createDeliveryBookingIfTrailerAvailableMock.mockRejectedValue(
+      new TrailerJobConflictError(
+        TRAILER_ACTIVE_EXPORT_ALLOCATION_CODE,
+        TRAILER_ACTIVE_EXPORT_ALLOCATION_MESSAGE,
+      ),
+    );
+
+    const { POST } = await importRoute();
+    const response = await POST(
+      makeRequest({
+        trailer_id: "11111111-1111-4111-8111-111111111111",
+        delivery_date: "2026-08-21",
+      }),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(body).toEqual({
+      error: TRAILER_ACTIVE_EXPORT_ALLOCATION_MESSAGE,
+      code: TRAILER_ACTIVE_EXPORT_ALLOCATION_CODE,
     });
   });
 });

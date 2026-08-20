@@ -3,6 +3,12 @@ import { previewDepartureImport, type DepartureImportCandidate } from "@/lib/imp
 import { extractPdfText } from "@/lib/imports/pdf-text";
 import { PdfImportValidationError, validatePdfUpload } from "@/lib/imports/pdf-security";
 import { previewVesselTrailerImport } from "@/lib/imports/vessel-trailer-list-import";
+import {
+  DELIVERY_BOOKING_RELEASE_STATUS_QUERY,
+  getTrailerIdsReservedByActiveDeliveryBookings,
+} from "@/lib/delivery-booking-availability";
+import { EXPORT_ACTIVE_STATUS_QUERY_VALUES } from "@/lib/export-allocation";
+import { getActiveExportStatusByTrailerId, withTrailerJobCommitments } from "@/lib/trailer-job-eligibility";
 import { bootstrapCurrentUserRole, RbacPermissionError, requireRbacPermission } from "@/lib/rbac/route";
 import {
   createAuthenticatedRouteSupabaseClient,
@@ -70,9 +76,33 @@ export async function POST(request: Request) {
       throw new Error(error.message || "Unable to match extracted trailers.");
     }
 
+    const [{ data: activeDeliveries, error: deliveryError }, { data: activeExports, error: exportError }] = await Promise.all([
+      supabase
+        .from("delivery_bookings")
+        .select("trailer_id, status")
+        .not("status", "in", DELIVERY_BOOKING_RELEASE_STATUS_QUERY),
+      supabase
+        .from("export_allocations")
+        .select("trailer_id, status")
+        .in("status", [...EXPORT_ACTIVE_STATUS_QUERY_VALUES]),
+    ]);
+
+    if (deliveryError) {
+      throw new Error(deliveryError.message || "Unable to check delivery reservations.");
+    }
+
+    if (exportError) {
+      throw new Error(exportError.message || "Unable to check export reservations.");
+    }
+
+    const candidates = withTrailerJobCommitments((data ?? []) as DepartureImportCandidate[], {
+      reservedByDelivery: getTrailerIdsReservedByActiveDeliveryBookings(activeDeliveries ?? []),
+      exportStatusByTrailerId: getActiveExportStatusByTrailerId(activeExports ?? []),
+    });
+
     return Response.json({
       purpose,
-      preview: previewDepartureImport(extractedText, (data ?? []) as DepartureImportCandidate[]),
+      preview: previewDepartureImport(extractedText, candidates),
     });
   } catch (error) {
     if (error instanceof z.ZodError) {

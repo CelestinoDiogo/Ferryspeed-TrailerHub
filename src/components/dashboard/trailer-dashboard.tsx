@@ -19,6 +19,7 @@ import { supabase } from "@/lib/supabase";
 import {
   calculateCollectionAging,
 } from "@/lib/collection-aging";
+import { isDeliveryPendingMandatoryCollection } from "@/lib/mandatory-collections";
 import {
   buildActiveExportStatusByTrailerId,
   isExportAllocationActive,
@@ -484,7 +485,7 @@ export function TrailerDashboard() {
               .limit(5),
             supabase
               .from("delivery_bookings")
-              .select("id, trailer_id, delivery_date, delivered_at, waiting_collection_since, collection_due_date, trailers(trailer_number)")
+              .select("id, trailer_id, status, delivery_date, delivered_at, waiting_collection_since, collection_due_date, collected_at, trailers(trailer_number)")
               .in("status", ["waiting_collection", "delivered"]),
             supabase
               .from("export_allocations")
@@ -604,7 +605,12 @@ export function TrailerDashboard() {
         setTodayDeliveries(enrichedDeliveries as DeliveryBooking[]);
 
         // Waiting collection summary
-        const waitingList = (waitingData ?? []) as Array<Record<string, unknown>>;
+        const waitingList = ((waitingData ?? []) as Array<Record<string, unknown>>).filter((row) =>
+          isDeliveryPendingMandatoryCollection({
+            status: (row["status"] as string | null) ?? "",
+            collected_at: (row["collected_at"] as string | null) ?? null,
+          }),
+        );
         const waitingRows: WaitingCollectionItem[] = waitingList.map((b) => ({
           id: b["id"] as string,
           delivery_date: b["delivery_date"] as string,

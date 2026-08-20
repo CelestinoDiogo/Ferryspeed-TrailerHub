@@ -18,5 +18,7 @@ describe("dashboard urgent-fix contracts", () => {
 
   it("counts delivered and waiting_collection deliveries in the Collections outstanding KPI", () => {
     expect(source).toContain('.in("status", ["waiting_collection", "delivered"])');
+    expect(source).toContain("isDeliveryPendingMandatoryCollection");
+    expect(source).toContain("collected_at");
   });
 });

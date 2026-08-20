@@ -1091,14 +1091,14 @@ function VesselPlanningPageContent() {
               {importPreview ? (
                 <div className="mt-4 space-y-3 rounded-2xl border border-white/10 bg-slate-900/80 p-4 text-sm">
                   <p className="font-semibold text-white">{importKind === "excel" ? "Excel" : "PDF"} import preview</p>
-                  <p className="text-slate-300">{importPreview.accepted.length} accepted, {importPreview.warnings.length} warning{importPreview.warnings.length === 1 ? "" : "s"}, {importPreview.invalid.length} unrecognized, {importPreview.duplicates.length} duplicate{importPreview.duplicates.length === 1 ? "" : "s"}.</p>
+                  <p className="text-slate-300">{importPreview.accepted.length} accepted, {importPreview.cancelled.length} cancelled, {importPreview.standBy.length} stand-by, {importPreview.outstanding.length} outstanding, {importPreview.warnings.length} warning{importPreview.warnings.length === 1 ? "" : "s"}, {importPreview.invalid.length} unrecognized, {importPreview.duplicates.length} duplicate{importPreview.duplicates.length === 1 ? "" : "s"}.</p>
                   {importPreview.accepted.length > 0 ? (
                     <div>
                       <p className="text-xs uppercase tracking-[0.16em] text-slate-500">Accepted</p>
                       <ul className="mt-1 max-h-40 overflow-auto text-slate-200">
                         {importPreview.accepted.map((row) => (
                           <li key={row.trailer_number}>
-                            {row.trailer_number}
+                            {row.trailer_number}{row.list_section === "additional" ? " (ADDITIONAL)" : ""}
                             {row.load_description ? ` · ${row.load_description}` : row.customer ? ` · ${row.customer}` : ""}
                             {row.raw_temperature || row.expected_front_temperature ? ` · ${row.raw_temperature || row.expected_front_temperature}` : ""}
                             {row.planned_destination ? ` · ${row.planned_destination}` : ""}

@@ -52,9 +52,9 @@ const filterOperations = (
       case "today":
         return isVesselOperationScheduledOnLocalDate(item, todayKey);
       case "tomorrow":
-        return expectedKey === tomorrowKey;
+        return isVesselOperationScheduledOnLocalDate(item, tomorrowKey);
       case "upcoming":
-        return Boolean(expectedKey && upcomingThreshold && expectedKey > upcomingThreshold && item.status !== "completed");
+        return Boolean(expectedKey && upcomingThreshold && expectedKey > upcomingThreshold && item.status !== "completed" && item.status !== "cancelled");
       case "completed":
         return item.status === "completed";
       case "all":

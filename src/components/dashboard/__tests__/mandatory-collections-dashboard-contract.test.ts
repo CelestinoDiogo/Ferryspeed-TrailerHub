@@ -7,6 +7,7 @@ const source = readFileSync(path.resolve(process.cwd(), "src/components/dashboar
 describe("mandatory Collections dashboard contract", () => {
   it("combines Delivery and Export obligations in the compact KPI", () => {
     expect(source).toContain("waitingCollectionSummary.count + exportSummary.atCustomer");
+    expect(source).toContain("isDeliveryPendingMandatoryCollection");
     expect(source).toContain('subtitle: "Outstanding"');
     expect(source).toContain('href: "/dashboard/collections"');
   });

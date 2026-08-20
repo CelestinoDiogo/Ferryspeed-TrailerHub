@@ -60,6 +60,7 @@ const createThenChain = (getResult: () => { data: unknown; error: null }) => {
     return chain;
   });
   chain.is = vi.fn(self);
+  chain.in = vi.fn(self);
   chain.eq = vi.fn((column: string, value: string) => {
     if (column === "trailer_id") {
       state.trailerId = value;
@@ -151,6 +152,7 @@ describe("delivery booking availability queries", () => {
   const store = {
     trailers,
     bookings: [] as BookingRow[],
+    exports: [] as Array<{ id: string; trailer_id: string; status: string }>,
     inserted: [] as Array<Record<string, unknown>>,
   };
 
@@ -175,12 +177,17 @@ describe("delivery booking availability queries", () => {
         };
       }
 
+      if (table === "export_allocations") {
+        return createThenChain(() => ({ data: store.exports, error: null }));
+      }
+
       throw new Error(`Unexpected table: ${table}`);
     },
   } as unknown as SupabaseClient<Database>;
 
   beforeEach(() => {
     store.bookings = [];
+    store.exports = [];
     store.inserted = [];
   });
 
@@ -238,6 +245,27 @@ describe("delivery booking availability queries", () => {
       trailer_id: "trailer-loaded-free",
       delivery_date: "2026-08-21",
     });
+  });
+
+  it("rejects a delivery booking when the trailer already has an active export allocation", async () => {
+    store.exports = [
+      { id: "export-active", trailer_id: "trailer-empty-free", status: "allocated" },
+    ];
+
+    await expect(
+      createDeliveryBookingIfTrailerAvailable(supabase, {
+        trailer_id: "trailer-empty-free",
+        delivery_date: "2026-08-21",
+      }),
+    ).rejects.toMatchObject({
+      name: "TrailerJobConflictError",
+      code: "TRAILER_ACTIVE_EXPORT_ALLOCATION",
+    });
+
+    expect(store.inserted).toHaveLength(0);
+
+    const available = await listTrailersAvailableForDeliveryBooking(supabase);
+    expect(available.map((trailer) => trailer.id)).not.toContain("trailer-empty-free");
   });
 });
 

@@ -24,4 +24,16 @@ describe("departure import preview", () => {
     expect(preview.ineligible[0]?.trailerNumber).toBe("LOCAL01");
     expect(preview.invalid.some((item) => item.trailerNumber === "UNKNOWN99")).toBe(true);
   });
+
+  it("does not accept a trailer reserved by an active delivery or export job", () => {
+    const reserved = [
+      ...trailers,
+      { id: "d", trailer_number: "PRO811", customer: "Delta", departure_date: null, operational_status: "In Compound", is_local: false, hasActiveDelivery: true },
+      { id: "e", trailer_number: "PFC103", customer: "Echo", departure_date: null, operational_status: "In Compound", is_local: false, activeExportStatus: "delivered_empty" },
+    ];
+
+    const preview = previewDepartureImport(["PRO811", "PFC103"].join("\n"), reserved);
+    expect(preview.accepted).toHaveLength(0);
+    expect(preview.ineligible.map((item) => item.trailerNumber).sort()).toEqual(["PFC103", "PRO811"]);
+  });
 });
