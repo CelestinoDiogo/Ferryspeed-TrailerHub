@@ -4,13 +4,20 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import NewDeliveryPage from "@/app/dashboard/deliveries/new/page";
+import {
+  DeliveryBookingAvailabilityError,
+  TRAILER_ACTIVE_DELIVERY_BOOKING_MESSAGE,
+} from "@/lib/delivery-booking-availability";
 
 const pushMock = vi.hoisted(() => vi.fn());
 const listActiveDriverOptionsMock = vi.hoisted(() => vi.fn());
 const recordDeliveryAssignmentChangeMock = vi.hoisted(() => vi.fn());
+const listTrailersAvailableForDeliveryBookingMock = vi.hoisted(() => vi.fn());
+const createDeliveryBookingIfTrailerAvailableMock = vi.hoisted(() => vi.fn());
 
 const state = vi.hoisted(() => ({
   insertedPayloads: [] as Array<Record<string, unknown>>,
+  eventInserts: 0,
 }));
 
 vi.mock("next/navigation", () => ({
@@ -29,46 +36,29 @@ vi.mock("@/lib/delivery-driver-assignment", () => ({
   recordDeliveryAssignmentChange: (...args: unknown[]) => recordDeliveryAssignmentChangeMock(...args),
 }));
 
+vi.mock("@/lib/delivery-booking-availability", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/delivery-booking-availability")>(
+    "@/lib/delivery-booking-availability",
+  );
+
+  return {
+    ...actual,
+    listTrailersAvailableForDeliveryBooking: (...args: unknown[]) =>
+      listTrailersAvailableForDeliveryBookingMock(...args),
+    createDeliveryBookingIfTrailerAvailable: (...args: unknown[]) =>
+      createDeliveryBookingIfTrailerAvailableMock(...args),
+  };
+});
+
 vi.mock("@/lib/supabase", () => ({
   supabase: {
     from: (table: string) => {
-      if (table === "trailers") {
-        const chain = {
-          select: vi.fn(() => chain),
-          is: vi.fn(() => chain),
-          order: vi.fn(async () => ({
-            data: [
-              {
-                id: "trailer-a",
-                trailer_number: "FS1001",
-                container_number: null,
-                customer: "Customer A",
-                consignee: "Consignee A",
-              },
-            ],
-            error: null,
-          })),
-        };
-
-        return chain;
-      }
-
-      if (table === "delivery_bookings") {
-        return {
-          insert: vi.fn((payload: Record<string, unknown>) => {
-            state.insertedPayloads.push(payload);
-            return {
-              select: vi.fn(() => ({
-                single: vi.fn(async () => ({ data: { id: "booking-a" }, error: null })),
-              })),
-            };
-          }),
-        };
-      }
-
       if (table === "trailer_events") {
         return {
-          insert: vi.fn(async () => ({ error: null })),
+          insert: vi.fn(() => {
+            state.eventInserts += 1;
+            return Promise.resolve({ error: null });
+          }),
         };
       }
 
@@ -82,10 +72,26 @@ describe("NewDeliveryPage", () => {
     vi.clearAllMocks();
     cleanup();
     state.insertedPayloads = [];
+    state.eventInserts = 0;
     listActiveDriverOptionsMock.mockResolvedValue([
       { id: "driver-a", display_name: "Driver A", user_id: "user-a", active: true },
     ]);
     recordDeliveryAssignmentChangeMock.mockResolvedValue(undefined);
+    listTrailersAvailableForDeliveryBookingMock.mockResolvedValue([
+      {
+        id: "trailer-a",
+        trailer_number: "FS1001",
+        container_number: null,
+        customer: "Customer A",
+        consignee: "Consignee A",
+      },
+    ]);
+    createDeliveryBookingIfTrailerAvailableMock.mockImplementation(
+      async (_client: unknown, payload: Record<string, unknown>) => {
+        state.insertedPayloads.push(payload);
+        return { id: "booking-a" };
+      },
+    );
   });
 
   it("shows assigned driver selector and persists selected driver id on create", async () => {
@@ -133,5 +139,37 @@ describe("NewDeliveryPage", () => {
     });
 
     expect(recordDeliveryAssignmentChangeMock).not.toHaveBeenCalled();
+  });
+
+  it("does not offer a trailer that already has an active delivery booking", async () => {
+    listTrailersAvailableForDeliveryBookingMock.mockResolvedValue([
+      {
+        id: "trailer-free",
+        trailer_number: "FS1002",
+        container_number: null,
+        customer: "Customer B",
+        consignee: null,
+      },
+    ]);
+
+    render(<NewDeliveryPage />);
+
+    expect(await screen.findByRole("option", { name: "FS1002" })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: /FS1001/ })).not.toBeInTheDocument();
+  });
+
+  it("surfaces the conflict and does not create a second booking when the trailer is already reserved", async () => {
+    createDeliveryBookingIfTrailerAvailableMock.mockRejectedValue(new DeliveryBookingAvailabilityError());
+
+    const { container } = render(<NewDeliveryPage />);
+
+    const selects = await screen.findAllByRole("combobox");
+    fireEvent.change(selects[0], { target: { value: "trailer-a" } });
+    fireEvent.change(container.querySelector('input[type="date"]') as HTMLInputElement, { target: { value: "2026-08-13" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create Delivery Booking" }));
+
+    expect(await screen.findByText(TRAILER_ACTIVE_DELIVERY_BOOKING_MESSAGE)).toBeInTheDocument();
+    expect(state.eventInserts).toBe(0);
+    expect(pushMock).not.toHaveBeenCalled();
   });
 });

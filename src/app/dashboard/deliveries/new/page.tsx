@@ -10,16 +10,13 @@ import {
   UNASSIGNED_DRIVER_LABEL,
   type ActiveDriverOption,
 } from "@/lib/delivery-driver-assignment";
+import {
+  createDeliveryBookingIfTrailerAvailable,
+  listTrailersAvailableForDeliveryBooking,
+  type DeliveryBookingTrailerOption,
+} from "@/lib/delivery-booking-availability";
 import { supabase } from "@/lib/supabase";
 import { parseDateParam } from "@/lib/calendar-utils";
-
-type TrailerOption = {
-  id: string;
-  trailer_number: string;
-  container_number?: string | null;
-  customer?: string | null;
-  consignee?: string | null;
-};
 
 type FormValues = {
   trailer_id: string;
@@ -70,7 +67,7 @@ function NewDeliveryForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const prefillDate = parseDateParam(searchParams.get("date"));
-  const [trailers, setTrailers] = useState<TrailerOption[]>([]);
+  const [trailers, setTrailers] = useState<DeliveryBookingTrailerOption[]>([]);
   const [drivers, setDrivers] = useState<ActiveDriverOption[]>([]);
   const [values, setValues] = useState<FormValues>(() => ({
     ...initialValues,
@@ -87,18 +84,12 @@ function NewDeliveryForm() {
       setError(null);
 
       try {
-        const [{ data, error: supabaseError }, driverOptions] = await Promise.all([
-          supabase
-            .from("trailers")
-            .select("id, trailer_number, container_number, customer, consignee")
-            .is("departure_date", null)
-            .order("trailer_number", { ascending: true }),
+        const [availableTrailers, driverOptions] = await Promise.all([
+          listTrailersAvailableForDeliveryBooking(supabase),
           listActiveDriverOptions(supabase),
         ]);
 
-        if (supabaseError) throw supabaseError;
-
-        setTrailers((data ?? []) as TrailerOption[]);
+        setTrailers(availableTrailers);
         setDrivers(driverOptions);
       } catch (err) {
         const message =
@@ -161,25 +152,19 @@ function NewDeliveryForm() {
       const trailer = trailers.find((t) => t.id === values.trailer_id);
       const assignedDriver = drivers.find((driver) => driver.id === values.driver_id) ?? null;
 
-      const { data: insertedBooking, error: insertError } = await supabase
-        .from("delivery_bookings")
-        .insert({
-          trailer_id: values.trailer_id,
-          driver_id: values.driver_id || null,
-          delivery_date: values.delivery_date,
-          delivery_time: values.delivery_time || null,
-          customer: values.customer.trim() || null,
-          consignee: values.consignee.trim() || null,
-          delivery_location: values.delivery_location.trim() || null,
-          booking_reference: values.booking_reference.trim() || null,
-          escort_required: values.escort_required,
-          status: values.status,
-          notes: values.notes.trim() || null,
-        })
-        .select("id")
-        .single();
-
-      if (insertError) throw insertError;
+      const insertedBooking = await createDeliveryBookingIfTrailerAvailable(supabase, {
+        trailer_id: values.trailer_id,
+        driver_id: values.driver_id || null,
+        delivery_date: values.delivery_date,
+        delivery_time: values.delivery_time || null,
+        customer: values.customer.trim() || null,
+        consignee: values.consignee.trim() || null,
+        delivery_location: values.delivery_location.trim() || null,
+        booking_reference: values.booking_reference.trim() || null,
+        escort_required: values.escort_required,
+        status: values.status,
+        notes: values.notes.trim() || null,
+      });
 
       // Create trailer event
       const eventDescription = `Delivery booking created for ${values.delivery_date}${values.delivery_time ? " at " + values.delivery_time : ""}.`;
