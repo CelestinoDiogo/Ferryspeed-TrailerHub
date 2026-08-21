@@ -190,6 +190,35 @@ describe("POST /api/mobile-actions", () => {
     );
   });
 
+  it("requires departures create permission for CONFIRM_DEPARTURE", async () => {
+    executeMobileActionMock.mockResolvedValue({
+      ok: true,
+      status: "success",
+      message: "FS1234 departed.",
+      retryable: false,
+    });
+
+    const { POST } = await importRoute();
+    await POST(
+      makeRequest({
+        action: {
+          actionType: "CONFIRM_DEPARTURE",
+          payload: {
+            trailerId: "11111111-1111-4111-8111-111111111111",
+            trailerNumber: "FS1234",
+          },
+        },
+      }),
+    );
+
+    expect(requireRbacPermissionMock).toHaveBeenCalledWith(
+      expect.anything(),
+      "11111111-1111-4111-8111-111111111111",
+      "departures",
+      "create",
+    );
+  });
+
   it("handles idempotent arrival as success", async () => {
     executeMobileActionMock.mockResolvedValue({
       ok: true,

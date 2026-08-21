@@ -11,8 +11,10 @@ import {
   type VesselOperationTrailerRecord,
 } from "@/lib/vessel-operations";
 import { moveCompoundTrailer } from "@/lib/compound-yard";
+import { confirmTrailerDeparture } from "@/lib/operations/confirm-departure";
 import { createTrailerActivity } from "@/lib/trailer-activity";
 import { getTemperatureToleranceSettingsFromStorage, isTemperatureOutOfRange } from "@/lib/temperature-tolerance";
+import { TrailerJobConflictError } from "@/lib/trailer-job-eligibility";
 import type { MobileActionConflict, MobileActionRequest } from "@/lib/mobile/mobile-actions";
 
 type RouteSupabase = SupabaseClient<Database>;
@@ -1337,6 +1339,49 @@ const runCompleteInspection = async (
   return persistInspection(supabase, trailer, payload, operatorName, true);
 };
 
+const runConfirmDeparture = async (
+  supabase: RouteSupabase,
+  payload: Extract<MobileActionRequest, { actionType: "CONFIRM_DEPARTURE" }>["payload"],
+  operatorName: string,
+): Promise<MobileActionResult> => {
+  try {
+    const result = await confirmTrailerDeparture(supabase, {
+      trailerId: payload.trailerId,
+      operatorName,
+    });
+
+    const trailerNumber = result.trailerNumber ?? payload.trailerNumber ?? "Trailer";
+
+    return {
+      ok: true,
+      status: "success",
+      message: result.alreadyDeparted ? `${trailerNumber} is already departed.` : `${trailerNumber} departed.`,
+      retryable: false,
+      updatedTrailer: {
+        trailerId: result.trailerId,
+        trailerNumber: result.trailerNumber,
+        loadStatus: null,
+        compoundPosition: result.updated?.compound_position ?? null,
+        operationalStatus: result.updated?.operational_status ?? "Departed",
+      },
+    };
+  } catch (error) {
+    if (error instanceof TrailerJobConflictError) {
+      return buildConflict({
+        code: error.code,
+        message: error.message,
+      });
+    }
+
+    return {
+      ok: false,
+      status: "failed",
+      message: error instanceof Error ? error.message : "Unable to confirm departure.",
+      retryable: true,
+    };
+  }
+};
+
 export async function executeMobileAction(
   supabase: RouteSupabase,
   user: User,
@@ -1374,6 +1419,10 @@ export async function executeMobileAction(
 
   if (action.actionType === "CHANGE_LOAD_STATUS") {
     return runChangeLoadStatus(supabase, action.payload, operatorName);
+  }
+
+  if (action.actionType === "CONFIRM_DEPARTURE") {
+    return runConfirmDeparture(supabase, action.payload, operatorName);
   }
 
   if (action.actionType === "START_INSPECTION") {

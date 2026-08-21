@@ -9,6 +9,7 @@ export const mobileActionTypes = [
   "UNDO_NO_SHOW",
   "MOVE_COMPOUND_POSITION",
   "CHANGE_LOAD_STATUS",
+  "CONFIRM_DEPARTURE",
   "START_INSPECTION",
   "SAVE_INSPECTION_PROGRESS",
   "COMPLETE_INSPECTION",
@@ -107,6 +108,11 @@ export const changeLoadStatusPayloadSchema = z.object({
   notes: z.string().trim().max(4000).optional().nullable(),
 });
 
+export const confirmDeparturePayloadSchema = z.object({
+  trailerId: z.string().uuid(),
+  trailerNumber: z.string().trim().max(80).optional(),
+});
+
 export const startInspectionPayloadSchema = z.object({
   vesselTrailerId: z.string().uuid(),
   trailerNumber: z.string().trim().max(80).optional(),
@@ -125,6 +131,7 @@ export const mobileActionRequestSchema = z.discriminatedUnion("actionType", [
   z.object({ actionType: z.literal("UNDO_NO_SHOW"), payload: undoNoShowPayloadSchema }),
   z.object({ actionType: z.literal("MOVE_COMPOUND_POSITION"), payload: moveCompoundPositionPayloadSchema }),
   z.object({ actionType: z.literal("CHANGE_LOAD_STATUS"), payload: changeLoadStatusPayloadSchema }),
+  z.object({ actionType: z.literal("CONFIRM_DEPARTURE"), payload: confirmDeparturePayloadSchema }),
   z.object({ actionType: z.literal("START_INSPECTION"), payload: startInspectionPayloadSchema }),
   z.object({ actionType: z.literal("SAVE_INSPECTION_PROGRESS"), payload: saveInspectionProgressPayloadSchema }),
   z.object({ actionType: z.literal("COMPLETE_INSPECTION"), payload: completeInspectionPayloadSchema }),
@@ -335,6 +342,8 @@ export const getMobileActionLabel = (item: Pick<MobileActionQueueItem, "actionTy
       return `Move ${trailerNumber ?? "trailer"} to ${(item.payload as { targetPosition?: string }).targetPosition ?? "position"}`;
     case "CHANGE_LOAD_STATUS":
       return `Set ${trailerNumber ?? "trailer"} ${(item.payload as { nextLoadStatus?: string }).nextLoadStatus ?? "status"}`;
+    case "CONFIRM_DEPARTURE":
+      return `Confirm departure ${trailerNumber ?? "trailer"}`;
     case "START_INSPECTION":
       return `Start inspection ${trailerNumber ?? "trailer"}`;
     case "SAVE_INSPECTION_PROGRESS":
@@ -400,6 +409,10 @@ export const getMobileActionDedupeKey = (input: {
     case "CHANGE_LOAD_STATUS": {
       const payload = input.payload as Extract<MobileActionRequest, { actionType: "CHANGE_LOAD_STATUS" }>["payload"];
       return [input.actionType, normalizeDedupeValue(payload.trailerId), normalizeDedupeValue(payload.nextLoadStatus)].join("::");
+    }
+    case "CONFIRM_DEPARTURE": {
+      const payload = input.payload as Extract<MobileActionRequest, { actionType: "CONFIRM_DEPARTURE" }>["payload"];
+      return [input.actionType, normalizeDedupeValue(payload.trailerId)].join("::");
     }
     case "START_INSPECTION": {
       const payload = input.payload as Extract<MobileActionRequest, { actionType: "START_INSPECTION" }>["payload"];

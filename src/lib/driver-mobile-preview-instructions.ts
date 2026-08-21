@@ -40,19 +40,30 @@ export async function listDriverOperationalInstructionsForPreview(
   input?: { limit?: number },
 ) {
   const limit = Math.max(1, Math.min(input?.limit ?? 30, 100));
-  const { data, error } = await supabase
-    .from("driver_operational_instructions")
-    .select(instructionSelect)
-    .eq("driver_id", driver.id)
-    .order("created_at", { ascending: false })
-    .limit(limit);
+  const [listResult, unreadCountResult] = await Promise.all([
+    supabase
+      .from("driver_operational_instructions")
+      .select(instructionSelect)
+      .eq("driver_id", driver.id)
+      .order("created_at", { ascending: false })
+      .limit(limit),
+    supabase
+      .from("driver_operational_instructions")
+      .select("id", { count: "exact", head: true })
+      .eq("driver_id", driver.id)
+      .is("read_at", null),
+  ]);
 
-  if (error) {
-    throw new Error(error.message || "Unable to load preview instructions.");
+  if (listResult.error) {
+    throw new Error(listResult.error.message || "Unable to load preview instructions.");
   }
 
-  const recent = ((data ?? []) as InstructionRow[]).map(toRecord);
+  const recent = ((listResult.data ?? []) as InstructionRow[]).map(toRecord);
   const unread = recent.filter((record) => !record.readAt);
+  const unreadCount =
+    !unreadCountResult.error && typeof unreadCountResult.count === "number"
+      ? unreadCountResult.count
+      : unread.length;
 
   return {
     driver: {
@@ -60,7 +71,7 @@ export async function listDriverOperationalInstructionsForPreview(
       displayName: driver.display_name,
       userId: driver.user_id,
     },
-    unreadCount: unread.length,
+    unreadCount,
     newestUnread: unread[0] ?? null,
     recent,
   };

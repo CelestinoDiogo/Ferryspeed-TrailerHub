@@ -106,3 +106,22 @@ export function isTrailerEligibleForCompoundDeparture(commitment: TrailerJobComm
 
   return !hasActiveExportReservation(commitment.activeExportStatus);
 }
+
+export function getTrailerJobReservationLabel(commitment: TrailerJobCommitmentFields = {}) {
+  const reservedForDelivery = commitment.hasActiveDelivery === true;
+  const reservedForExport = hasActiveExportReservation(commitment.activeExportStatus);
+
+  if (reservedForDelivery && reservedForExport) {
+    return "Reserved - Delivery + Export";
+  }
+
+  if (reservedForDelivery) {
+    return "Reserved - Delivery";
+  }
+
+  if (reservedForExport) {
+    return "Reserved - Export";
+  }
+
+  return null;
+}

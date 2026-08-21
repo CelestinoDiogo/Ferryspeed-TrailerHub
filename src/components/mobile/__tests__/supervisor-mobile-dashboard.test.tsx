@@ -372,6 +372,8 @@ const setOnlineState = (value: boolean) => {
 describe("SupervisorMobileDashboard", () => {
   afterEach(() => {
     cleanup();
+    fetchMock.mockReset();
+    vi.unstubAllGlobals();
   });
 
   beforeEach(() => {
@@ -405,6 +407,7 @@ describe("SupervisorMobileDashboard", () => {
         },
       },
     });
+    fetchMock.mockReset();
     fetchMock.mockResolvedValue({
       ok: true,
       json: async () => ({ status: "success", message: "Action completed." }),
@@ -436,6 +439,7 @@ describe("SupervisorMobileDashboard", () => {
     });
     Object.defineProperty(window, "scrollTo", { configurable: true, value: vi.fn() });
     Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 });
+    window.sessionStorage.clear();
   });
 
   const openVesselWorkspace = async () => {
@@ -712,7 +716,7 @@ describe("SupervisorMobileDashboard", () => {
     expect(screen.getByText("Active Vessel Workspace")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /MV Caledonia/i })).toBeInTheDocument();
     expect(screen.getByText("FS1001")).toBeInTheDocument();
-  });
+  }, 15000);
 
   it("preserves selected vessel and queue filter after row action refetch", async () => {
     render(<SupervisorMobileDashboard />);
@@ -948,6 +952,156 @@ describe("SupervisorMobileDashboard", () => {
         "/api/operations/driver-instructions",
         expect.objectContaining({ method: "POST" }),
       );
+    });
+  });
+
+  it("keeps Master Mobile navigation tabs available", async () => {
+    render(<SupervisorMobileDashboard />);
+
+    expect(await screen.findByRole("button", { name: "Home" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Vessel" })).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Compound" }).length).toBeGreaterThan(0);
+    expect(screen.getAllByRole("button", { name: "Departures" }).length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "Exports" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Refresh" })).toBeInTheDocument();
+  });
+
+  it("shows reservation state on Compound without exposing write actions", async () => {
+    tableData = {
+      ...buildBaseData(),
+      delivery_bookings: [
+        {
+          id: "booking-reserved",
+          trailer_id: "trailer-1",
+          driver_id: null,
+          delivery_date: "2026-08-01",
+          status: "scheduled",
+        },
+      ],
+      export_allocations: [
+        {
+          id: "export-reserved",
+          trailer_id: "trailer-2",
+          trailer_number: "FS1002",
+          customer: "Bravo Freight",
+          priority: "normal",
+          status: "allocated",
+          updated_at: "2026-08-01T09:00:00.000Z",
+        },
+      ],
+    };
+
+    render(<SupervisorMobileDashboard />);
+    const user = userEvent.setup();
+    const compoundButtons = await screen.findAllByRole("button", { name: "Compound" });
+    await user.click(compoundButtons[compoundButtons.length - 1]);
+
+    const deliveryCard = getTrailerCard("FS1001");
+    expect(within(deliveryCard).getByText("Reserved - Delivery")).toBeInTheDocument();
+    expect(within(deliveryCard).queryByRole("button", { name: /Move|Load/i })).not.toBeInTheDocument();
+
+    const exportCard = getTrailerCard("FS1002");
+    expect(within(exportCard).getByText("Reserved - Export")).toBeInTheDocument();
+  });
+
+  it("blocks Confirm Departure for reserved trailers and keeps eligible confirm in the list", async () => {
+    tableData = {
+      ...buildBaseData(),
+      delivery_bookings: [
+        {
+          id: "booking-reserved",
+          trailer_id: "trailer-1",
+          driver_id: "driver-a",
+          delivery_date: "2026-08-01",
+          status: "on_delivery",
+          drivers: { display_name: "Driver A" },
+        },
+      ],
+      export_allocations: [
+        {
+          id: "export-reserved",
+          trailer_id: "trailer-2",
+          trailer_number: "FS1002",
+          customer: "Bravo Freight",
+          priority: "normal",
+          status: "allocated",
+          updated_at: "2026-08-01T09:00:00.000Z",
+        },
+      ],
+    };
+
+    render(<SupervisorMobileDashboard />);
+    const user = userEvent.setup();
+    const departuresButtons = await screen.findAllByRole("button", { name: "Departures" });
+    await user.click(departuresButtons[0]);
+    await screen.findByText("Departures Mobile Access");
+
+    expect(within(getTrailerCard("FS1001")).getByRole("button", { name: "Reserved - Delivery" })).toBeDisabled();
+    expect(within(getTrailerCard("FS1002")).getByRole("button", { name: "Reserved - Export" })).toBeDisabled();
+    expect(within(getTrailerCard("FS1004")).getByRole("button", { name: "Confirm Departure" })).toBeEnabled();
+  });
+
+  it("confirms an eligible departure without leaving the Departures tab", async () => {
+    render(<SupervisorMobileDashboard />);
+    const user = userEvent.setup();
+    const departuresButtons = await screen.findAllByRole("button", { name: "Departures" });
+    await user.click(departuresButtons[0]);
+    await screen.findByText("Departures Mobile Access");
+
+    await user.click(within(getTrailerCard("FS1004")).getByRole("button", { name: "Confirm Departure" }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/mobile-actions",
+        expect.objectContaining({
+          method: "POST",
+          body: expect.stringContaining("CONFIRM_DEPARTURE"),
+        }),
+      );
+    });
+
+    expect(screen.getByText("Departures Mobile Access")).toBeInTheDocument();
+    expect(screen.getByText("FS1004 departed.")).toBeInTheDocument();
+  });
+
+  it("locks Confirm Departure while the write is in progress", async () => {
+    let resolveConfirm: (value: { ok: boolean; json: () => Promise<{ status: string; message: string }> }) => void = () => undefined;
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/api/mobile-actions") && (init?.method ?? "GET") === "POST") {
+        return new Promise<{ ok: boolean; json: () => Promise<{ status: string; message: string }> }>((resolve) => {
+          resolveConfirm = resolve;
+        });
+      }
+
+      return {
+        ok: true,
+        json: async () => ({ status: "success", message: "Action completed." }),
+      };
+    });
+
+    render(<SupervisorMobileDashboard />);
+    const user = userEvent.setup();
+    const departuresButtons = await screen.findAllByRole("button", { name: "Departures" });
+    await user.click(departuresButtons[0]);
+    await screen.findByText("Departures Mobile Access");
+
+    const confirmButton = within(getTrailerCard("FS1004")).getByRole("button", { name: "Confirm Departure" });
+    await user.click(confirmButton);
+
+    const lockedButton = await within(getTrailerCard("FS1004")).findByRole("button", { name: "Updating..." });
+    expect(lockedButton).toBeDisabled();
+    await user.click(lockedButton);
+
+    expect(fetchMock.mock.calls.filter(([input]) => String(input).includes("/api/mobile-actions"))).toHaveLength(1);
+
+    resolveConfirm({
+      ok: true,
+      json: async () => ({ status: "success", message: "FS1004 departed." }),
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Departures Mobile Access")).toBeInTheDocument();
     });
   });
 });

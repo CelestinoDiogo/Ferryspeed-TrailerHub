@@ -16,7 +16,7 @@ const requestSchema = z.object({
   action: mobileActionRequestSchema,
 });
 
-const permissionByActionType: Record<MobileActionRequest["actionType"], { moduleKey: "arrivals" | "compound" | "vessel_operations"; action: "create" | "edit" | "complete" }> = {
+const permissionByActionType: Record<MobileActionRequest["actionType"], { moduleKey: "arrivals" | "compound" | "vessel_operations" | "departures"; action: "create" | "edit" | "complete" }> = {
   ADD_VESSEL_TRAILER: { moduleKey: "vessel_operations", action: "edit" },
   MARK_ARRIVED: { moduleKey: "arrivals", action: "create" },
   MARK_CANCELLED: { moduleKey: "vessel_operations", action: "edit" },
@@ -25,6 +25,7 @@ const permissionByActionType: Record<MobileActionRequest["actionType"], { module
   UNDO_NO_SHOW: { moduleKey: "vessel_operations", action: "edit" },
   MOVE_COMPOUND_POSITION: { moduleKey: "compound", action: "edit" },
   CHANGE_LOAD_STATUS: { moduleKey: "compound", action: "edit" },
+  CONFIRM_DEPARTURE: { moduleKey: "departures", action: "create" },
   START_INSPECTION: { moduleKey: "vessel_operations", action: "edit" },
   SAVE_INSPECTION_PROGRESS: { moduleKey: "vessel_operations", action: "edit" },
   COMPLETE_INSPECTION: { moduleKey: "vessel_operations", action: "complete" },

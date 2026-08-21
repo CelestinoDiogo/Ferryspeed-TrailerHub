@@ -18,10 +18,20 @@ import {
   type ExportAllocationStatus,
 } from "@/lib/export-allocation";
 import { DRIVER_INSTRUCTION_PRESETS } from "@/lib/driver-instruction-presets";
+import {
+  DELIVERY_BOOKING_RELEASE_STATUS_QUERY,
+  getTrailerIdsReservedByActiveDeliveryBookings,
+} from "@/lib/delivery-booking-availability";
+import { isEligibleForDeparture } from "@/lib/imports/departure-import";
 import { advanceExportAllocationStatus } from "@/lib/operations/export-lifecycle";
 import { useOperationalRealtime } from "@/lib/realtime/operational-realtime";
 import { supabase } from "@/lib/supabase";
 import { getTrailerActivity, type TrailerActivityRow } from "@/lib/trailer-activity";
+import {
+  getActiveExportStatusByTrailerId,
+  getTrailerJobReservationLabel,
+  withTrailerJobCommitments,
+} from "@/lib/trailer-job-eligibility";
 import { saveVesselInspectionPhoto } from "@/lib/vessel-inspection-photos";
 import {
   buildQuayTrailerVoiceSummary,
@@ -162,6 +172,37 @@ const INITIAL_INSPECTION_PROGRESS: MobileInspectionProgress = {
   notes: "",
 };
 
+const MASTER_MOBILE_VESSEL_STORAGE_KEY = "trailerhub.masterMobile.selectedVesselId";
+
+const readStoredVesselId = () => {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  try {
+    return window.sessionStorage.getItem(MASTER_MOBILE_VESSEL_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+};
+
+const persistStoredVesselId = (vesselId: string | null) => {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  try {
+    if (vesselId) {
+      window.sessionStorage.setItem(MASTER_MOBILE_VESSEL_STORAGE_KEY, vesselId);
+      return;
+    }
+
+    window.sessionStorage.removeItem(MASTER_MOBILE_VESSEL_STORAGE_KEY);
+  } catch {
+    // Ignore storage failures on private/unsupported browsers.
+  }
+};
+
 const normalizeText = (value?: string | null) => value?.trim().toLowerCase() ?? "";
 
 const formatDateTime = (value?: string | null) => {
@@ -223,6 +264,7 @@ export function SupervisorMobileDashboard() {
   const canInspect = mobileRoleKey ? canPerformAction(mobileRoleKey, "vessel_operations", "edit") : false;
   const canCompleteInspection = mobileRoleKey ? canPerformAction(mobileRoleKey, "vessel_operations", "complete") : false;
   const canViewDepartures = mobileRoleKey ? canAccessModule(mobileRoleKey, "departures") : false;
+  const canConfirmDepartures = mobileRoleKey ? canPerformAction(mobileRoleKey, "departures", "create") : false;
   const canViewExports = mobileRoleKey ? canAccessModule(mobileRoleKey, "export_operations") : false;
 
   const [activeTab, setActiveTab] = useState<MobileTabKey>("home");
@@ -244,8 +286,10 @@ export function SupervisorMobileDashboard() {
   const [departuresFilter, setDeparturesFilter] = useState("");
   const [exportsFilter, setExportsFilter] = useState("");
 
-  const [selectedVesselId, setSelectedVesselId] = useState<string | null>(null);
+  const [selectedVesselId, setSelectedVesselId] = useState<string | null>(readStoredVesselId);
+  const selectedVesselIdRef = useRef<string | null>(selectedVesselId);
   const [actioningKeys, setActioningKeys] = useState<string[]>([]);
+  const [reservedDeliveryTrailerIds, setReservedDeliveryTrailerIds] = useState<string[]>([]);
 
   const [inspectionPanelOpen, setInspectionPanelOpen] = useState(false);
   const [inspectionTrailerId, setInspectionTrailerId] = useState<string | null>(null);
@@ -335,10 +379,9 @@ export function SupervisorMobileDashboard() {
         supabase
           .from("delivery_bookings")
           .select("id, trailer_id, driver_id, delivery_date, status, drivers(display_name)")
-          .not("driver_id", "is", null)
-          .neq("status", "cancelled")
+          .not("status", "in", DELIVERY_BOOKING_RELEASE_STATUS_QUERY)
           .order("delivery_date", { ascending: false })
-          .limit(220),
+          .limit(400),
       ]);
 
       if (trailerResult.error) throw trailerResult.error;
@@ -353,7 +396,7 @@ export function SupervisorMobileDashboard() {
       const nextVesselTrailers = (vesselTrailerResult.data ?? []) as VesselTrailerRow[];
       const nextAlerts = (alertsResult.data ?? []) as OperationalAlertRow[];
       const nextExports = ((exportResult.data ?? []) as ExportRow[]).map((row) => normalizeExportAllocationRecord(row));
-      const nextAssignments = ((assignmentResult.data ?? []) as Array<Record<string, unknown>>).map((row) => {
+      const nextBookings = ((assignmentResult.data ?? []) as Array<Record<string, unknown>>).map((row) => {
         const driver = row["drivers"] as Record<string, unknown> | null;
         return {
           id: row["id"] as string,
@@ -364,6 +407,8 @@ export function SupervisorMobileDashboard() {
           status: row["status"] as string,
         } as DriverAssignmentRow;
       });
+      const nextAssignments = nextBookings.filter((row) => Boolean(row.driver_id));
+      const reservedByDelivery = [...getTrailerIdsReservedByActiveDeliveryBookings(nextBookings)];
 
       const pendingArrivals = nextVesselTrailers.filter((row) => isPendingArrivalState(row.arrival_status)).length;
       const arrivedCount = nextVesselTrailers.filter((row) => isArrivedState(row.arrival_status)).length;
@@ -377,6 +422,7 @@ export function SupervisorMobileDashboard() {
       setAlerts(nextAlerts);
       setExports(nextExports);
       setDriverAssignments(nextAssignments);
+      setReservedDeliveryTrailerIds(reservedByDelivery);
       setSummary({
         inCompound,
         pendingArrivals,
@@ -386,9 +432,17 @@ export function SupervisorMobileDashboard() {
         operationalAlerts: nextAlerts.length,
       });
 
-      if (!selectedVesselId && nextVessels.length > 0) {
+      const currentSelected = selectedVesselIdRef.current;
+      const selectedStillActive = Boolean(
+        currentSelected
+        && nextVessels.some((row) => row.id === currentSelected && row.status !== "completed" && !row.final_locked_at),
+      );
+
+      if (!selectedStillActive && nextVessels.length > 0) {
         const firstActive = nextVessels.find((row) => row.status !== "completed" && !row.final_locked_at) ?? nextVessels[0];
+        selectedVesselIdRef.current = firstActive.id;
         setSelectedVesselId(firstActive.id);
+        persistStoredVesselId(firstActive.id);
       }
     } catch (loadErr) {
       setError(loadErr instanceof Error ? loadErr.message : "Unable to load Master Mobile data.");
@@ -397,7 +451,7 @@ export function SupervisorMobileDashboard() {
         setIsLoadingData(false);
       }
     }
-  }, [selectedVesselId]);
+  }, []);
 
   useEffect(() => {
     const timeoutId = window.setTimeout(() => {
@@ -410,6 +464,11 @@ export function SupervisorMobileDashboard() {
   useOperationalRealtime(["dashboard"], () => {
     void loadData({ showLoading: false });
   }, { debounceMs: 800 });
+
+  useEffect(() => {
+    selectedVesselIdRef.current = selectedVesselId;
+    persistStoredVesselId(selectedVesselId);
+  }, [selectedVesselId]);
 
   useEffect(() => {
     if (!success) {
@@ -514,9 +573,16 @@ export function SupervisorMobileDashboard() {
     });
   }, [selectedVesselRows, vesselQuickFilter, vesselFilter]);
 
+  const trailersWithCommitments = useMemo(() => {
+    return withTrailerJobCommitments(trailers, {
+      reservedByDelivery: reservedDeliveryTrailerIds,
+      exportStatusByTrailerId: getActiveExportStatusByTrailerId(exports),
+    });
+  }, [exports, reservedDeliveryTrailerIds, trailers]);
+
   const compoundRows = useMemo(() => {
     const normalized = compoundFilter.trim().toLowerCase();
-    const onlyCompound = trailers.filter((row) => row.is_local !== true && (row.compound_position ?? "").trim().length > 0);
+    const onlyCompound = trailersWithCommitments.filter((row) => row.is_local !== true && (row.compound_position ?? "").trim().length > 0);
 
     if (!normalized) {
       return onlyCompound.slice(0, 120);
@@ -529,11 +595,11 @@ export function SupervisorMobileDashboard() {
         (row.customer ?? "").toLowerCase().includes(normalized)
       );
     }).slice(0, 120);
-  }, [compoundFilter, trailers]);
+  }, [compoundFilter, trailersWithCommitments]);
 
   const departureRows = useMemo(() => {
     const normalized = departuresFilter.trim().toLowerCase();
-    const candidates = trailers.filter((row) => {
+    const candidates = trailersWithCommitments.filter((row) => {
       const status = normalizeText(row.operational_status);
       return status !== "departed" && row.is_local !== true;
     });
@@ -549,7 +615,7 @@ export function SupervisorMobileDashboard() {
         (row.compound_position ?? "").toLowerCase().includes(normalized)
       );
     }).slice(0, 80);
-  }, [departuresFilter, trailers]);
+  }, [departuresFilter, trailersWithCommitments]);
 
   const assignmentByTrailerId = useMemo(() => {
     const map = new Map<string, DriverAssignmentRow>();
@@ -654,7 +720,7 @@ export function SupervisorMobileDashboard() {
   }, [actioningKeys]);
 
   const executeMobileAction = useCallback(async (input: {
-    actionType: "MARK_ARRIVED" | "START_INSPECTION" | "SAVE_INSPECTION_PROGRESS" | "COMPLETE_INSPECTION";
+    actionType: "MARK_ARRIVED" | "START_INSPECTION" | "SAVE_INSPECTION_PROGRESS" | "COMPLETE_INSPECTION" | "CONFIRM_DEPARTURE";
     trailerRowId: string;
     payload: Record<string, unknown>;
     fallbackError: string;
@@ -685,7 +751,7 @@ export function SupervisorMobileDashboard() {
       });
 
       const payload = (await response.json()) as { error?: string; message?: string; status?: string };
-      if (!response.ok || payload.status === "failed") {
+      if (!response.ok || payload.status === "failed" || payload.status === "conflict") {
         throw new Error(payload.error ?? payload.message ?? input.fallbackError);
       }
 
@@ -715,6 +781,23 @@ export function SupervisorMobileDashboard() {
       },
       fallbackError: "Unable to confirm arrival.",
       successMessage: "Arrival confirmed.",
+    });
+  }, [executeMobileAction, hasAction]);
+
+  const confirmDeparture = useCallback(async (row: (typeof departureRows)[number]) => {
+    if (!isEligibleForDeparture(row) || hasAction("CONFIRM_DEPARTURE", row.id)) {
+      return false;
+    }
+
+    return executeMobileAction({
+      actionType: "CONFIRM_DEPARTURE",
+      trailerRowId: row.id,
+      payload: {
+        trailerId: row.id,
+        trailerNumber: row.trailer_number ?? undefined,
+      },
+      fallbackError: "Unable to confirm departure.",
+      successMessage: `${row.trailer_number ?? "Trailer"} departed.`,
     });
   }, [executeMobileAction, hasAction]);
 
@@ -1293,9 +1376,24 @@ export function SupervisorMobileDashboard() {
         <main className="mobile-safe-shell min-h-screen bg-[radial-gradient(circle_at_top,_rgba(14,165,233,0.16),_transparent_35%),linear-gradient(180deg,_#04111f_0%,_#eaf3ff_20%,_#f5f9ff_100%)] text-slate-900 md:hidden">
           <div className="mx-auto flex max-w-lg flex-col gap-3 px-2 pb-24 pt-2">
             <header className="rounded-[1.55rem] border border-white/60 bg-slate-950 px-4 py-4 text-white shadow-[0_16px_44px_rgba(15,23,42,0.24)]">
-              <p className="text-[10px] font-semibold uppercase tracking-[0.32em] text-cyan-300">Master Mobile</p>
-              <h1 className="mt-2 text-2xl font-semibold tracking-tight">Operational Quay Console</h1>
-              <p className="mt-1 text-sm text-slate-300">{userLabel} · {roleLabel}</p>
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.32em] text-cyan-300">Master Mobile</p>
+                  <h1 className="mt-2 text-2xl font-semibold tracking-tight">Operational Quay Console</h1>
+                  <p className="mt-1 text-sm text-slate-300">{userLabel} · {roleLabel}</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void loadData({ showLoading: false });
+                  }}
+                  disabled={isLoadingData}
+                  className="inline-flex items-center gap-1 rounded-xl border border-white/20 bg-white/10 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50"
+                >
+                  <RotateCcw className="h-3.5 w-3.5" />
+                  Refresh
+                </button>
+              </div>
             </header>
 
             {error ? <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</div> : null}
@@ -1542,7 +1640,10 @@ export function SupervisorMobileDashboard() {
 
                   <div className="space-y-2">
                     {compoundRows.length === 0 ? <p className="text-sm text-slate-500">No compound trailers match this filter.</p> : null}
-                    {compoundRows.map((row) => (
+                    {compoundRows.map((row) => {
+                      const reservationLabel = getTrailerJobReservationLabel(row);
+
+                      return (
                       <article key={row.id} className="rounded-2xl border border-slate-200 bg-white p-3">
                         <p className="text-lg font-semibold text-slate-900">{row.trailer_number ?? "-"}</p>
                         <p className="text-xs text-slate-600">{row.customer ?? "-"}</p>
@@ -1552,8 +1653,14 @@ export function SupervisorMobileDashboard() {
                           <InfoPill label="Status" value={row.operational_status ?? "-"} />
                           <InfoPill label="Area" value="Compound" />
                         </div>
+                        {reservationLabel ? (
+                          <div className="mt-2">
+                            <Badge tone="warn" text={reservationLabel} />
+                          </div>
+                        ) : null}
                       </article>
-                    ))}
+                      );
+                    })}
                   </div>
                 </Card>
               </section>
@@ -1561,7 +1668,7 @@ export function SupervisorMobileDashboard() {
 
             {activeTab === "departures" ? (
               <section className="space-y-3">
-                <Card title="Departures Mobile Access" subtitle="Find trailer quickly and jump into existing departure workflow.">
+                <Card title="Departures Mobile Access" subtitle="Confirm eligible trailers here. Reserved jobs stay visible but cannot depart.">
                   <div className="mb-2 flex items-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2">
                     <Search className="h-4 w-4 text-slate-500" />
                     <input
@@ -1578,11 +1685,11 @@ export function SupervisorMobileDashboard() {
                     {departureRows.length === 0 ? <p className="text-sm text-slate-500">No departure candidates found.</p> : null}
                     {departureRows.map((row) => {
                       const trailerNumber = row.trailer_number ?? "";
-                      const targetHref = trailerNumber
-                        ? `/dashboard/departure?search=${encodeURIComponent(trailerNumber)}`
-                        : "/dashboard/departure";
                       const assignment = assignmentByTrailerId.get(row.id);
                       const status = assignment ? instructionStatusByBookingId[assignment.id] : null;
+                      const eligible = isEligibleForDeparture(row);
+                      const reservationLabel = getTrailerJobReservationLabel(row);
+                      const pendingDeparture = hasAction("CONFIRM_DEPARTURE", row.id);
 
                       return (
                         <article key={row.id} className="rounded-2xl border border-slate-200 bg-white p-3">
@@ -1592,12 +1699,21 @@ export function SupervisorMobileDashboard() {
                             <InfoPill label="Position" value={row.compound_position ?? "-"} />
                             <InfoPill label="Load" value={row.load_status ?? "-"} />
                           </div>
-                          <Link
-                            href={targetHref}
-                            className="mt-3 inline-flex w-full items-center justify-center rounded-xl bg-slate-950 px-3 py-2 text-xs font-semibold text-white"
+                          {reservationLabel ? (
+                            <div className="mt-2">
+                              <Badge tone="warn" text={reservationLabel} />
+                            </div>
+                          ) : null}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              void confirmDeparture(row);
+                            }}
+                            disabled={!canConfirmDepartures || !eligible || pendingDeparture}
+                            className="mt-3 inline-flex w-full items-center justify-center rounded-xl bg-slate-950 px-3 py-2 text-xs font-semibold text-white disabled:bg-slate-400"
                           >
-                            Confirm Departure
-                          </Link>
+                            {pendingDeparture ? "Updating..." : eligible ? "Confirm Departure" : (reservationLabel ?? "Not eligible")}
+                          </button>
 
                           <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-2">
                             <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-600">Driver Instruction</p>

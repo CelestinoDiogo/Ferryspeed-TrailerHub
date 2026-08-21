@@ -16,6 +16,8 @@ describe("driver-operational-instructions service contract", () => {
     expect(serviceSource).toContain('.eq("recipient_user_id", userId)');
     expect(serviceSource).toContain("DEFAULT_HISTORY_LIMIT = 30");
     expect(serviceSource).toContain("Math.max(1, Math.min(input?.limit ?? DEFAULT_HISTORY_LIMIT, 100))");
+    expect(serviceSource).toContain('{ count: "exact", head: true }');
+    expect(serviceSource).toContain('.is("read_at", null)');
   });
 
   it("keeps migration 042 optional for the minimum read loop", () => {

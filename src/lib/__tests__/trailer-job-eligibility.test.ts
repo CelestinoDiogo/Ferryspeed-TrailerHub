@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { isTrailerEligibleForCompoundViews } from "@/lib/export-allocation";
 import {
   getTrailerIdsReservedByActiveExportAllocations,
+  getTrailerJobReservationLabel,
   isTrailerEligibleForCompoundDeparture,
   isTrailerEligibleForNewDeliveryJob,
   isTrailerEligibleForNewExportJob,
@@ -79,6 +80,19 @@ describe("canonical trailer job eligibility", () => {
       hasActiveDelivery: false,
       activeExportStatus: "completed",
     })).toBe(true);
+  });
+
+  it("labels active Delivery and Export reservations for mobile visibility", () => {
+    expect(getTrailerJobReservationLabel({ hasActiveDelivery: true })).toBe("Reserved - Delivery");
+    expect(getTrailerJobReservationLabel({ activeExportStatus: "allocated" })).toBe("Reserved - Export");
+    expect(getTrailerJobReservationLabel({
+      hasActiveDelivery: true,
+      activeExportStatus: "waiting_loading",
+    })).toBe("Reserved - Delivery + Export");
+    expect(getTrailerJobReservationLabel({
+      hasActiveDelivery: false,
+      activeExportStatus: "completed",
+    })).toBeNull();
   });
 
   it("collects reserved trailer ids from active export rows only", () => {

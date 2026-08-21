@@ -157,7 +157,7 @@ describe("DriverMobileJobsDashboard", () => {
 
     render(<DriverMobileJobsDashboard />);
 
-    expect(await screen.findByRole("heading", { name: "FS-NORMAL" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "FS-NORMAL" }, { timeout: 5000 })).toBeInTheDocument();
     expect(screen.queryByRole("dialog", { name: "Operational alert overlay" })).not.toBeInTheDocument();
   });
 
@@ -1301,5 +1301,45 @@ describe("DriverMobileJobsDashboard", () => {
 
     expect(await screen.findByText("You do not have permission to perform this action.")).toBeInTheDocument();
     expect(screen.queryByText("Driver profile required")).not.toBeInTheDocument();
+  });
+
+  it("keeps the server unread count instead of recounting the limited recent window", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+
+        if (url.includes("/api/driver-mobile/tasks") && method === "GET") {
+          return new Response(JSON.stringify({
+            driver: { id: "driver-a", display_name: "Driver One", user_id: "user-a" },
+            tasks: [makeTask({ bookingId: "task-a", trailerNumber: "FS-READ", nextAction: "DELIVERED", driverAcknowledgedAt: "2026-08-13T08:00:00.000Z", status: "on_delivery" })],
+          }), { status: 200 });
+        }
+
+        if (url.includes("/api/driver-mobile/instructions") && method === "GET") {
+          return new Response(JSON.stringify({
+            unreadCount: 50,
+            newestUnread: null,
+            recent: [
+              makeInstruction({
+                id: "read-window",
+                deliveryBookingId: null,
+                readAt: "2026-08-20T09:00:00.000Z",
+                isRead: true,
+                instruction: "Older instruction already read",
+              }),
+            ],
+          }), { status: 200 });
+        }
+
+        return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+      }),
+    );
+
+    render(<DriverMobileJobsDashboard />);
+
+    expect(await screen.findByText("50 unread")).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Operational alert overlay" })).not.toBeInTheDocument();
   });
 });

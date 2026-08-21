@@ -290,18 +290,25 @@ export async function listDriverOperationalInstructionsForUser(
 
   const limit = Math.max(1, Math.min(input?.limit ?? DEFAULT_HISTORY_LIMIT, 100));
 
-  const { data, error } = await supabase
-    .from("driver_operational_instructions")
-    .select(instructionSelect)
-    .eq("recipient_user_id", userId)
-    .order("created_at", { ascending: false })
-    .limit(limit);
+  const [listResult, unreadCountResult] = await Promise.all([
+    supabase
+      .from("driver_operational_instructions")
+      .select(instructionSelect)
+      .eq("recipient_user_id", userId)
+      .order("created_at", { ascending: false })
+      .limit(limit),
+    supabase
+      .from("driver_operational_instructions")
+      .select("id", { count: "exact", head: true })
+      .eq("recipient_user_id", userId)
+      .is("read_at", null),
+  ]);
 
-  if (error) {
-    throw new Error(error.message || "Unable to load driver operational instructions.");
+  if (listResult.error) {
+    throw new Error(listResult.error.message || "Unable to load driver operational instructions.");
   }
 
-  const instructionRows = (data ?? []) as DriverOperationalInstructionRow[];
+  const instructionRows = (listResult.data ?? []) as DriverOperationalInstructionRow[];
   const responseRows = await listResponseEventsForInstructions(
     supabase,
     instructionRows.map((row) => row.id),
@@ -311,6 +318,10 @@ export async function listDriverOperationalInstructionsForUser(
 
   const rows = instructionRows.map((row) => toInstructionRecord(row, responseByInstruction.get(row.id) ?? []));
   const unreadRows = rows.filter((row) => !row.readAt);
+  const unreadCount =
+    !unreadCountResult.error && typeof unreadCountResult.count === "number"
+      ? unreadCountResult.count
+      : unreadRows.length;
 
   return {
     driver: {
@@ -318,7 +329,7 @@ export async function listDriverOperationalInstructionsForUser(
       displayName: driver.display_name,
       userId: driver.user_id ?? userId,
     },
-    unreadCount: unreadRows.length,
+    unreadCount,
     newestUnread: unreadRows[0] ?? null,
     recent: rows,
   };

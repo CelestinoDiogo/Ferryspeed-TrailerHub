@@ -958,7 +958,10 @@ export function DriverMobileJobsDashboard() {
     });
 
     return {
-      unreadCount: recent.filter((instruction) => !instruction.readAt).length,
+      unreadCount: Math.max(
+        0,
+        instructionFeed.unreadCount - instructionFeed.recent.filter((instruction) => !instruction.readAt && acknowledgedInstructionIds.has(instruction.id)).length,
+      ),
       newestUnread: recent.find((instruction) => !instruction.readAt) ?? null,
       recent,
     };

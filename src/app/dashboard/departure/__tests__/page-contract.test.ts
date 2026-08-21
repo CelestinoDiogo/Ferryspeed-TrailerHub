@@ -40,8 +40,7 @@ describe("Departure page lifecycle contract", () => {
 
   it("excludes reserved trailers from departure eligibility and re-checks on write", () => {
     expect(pageSource).toContain("withTrailerJobCommitments");
-    expect(pageSource).toContain(".from(\"delivery_bookings\")");
-    expect(pageSource).toContain(".from(\"export_allocations\")");
-    expect(pageSource).toContain("is no longer available for departure");
+    expect(pageSource).toContain("confirmTrailerDeparture");
+    expect(pageSource).toContain("isEligibleForDeparture");
   });
 });

@@ -6,11 +6,13 @@ const {
   createTrailerActivityMock,
   getTemperatureToleranceSettingsFromStorageMock,
   isTemperatureOutOfRangeMock,
+  confirmTrailerDepartureMock,
 } = vi.hoisted(() => ({
   moveCompoundTrailerMock: vi.fn(),
   createTrailerActivityMock: vi.fn(),
   getTemperatureToleranceSettingsFromStorageMock: vi.fn(),
   isTemperatureOutOfRangeMock: vi.fn(),
+  confirmTrailerDepartureMock: vi.fn(),
 }));
 
 vi.mock("@/lib/compound-yard", () => ({
@@ -24,6 +26,10 @@ vi.mock("@/lib/trailer-activity", () => ({
 vi.mock("@/lib/temperature-tolerance", () => ({
   getTemperatureToleranceSettingsFromStorage: getTemperatureToleranceSettingsFromStorageMock,
   isTemperatureOutOfRange: isTemperatureOutOfRangeMock,
+}));
+
+vi.mock("@/lib/operations/confirm-departure", () => ({
+  confirmTrailerDeparture: confirmTrailerDepartureMock,
 }));
 
 type QueryRow = Record<string, unknown>;
@@ -368,5 +374,94 @@ describe("executeMobileAction", () => {
 
     expect(result.status).toBe("failed");
     expect(result.retryable).toBe(true);
+  });
+
+  it("rejects CONFIRM_DEPARTURE when the trailer is reserved", async () => {
+    const { TrailerJobConflictError, TRAILER_NOT_AVAILABLE_FOR_DEPARTURE_CODE } = await import("@/lib/trailer-job-eligibility");
+    confirmTrailerDepartureMock.mockRejectedValue(
+      new TrailerJobConflictError(TRAILER_NOT_AVAILABLE_FOR_DEPARTURE_CODE, "Trailer FS1001 is reserved or is no longer available for departure."),
+    );
+
+    const result = await executeMobileAction(createSupabaseMock({}), user, {
+      actionType: "CONFIRM_DEPARTURE",
+      payload: {
+        trailerId: "11111111-1111-4111-8111-111111111111",
+        trailerNumber: "FS1001",
+      },
+    });
+
+    expect(result.status).toBe("conflict");
+    expect(result.conflict?.code).toBe(TRAILER_NOT_AVAILABLE_FOR_DEPARTURE_CODE);
+    expect(result.ok).toBe(false);
+  });
+
+  it("treats repeated CONFIRM_DEPARTURE on an already departed trailer as success", async () => {
+    confirmTrailerDepartureMock.mockResolvedValue({
+      alreadyDeparted: true,
+      trailerId: "11111111-1111-4111-8111-111111111111",
+      trailerNumber: "FS1001",
+      snapshot: {
+        trailerId: "11111111-1111-4111-8111-111111111111",
+        trailerNumber: "FS1001",
+        expectedDepartureAt: "2026-08-20T10:00:00.000Z",
+        previousDepartureDate: "2026-08-20T10:00:00.000Z",
+        previousDepartureTime: "11:00:00",
+        previousCompoundPosition: null,
+        previousOperationalStatus: "Departed",
+      },
+      updated: null,
+    });
+
+    const result = await executeMobileAction(createSupabaseMock({}), user, {
+      actionType: "CONFIRM_DEPARTURE",
+      payload: {
+        trailerId: "11111111-1111-4111-8111-111111111111",
+        trailerNumber: "FS1001",
+      },
+    });
+
+    expect(result.status).toBe("success");
+    expect(result.message).toContain("already departed");
+  });
+
+  it("confirms an eligible departure through the shared helper", async () => {
+    confirmTrailerDepartureMock.mockResolvedValue({
+      alreadyDeparted: false,
+      trailerId: "11111111-1111-4111-8111-111111111111",
+      trailerNumber: "FS1001",
+      snapshot: {
+        trailerId: "11111111-1111-4111-8111-111111111111",
+        trailerNumber: "FS1001",
+        expectedDepartureAt: "2026-08-20T12:00:00.000Z",
+        previousDepartureDate: null,
+        previousDepartureTime: null,
+        previousCompoundPosition: "P10",
+        previousOperationalStatus: "Ready",
+      },
+      updated: {
+        departure_date: "2026-08-20T12:00:00.000Z",
+        departure_time: "13:00:00",
+        operational_status: "Departed",
+        compound_position: null,
+      },
+    });
+
+    const result = await executeMobileAction(createSupabaseMock({}), user, {
+      actionType: "CONFIRM_DEPARTURE",
+      payload: {
+        trailerId: "11111111-1111-4111-8111-111111111111",
+        trailerNumber: "FS1001",
+      },
+    });
+
+    expect(result.status).toBe("success");
+    expect(result.message).toContain("departed");
+    expect(confirmTrailerDepartureMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        trailerId: "11111111-1111-4111-8111-111111111111",
+        operatorName: "Supervisor One",
+      }),
+    );
   });
 });

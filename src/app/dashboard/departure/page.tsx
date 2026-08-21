@@ -6,7 +6,8 @@ import { TrailerOperationsPanel } from "@/components/operations/trailer-operatio
 import { SuccessToast } from "@/components/common/success-toast";
 import { TrailerHistoryDrawer } from "@/components/trailers/trailer-history-drawer";
 import { createTrailerActivity } from "@/lib/trailer-activity";
-import { logTrailerEvent, resolveAuditOperatorName } from "@/lib/trailer-audit-log";
+import { resolveAuditOperatorName } from "@/lib/trailer-audit-log";
+import { confirmTrailerDeparture, type DepartureTransitionSnapshot } from "@/lib/operations/confirm-departure";
 import { DepartureUndoConflictError, undoDeparture } from "@/lib/operations/departure-lifecycle";
 import { isEligibleForDeparture, type DepartureImportPreview } from "@/lib/imports/departure-import";
 import {
@@ -35,16 +36,6 @@ type TrailerRecord = {
   is_local?: boolean | null;
   hasActiveDelivery?: boolean | null;
   activeExportStatus?: string | null;
-};
-
-type DepartureTransitionSnapshot = {
-  trailerId: string;
-  trailerNumber: string | null;
-  expectedDepartureAt: string;
-  previousDepartureDate: string | null;
-  previousDepartureTime: string | null;
-  previousCompoundPosition: string | null;
-  previousOperationalStatus: string | null;
 };
 
 type DepartureStatusFilter = string;
@@ -503,192 +494,19 @@ export default function DeparturePage() {
     setTrailers((rows) => rows.map((row) => (row.id === trailerId ? { ...row, compound_position: nextPosition } : row)));
   };
 
-  const registerDepartureHistory = async (
-    trailerId: string,
-    trailerNumber: string | null,
-    previousValue: DepartureTransitionSnapshot,
-    updatePayload: { departure_date: string; departure_time: string; operational_status: string; compound_position: null },
-    operatorName: string,
-  ) => {
-    const { error: eventError } = await supabase.from("trailer_events").insert({
-      trailer_id: trailerId,
-      trailer_number: trailerNumber,
-      event_type: "departure_registered",
-      event_description: "Trailer departure registered.",
-      old_value: {
-        departure_date: previousValue.previousDepartureDate,
-        departure_time: previousValue.previousDepartureTime,
-        compound_position: previousValue.previousCompoundPosition,
-        operational_status: previousValue.previousOperationalStatus,
-      },
-      new_value: {
-        departure_date: updatePayload.departure_date,
-        departure_time: updatePayload.departure_time,
-        compound_position: updatePayload.compound_position,
-        operational_status: updatePayload.operational_status,
-      },
-    });
-
-    if (eventError) {
-      throw new Error(eventError.message || "Unable to create trailer event history.");
-    }
-
-    await logTrailerEvent({
-      trailerId,
-      trailerNumber,
-      eventType: "departure_registered",
-      description: "Trailer departure registered.",
-      previousValue: {
-        departure_date: previousValue.previousDepartureDate,
-        departure_time: previousValue.previousDepartureTime,
-        compound_position: previousValue.previousCompoundPosition,
-        operational_status: previousValue.previousOperationalStatus,
-      },
-      newValue: {
-        departure_date: updatePayload.departure_date,
-        departure_time: updatePayload.departure_time,
-        compound_position: updatePayload.compound_position,
-        operational_status: updatePayload.operational_status,
-      },
-      sourceModule: "departure",
-      performedBy: operatorName,
-    });
-
-    await createTrailerActivity({
-      trailerId,
-      trailerNumber: trailerNumber ?? trailerId,
-      eventType: "departed",
-      eventTitle: "Trailer departed",
-      eventDescription: "Trailer departure registered from departure list.",
-      sourceModule: "operations",
-      sourceRecordId: trailerId,
-      previousStatus: previousValue.previousOperationalStatus,
-      newStatus: "Departed",
-      previousCompoundPosition: previousValue.previousCompoundPosition,
-      newCompoundPosition: null,
-      metadata: {
-        departure_date: updatePayload.departure_date,
-        departure_time: updatePayload.departure_time,
-      },
-      performedBy: operatorName,
-      createdAt: updatePayload.departure_date,
-    });
-  };
-
   const performDeparture = async (targetTrailerId: string) => {
-    const now = new Date();
-    const nowIso = now.toISOString();
-    const nowTime = now.toTimeString().slice(0, 8);
+    const result = await confirmTrailerDeparture(supabase, {
+      trailerId: targetTrailerId,
+      operatorName: await resolveAuditOperatorName(),
+    });
 
-    const { data: currentTrailer, error: currentTrailerError } = await supabase
-      .from("trailers")
-      .select("id, trailer_number, departure_date, departure_time, compound_position, operational_status, is_local")
-      .eq("id", targetTrailerId)
-      .single();
-
-    if (currentTrailerError || !currentTrailer) {
-      throw new Error(currentTrailerError?.message || "Unable to load current trailer state before departure.");
-    }
-
-    if (currentTrailer.departure_date) {
-      throw new Error(`Trailer ${currentTrailer.trailer_number ?? targetTrailerId} is already departed.`);
-    }
-
-    const [{ data: activeDeliveries, error: deliveryError }, { data: activeExports, error: exportError }] = await Promise.all([
-      supabase
-        .from("delivery_bookings")
-        .select("trailer_id, status")
-        .eq("trailer_id", targetTrailerId)
-        .not("status", "in", DELIVERY_BOOKING_RELEASE_STATUS_QUERY)
-        .limit(1),
-      supabase
-        .from("export_allocations")
-        .select("trailer_id, status")
-        .eq("trailer_id", targetTrailerId)
-        .in("status", [...EXPORT_ACTIVE_STATUS_QUERY_VALUES])
-        .limit(1),
-    ]);
-
-    if (deliveryError) {
-      throw new Error(deliveryError.message || "Unable to check delivery reservations before departure.");
-    }
-
-    if (exportError) {
-      throw new Error(exportError.message || "Unable to check export reservations before departure.");
-    }
-
-    if (!isEligibleForDeparture({
-      trailer_number: currentTrailer.trailer_number,
-      departure_date: currentTrailer.departure_date,
-      is_local: currentTrailer.is_local,
-      operational_status: currentTrailer.operational_status,
-      hasActiveDelivery: getTrailerIdsReservedByActiveDeliveryBookings(activeDeliveries ?? []).has(targetTrailerId),
-      activeExportStatus: getActiveExportStatusByTrailerId(activeExports ?? []).get(targetTrailerId) ?? null,
-    })) {
-      throw new Error(`Trailer ${currentTrailer.trailer_number ?? targetTrailerId} is reserved or is no longer available for departure.`);
-    }
-
-    const previousValue: DepartureTransitionSnapshot = {
-      trailerId: currentTrailer.id,
-      trailerNumber: currentTrailer.trailer_number ?? null,
-      expectedDepartureAt: nowIso,
-      previousDepartureDate: currentTrailer.departure_date ?? null,
-      previousDepartureTime: currentTrailer.departure_time ?? null,
-      previousCompoundPosition: currentTrailer.compound_position ?? null,
-      previousOperationalStatus: currentTrailer.operational_status ?? null,
-    };
-
-    const updatePayload = {
-      departure_date: nowIso,
-      departure_time: nowTime,
-      operational_status: "Departed",
-      compound_position: null,
-    };
-
-    const { data, error } = await supabase
-      .from("trailers")
-      .update(updatePayload)
-      .eq("id", targetTrailerId)
-      .is("departure_date", null)
-      .select("id")
-      .maybeSingle();
-
-    if (error) {
-      throw new Error(error.message || "Unable to confirm departure.");
-    }
-
-    if (!data) {
-      throw new Error("No trailer was updated. Another operator may have already completed this action.");
-    }
-
-    const operatorName = await resolveAuditOperatorName();
-
-    try {
-      await registerDepartureHistory(currentTrailer.id, currentTrailer.trailer_number ?? null, previousValue, updatePayload, operatorName);
-    } catch {
-      const rollbackResult = await supabase
-        .from("trailers")
-        .update({
-          departure_date: previousValue.previousDepartureDate,
-          departure_time: previousValue.previousDepartureTime,
-          operational_status: previousValue.previousOperationalStatus,
-          compound_position: previousValue.previousCompoundPosition,
-        })
-        .eq("id", currentTrailer.id)
-        .eq("departure_date", updatePayload.departure_date)
-        .select("id")
-        .maybeSingle();
-
-      if (rollbackResult.error || !rollbackResult.data) {
-        throw new Error("Departure update succeeded but history logging failed, and automatic rollback could not be completed.");
-      }
-
-      throw new Error("Departure was rolled back because history logging failed.");
+    if (result.alreadyDeparted) {
+      throw new Error(`Trailer ${result.trailerNumber ?? targetTrailerId} is already departed.`);
     }
 
     return {
-      snapshot: previousValue,
-      trailerNumber: currentTrailer.trailer_number ?? null,
+      snapshot: result.snapshot,
+      trailerNumber: result.trailerNumber,
     };
   };
 
