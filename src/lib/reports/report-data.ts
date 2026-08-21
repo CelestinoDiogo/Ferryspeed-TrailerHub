@@ -170,7 +170,7 @@ export async function loadVesselArrivalsReportData(
       .single(),
     supabase
       .from("vessel_operation_trailers")
-      .select("id, vessel_operation_id, trailer_id, trailer_number, customer, booking_reference, load_status, load_description, temperature_required, expected_front_temperature, expected_rear_temperature, expected_temperature_unit, priority_level, priority_reason, planned_destination, planning_notes, ownership_type, trailer_source, external_company, status, arrived_at, arrival_status, arrival_confirmed_at, arrival_record_id, arrival_confirmed_by, inspection_started_at, inspection_completed_at, position_assigned_at, assigned_position, has_damage, has_temperature_alert, created_at, updated_at")
+      .select("id, vessel_operation_id, trailer_id, trailer_number, customer, booking_reference, load_status, load_description, temperature_required, expected_front_temperature, expected_rear_temperature, expected_temperature_unit, priority_level, priority_reason, planned_destination, planning_notes, ownership_type, trailer_source, external_company, status, arrived_at, discharged_at, arrival_status, arrival_confirmed_at, arrival_record_id, arrival_confirmed_by, inspection_started_at, inspection_completed_at, position_assigned_at, assigned_position, has_damage, has_temperature_alert, created_at, updated_at")
       .eq("vessel_operation_id", operationId)
       .order("created_at", { ascending: true }),
   ]);
@@ -236,6 +236,7 @@ export type OperationsCommandCentreVesselTrailerRow = {
   priority_level: string | null;
   status: string;
   arrived_at: string | null;
+  discharged_at: string | null;
   arrival_status: string | null;
   arrival_confirmed_at: string | null;
   arrival_record_id: string | null;
@@ -262,7 +263,7 @@ export async function loadOperationsCommandCentreData(supabase: ReportSupabase) 
     supabase
       .from("vessel_operation_trailers")
       .select(
-        "id, vessel_operation_id, trailer_id, trailer_number, customer, booking_reference, load_status, priority_level, status, arrived_at, arrival_status, arrival_confirmed_at, arrival_record_id, inspection_started_at, inspection_completed_at, assigned_position, has_damage, has_temperature_alert, created_at, updated_at",
+        "id, vessel_operation_id, trailer_id, trailer_number, customer, booking_reference, load_status, priority_level, status, arrived_at, discharged_at, arrival_status, arrival_confirmed_at, arrival_record_id, inspection_started_at, inspection_completed_at, assigned_position, has_damage, has_temperature_alert, created_at, updated_at",
       )
       .order("created_at", { ascending: false }),
     loadExportAllocationsForReport(supabase),

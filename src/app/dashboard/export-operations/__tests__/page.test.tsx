@@ -3,20 +3,29 @@
 import "@testing-library/jest-dom/vitest";
 import React from "react";
 import { cleanup, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getLocalDateKey } from "@/lib/operational-readiness";
 
 const mockLoadExportAllocationsForReport = vi.fn();
 let searchParamsValue = "";
 
+const { replaceMock } = vi.hoisted(() => ({
+  replaceMock: vi.fn(),
+}));
+
 vi.mock("next/navigation", () => ({
-  useRouter: () => ({ replace: vi.fn(), push: vi.fn() }),
+  useRouter: () => ({ replace: replaceMock, push: vi.fn() }),
   usePathname: () => "/dashboard/export-operations",
   useSearchParams: () => new URLSearchParams(searchParamsValue),
 }));
 
 vi.mock("@/lib/reports/report-data", () => ({
   loadExportAllocationsForReport: (...args: unknown[]) => mockLoadExportAllocationsForReport(...args),
+}));
+
+vi.mock("@/lib/voice/session", () => ({
+  getSessionToken: vi.fn(async () => "token-123"),
 }));
 
 vi.mock("@/lib/supabase", () => ({
@@ -194,5 +203,135 @@ describe("Export operations ownership filtering", () => {
 
     expect(await screen.findByText("0 allocations")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Print / Export" })).toBeEnabled();
+  });
+});
+
+describe("Export operations header cards", () => {
+  beforeEach(() => {
+    mockLoadExportAllocationsForReport.mockResolvedValue([
+      {
+        id: "a-company",
+        trailer_id: "t-company",
+        trailer_number: "PRO100",
+        customer: "Customer A",
+        status: "allocated",
+        priority: "normal",
+        collection_date: getLocalDateKey(),
+      },
+      {
+        id: "a-customer",
+        trailer_id: "t-outsourcing",
+        trailer_number: "PFC200",
+        customer: "Customer B",
+        status: "delivered_empty",
+        priority: "high",
+        collection_date: getLocalDateKey(),
+      },
+      {
+        id: "a-completed",
+        trailer_id: "t-company",
+        trailer_number: "PRO300",
+        customer: "Customer C",
+        status: "completed",
+        priority: "urgent",
+        collection_date: getLocalDateKey(),
+      },
+    ]);
+  });
+
+  it("filters to active allocations from the Active card", async () => {
+    searchParamsValue = "history=today&status=active";
+
+    render(<ExportOperationsPage />);
+
+    expect(await screen.findByText("2 allocations")).toBeInTheDocument();
+    expect(screen.getAllByText("PRO100").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("PFC200").length).toBeGreaterThan(0);
+    expect(screen.queryByText("PRO300")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Active/ })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("filters to at-customer allocations from the At Customer card", async () => {
+    searchParamsValue = "history=today&status=at_customer";
+
+    render(<ExportOperationsPage />);
+
+    expect(await screen.findByText("1 allocation")).toBeInTheDocument();
+    expect(screen.getAllByText("PFC200").length).toBeGreaterThan(0);
+    expect(screen.queryByText("PRO100")).not.toBeInTheDocument();
+    expect(screen.queryByText("PRO300")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /At Customer/ })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("filters to completed allocations from the Completed card", async () => {
+    searchParamsValue = "history=today&status=completed";
+
+    render(<ExportOperationsPage />);
+
+    expect(await screen.findByText("1 allocation")).toBeInTheDocument();
+    expect(screen.getAllByText("PRO300").length).toBeGreaterThan(0);
+    expect(screen.queryByText("PRO100")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Completed/ })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("resets to all allocations from the Total Allocations card", async () => {
+    searchParamsValue = "history=today";
+
+    render(<ExportOperationsPage />);
+
+    expect(await screen.findByText("3 allocations")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Total Allocations/ })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("shows unassigned allocations as Trailer to be selected and still counts them as Active", async () => {
+    mockLoadExportAllocationsForReport.mockResolvedValue([
+      {
+        id: "a-unassigned",
+        trailer_id: null,
+        trailer_number: null,
+        customer: "Blank Trailer Customer",
+        status: "allocated",
+        priority: "normal",
+        collection_date: getLocalDateKey(),
+      },
+    ]);
+    searchParamsValue = "history=today";
+
+    render(<ExportOperationsPage />);
+
+    expect(await screen.findByText("1 allocation")).toBeInTheDocument();
+    expect(screen.getAllByText("Trailer to be selected").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Assign a trailer before continuing this operation.").length).toBeGreaterThan(0);
+    expect(screen.queryByRole("button", { name: "Delivered Empty" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Active/ })).toHaveTextContent("1");
+  });
+
+  it("keeps existing customer filters when a header card is clicked", async () => {
+    searchParamsValue = "history=today&customer=Customer%20A";
+
+    render(<ExportOperationsPage />);
+    const user = userEvent.setup();
+
+    expect(await screen.findByText("1 allocation")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Active/ }));
+
+    expect(replaceMock).toHaveBeenCalled();
+    const nextUrl = String(replaceMock.mock.calls.at(-1)?.[0] ?? "");
+    expect(nextUrl).toContain("status=active");
+    expect(nextUrl).toContain("customer=Customer");
+  });
+
+  it("toggles the same header card back to all allocations", async () => {
+    searchParamsValue = "history=today&status=completed&customer=Customer%20C";
+
+    render(<ExportOperationsPage />);
+    const user = userEvent.setup();
+
+    expect(await screen.findByText("1 allocation")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Completed/ }));
+
+    const nextUrl = String(replaceMock.mock.calls.at(-1)?.[0] ?? "");
+    expect(nextUrl).not.toContain("status=completed");
+    expect(nextUrl).toContain("customer=Customer");
   });
 });

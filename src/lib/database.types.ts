@@ -425,7 +425,7 @@ export type Database = {
       export_allocations: {
         Row: {
           id: string;
-          trailer_id: string;
+          trailer_id: string | null;
           trailer_number: string | null;
           customer: string | null;
           collection_address: string | null;
@@ -558,6 +558,7 @@ export type Database = {
           manifest_change_reason: string | null;
           status: string | null;
           arrived_at: string | null;
+          discharged_at: string | null;
           arrival_status: string;
           arrival_confirmed_at: string | null;
           arrival_record_id: string | null;

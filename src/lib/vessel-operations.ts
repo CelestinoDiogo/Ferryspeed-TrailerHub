@@ -71,6 +71,7 @@ export type VesselOperationTrailerRecord = {
   manifest_change_reason?: string | null;
   status: VesselTrailerStatus;
   arrived_at?: string | null;
+  discharged_at?: string | null;
   arrival_status?: "expected" | "arrived" | "not_arrived" | "available_for_arrival" | "cancelled" | "not_discharged" | "no_show" | null;
   arrival_confirmed_at?: string | null;
   arrival_record_id?: string | null;
@@ -445,6 +446,45 @@ export const formatVesselTime = (value?: string | null) => {
 export const normalizeTrailerNumber = (value?: string | null) =>
   normalizeTrimmed(value).replace(/\s+/g, " ").toUpperCase();
 
+export const compareTrailerNumber = (left?: string | null, right?: string | null) => {
+  const leftValue = normalizeTrailerNumber(left);
+  const rightValue = normalizeTrailerNumber(right);
+
+  if (!leftValue && !rightValue) {
+    return 0;
+  }
+  if (!leftValue) {
+    return 1;
+  }
+  if (!rightValue) {
+    return -1;
+  }
+
+  return leftValue.localeCompare(rightValue, undefined, {
+    numeric: true,
+    sensitivity: "base",
+  });
+};
+
+export const isPendingVesselArrivalStatus = (arrivalStatus?: string | null) => {
+  const normalized = normalizeTrimmed(arrivalStatus).toLowerCase();
+  return normalized === "expected" || normalized === "available_for_arrival";
+};
+
+export const isArrivedVesselArrivalStatus = (arrivalStatus?: string | null) =>
+  normalizeTrimmed(arrivalStatus).toLowerCase() === "arrived";
+
+export const getVesselTrailerDischargedAt = (
+  trailer: Pick<VesselOperationTrailerRecord, "discharged_at"> | { discharged_at?: string | null },
+) => trailer.discharged_at ?? null;
+
+export const getVesselTrailerReceptionAt = (
+  trailer: Pick<VesselOperationTrailerRecord, "arrival_confirmed_at" | "arrived_at"> | {
+    arrival_confirmed_at?: string | null;
+    arrived_at?: string | null;
+  },
+) => trailer.arrival_confirmed_at ?? trailer.arrived_at ?? null;
+
 export const normalizeCompoundPosition = (value?: string | null) => {
   const trimmed = value?.trim().toUpperCase();
   if (!trimmed) {
@@ -682,18 +722,8 @@ export const getVesselTrailerSortRank = (status: VesselTrailerStatus) => {
   }
 };
 
-export const sortVesselOperationTrailersForArrivals = <T extends { priority_level?: VesselPriorityLevel | null; status?: VesselTrailerStatus | null; trailer_number?: string | null }>(items: T[]) =>
-  [...items].sort((left, right) => {
-    const leftPriority = left.priority_level === "priority" ? 0 : 1;
-    const rightPriority = right.priority_level === "priority" ? 0 : 1;
-    if (leftPriority !== rightPriority) return leftPriority - rightPriority;
-
-    const leftStatus = getVesselTrailerSortRank((left.status ?? "expected") as VesselTrailerStatus);
-    const rightStatus = getVesselTrailerSortRank((right.status ?? "expected") as VesselTrailerStatus);
-    if (leftStatus !== rightStatus) return leftStatus - rightStatus;
-
-    return normalizeVesselText(left.trailer_number).localeCompare(normalizeVesselText(right.trailer_number));
-  });
+export const sortVesselOperationTrailersForArrivals = <T extends { trailer_number?: string | null }>(items: T[]) =>
+  [...items].sort((left, right) => compareTrailerNumber(left.trailer_number, right.trailer_number));
 
 export const computeVesselOperationSummary = (
   trailers: Array<Pick<VesselOperationTrailerRecord, "priority_level" | "status" | "has_damage" | "has_temperature_alert" | "arrival_status">>,

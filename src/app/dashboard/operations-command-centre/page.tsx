@@ -13,6 +13,7 @@ import {
   type ExportAllocationRecord,
 } from "@/lib/export-allocation";
 import { advanceExportAllocationStatus } from "@/lib/operations/export-lifecycle";
+import { markVesselTrailerDischarged } from "@/lib/operations/mark-vessel-trailer-discharged";
 import { runOperationalAlertDetection, type OperationalAlertRow } from "@/lib/operational-alerts";
 import {
   buildTrailerOperationalPositionFromContext,
@@ -785,42 +786,20 @@ export default function OperationsCommandCentrePage() {
 
       try {
         const nowIso = new Date().toISOString();
+        const discharged = await markVesselTrailerDischarged({
+          supabase,
+          vesselTrailerId: card.vesselTrailerId,
+          operatorName: "TrailerHub User",
+          dischargedAt: nowIso,
+          sourceModule: "operations",
+          eventDescription: "Trailer discharged from vessel from Operations Command Centre.",
+        });
 
-        const { data, error: updateError } = await supabase
-          .from("vessel_operation_trailers")
-          .update({
-            status: "arrived",
-            arrival_status: "arrived",
-            arrived_at: nowIso,
-            arrival_confirmed_at: nowIso,
-            updated_at: nowIso,
-          })
-          .eq("id", card.vesselTrailerId)
-          .in("arrival_status", ["expected", "available_for_arrival"])
-          .is("arrival_record_id", null)
-          .select("id")
-          .maybeSingle();
-
-        if (updateError) {
-          throw new Error(updateError.message || "Unable to mark trailer as arrived.");
-        }
-
-        if (!data) {
+        if (discharged.alreadyDischarged) {
           throw new Error("Arrival is no longer available for this trailer.");
         }
 
-        await createTrailerActivity({
-          trailerId: card.trailerId,
-          trailerNumber: card.trailerNumber,
-          eventType: "vessel_arrived",
-          eventTitle: "Arrived",
-          eventDescription: "Trailer marked as arrived from Operations Command Centre.",
-          sourceModule: "operations",
-          sourceRecordId: card.vesselTrailerId,
-          previousStatus: "expected",
-          newStatus: "arrived",
-          createdAt: nowIso,
-        });
+        const dischargedAt = discharged.dischargedAt ?? nowIso;
 
         setVesselTrailers((rows) =>
           rows.map((row) =>
@@ -829,8 +808,9 @@ export default function OperationsCommandCentrePage() {
                   ...row,
                   status: "arrived",
                   arrival_status: "arrived",
-                  arrived_at: nowIso,
-                  arrival_confirmed_at: nowIso,
+                  discharged_at: dischargedAt,
+                  arrived_at: row.arrived_at ?? dischargedAt,
+                  arrival_confirmed_at: row.arrival_confirmed_at ?? dischargedAt,
                   updated_at: nowIso,
                 }
               : row,

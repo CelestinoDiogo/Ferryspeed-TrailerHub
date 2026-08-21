@@ -1,6 +1,7 @@
 import {
   canCancelVesselTrailer,
   canUndoVesselTrailerCancellation,
+  compareTrailerNumber,
   formatVesselDateTime,
   getVesselPriorityClass,
   getVesselPriorityLabel,
@@ -219,24 +220,7 @@ export function VesselTrailerList({
     });
 
     return [...list].sort((left, right) => {
-      const leftValue = left.trailer_number?.trim() ?? "";
-      const rightValue = right.trailer_number?.trim() ?? "";
-
-      if (!leftValue && !rightValue) {
-        return 0;
-      }
-      if (!leftValue) {
-        return 1;
-      }
-      if (!rightValue) {
-        return -1;
-      }
-
-      const base = leftValue.localeCompare(rightValue, undefined, {
-        numeric: true,
-        sensitivity: "base",
-      });
-
+      const base = compareTrailerNumber(left.trailer_number, right.trailer_number);
       return sortBy === "trailer_desc" ? -base : base;
     });
   }, [activeFilter, prefixFilter, searchTerm, sortBy, sortedTrailers]);

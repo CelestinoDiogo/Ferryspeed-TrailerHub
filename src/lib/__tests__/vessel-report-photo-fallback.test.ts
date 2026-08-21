@@ -174,6 +174,7 @@ const makeBaseDataset = (photos: AnyRow[]): MockDataset => ({
       planning_notes: null,
       status: "inspected",
       arrived_at: "2026-08-01T09:20:00.000Z",
+      discharged_at: "2026-08-01T09:10:00.000Z",
       arrival_status: "arrived",
       arrival_confirmed_at: "2026-08-01T09:20:00.000Z",
       arrival_record_id: null,
@@ -339,6 +340,41 @@ describe("getVesselOperationReport photo fallback behavior", () => {
 
     expect(report.trailers[0]?.photos.map((photo) => photo.id)).toEqual(["p-1", "p-2"]);
   });
+
+  it("uses discharged_at only for Discharged Time and ignores later reception timestamps", async () => {
+    const dataset = makeBaseDataset([]);
+    dataset.vessel_operation_trailers = dataset.vessel_operation_trailers?.map((row) => ({
+      ...row,
+      discharged_at: "2026-08-01T09:10:00.000Z",
+      arrived_at: "2026-08-01T09:20:00.000Z",
+      arrival_confirmed_at: "2026-08-01T09:20:00.000Z",
+    }));
+    const { supabase } = makeSupabaseMock(dataset);
+
+    const report = await getVesselOperationReport(supabase as never, "op-1");
+
+    expect(report.trailers[0]?.dischargedAt).toBe("2026-08-01T09:10:00.000Z");
+    expect(report.trailers[0]?.arrivedAt).toBe("2026-08-01T09:20:00.000Z");
+    expect(report.trailers[0]?.arrivalTime).toBe("2026-08-01T09:20:00.000Z");
+    expect(report.timeline.some((item) => item.event === "Trailer discharged from vessel.")).toBe(true);
+    expect(report.timeline.some((item) => item.event === "Trailer arrival/reception confirmed.")).toBe(true);
+  });
+
+  it("leaves Discharged Time blank when historical discharge time is unknown", async () => {
+    const dataset = makeBaseDataset([]);
+    dataset.vessel_operation_trailers = dataset.vessel_operation_trailers?.map((row) => ({
+      ...row,
+      discharged_at: null,
+      arrived_at: "2026-08-01T09:20:00.000Z",
+      arrival_confirmed_at: "2026-08-01T09:20:00.000Z",
+    }));
+    const { supabase } = makeSupabaseMock(dataset);
+
+    const report = await getVesselOperationReport(supabase as never, "op-1");
+
+    expect(report.trailers[0]?.dischargedAt).toBeNull();
+    expect(report.trailers[0]?.arrivedAt).toBe("2026-08-01T09:20:00.000Z");
+  });
 });
 
 describe("getVesselOperationReport operation scoping", () => {
@@ -348,8 +384,8 @@ describe("getVesselOperationReport operation scoping", () => {
       { id: "op-b", vessel_name: "Vessel B", sailing_reference: "B", status: "completed", list_status: "confirmed", created_at: "2026-08-10T07:00:00.000Z", updated_at: "2026-08-10T12:00:00.000Z" },
     ],
     vessel_operation_trailers: [
-      { id: "vt-a", vessel_operation_id: "op-a", trailer_id: "tr-a", trailer_number: "PFC01", priority_level: "priority", planning_notes: "Note A", status: "inspected", arrival_status: "arrived", arrived_at: "2026-08-01T09:00:00.000Z", arrival_confirmed_at: "2026-08-01T09:00:00.000Z", inspection_completed_at: "2026-08-01T09:30:00.000Z", has_damage: false, has_temperature_alert: false, expected_temperature_unit: "C" },
-      { id: "vt-b", vessel_operation_id: "op-b", trailer_id: "tr-b", trailer_number: "PFC01", priority_level: "normal", planning_notes: "Note B", status: "inspected", arrival_status: "arrived", arrived_at: "2026-08-10T10:00:00.000Z", arrival_confirmed_at: "2026-08-10T10:00:00.000Z", inspection_completed_at: "2026-08-10T10:30:00.000Z", has_damage: true, has_temperature_alert: true, expected_temperature_unit: "C" },
+      { id: "vt-a", vessel_operation_id: "op-a", trailer_id: "tr-a", trailer_number: "PFC01", priority_level: "priority", planning_notes: "Note A", status: "inspected", arrival_status: "arrived", arrived_at: "2026-08-01T09:00:00.000Z", discharged_at: "2026-08-01T08:50:00.000Z", arrival_confirmed_at: "2026-08-01T09:00:00.000Z", inspection_completed_at: "2026-08-01T09:30:00.000Z", has_damage: false, has_temperature_alert: false, expected_temperature_unit: "C" },
+      { id: "vt-b", vessel_operation_id: "op-b", trailer_id: "tr-b", trailer_number: "PFC01", priority_level: "normal", planning_notes: "Note B", status: "inspected", arrival_status: "arrived", arrived_at: "2026-08-10T10:00:00.000Z", discharged_at: "2026-08-10T09:50:00.000Z", arrival_confirmed_at: "2026-08-10T10:00:00.000Z", inspection_completed_at: "2026-08-10T10:30:00.000Z", has_damage: true, has_temperature_alert: true, expected_temperature_unit: "C" },
     ],
     trailers: [
       { id: "tr-a", trailer_number: "CURRENT-A", load_status: "Empty", customer: "Current A", trailer_source: "company", operational_status: "Current A" },

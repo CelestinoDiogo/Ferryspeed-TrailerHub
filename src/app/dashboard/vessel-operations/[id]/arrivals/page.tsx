@@ -14,9 +14,9 @@ import { PrintSummary } from "@/components/print/print-summary";
 import { PrintTable } from "@/components/print/print-table";
 import { ConfirmReceptionModal } from "../components/confirm-reception-modal";
 import { useVesselReception } from "../hooks/use-vessel-reception";
+import { markVesselTrailerDischarged } from "@/lib/operations/mark-vessel-trailer-discharged";
 import { loadVesselArrivalsReportData } from "@/lib/reports/report-data";
 import { supabase } from "@/lib/supabase";
-import { createTrailerActivity } from "@/lib/trailer-activity";
 import {
   canConfirmVesselTrailerReception,
   formatVesselDateTime,
@@ -291,7 +291,7 @@ function VesselArrivalsPageContent() {
         return;
       }
 
-      if (trailer.arrival_status !== "available_for_arrival") {
+      if (trailer.arrival_status !== "available_for_arrival" && trailer.arrival_status !== "expected") {
         setError("Trailer is not available for arrival.");
         return;
       }
@@ -303,77 +303,39 @@ function VesselArrivalsPageContent() {
       try {
         const nowIso = new Date().toISOString();
         const operatorName = await resolveOperatorName();
+        const discharged = await markVesselTrailerDischarged({
+          supabase,
+          vesselTrailerId: trailer.id,
+          operatorName,
+          dischargedAt: nowIso,
+          sourceModule: "vessel",
+        });
 
-        const { data: updatedTrailer, error: updateError } = await supabase
-          .from("vessel_operation_trailers")
-          .update({
-            arrival_status: "arrived",
-            status: "arrived",
-            arrival_confirmed_at: nowIso,
-            arrived_at: nowIso,
-            arrival_confirmed_by: operatorName,
-            updated_at: nowIso,
-          })
-          .eq("id", trailer.id)
-          .eq("arrival_status", "available_for_arrival")
-          .is("arrival_record_id", null)
-          .select("id, trailer_number")
-          .maybeSingle();
-
-        if (updateError) {
-          throw updateError;
-        }
-
-        if (!updatedTrailer) {
+        if (discharged.alreadyDischarged) {
           setError("Arrival already confirmed.");
           return;
         }
 
-        const { error: eventError } = await supabase.from("trailer_events").insert({
-          trailer_id: null,
-          trailer_number: trailer.trailer_number ?? null,
-          event_type: "vessel_trailer_marked_arrived",
-          event_description: "Expected trailer marked as arrived.",
-          old_value: {
-            vessel_trailer_id: trailer.id,
-            arrival_status: trailer.arrival_status,
-          },
-          new_value: {
-            vessel_trailer_id: trailer.id,
-            arrival_status: "arrived",
-            arrived_at: nowIso,
-            arrived_by: operatorName,
-          },
-        });
-
-        if (eventError) {
-          console.error("Unable to save mark arrived event:", eventError);
-        }
-
-        try {
-          await createTrailerActivity({
-            trailerId: trailer.trailer_id ?? null,
-            trailerNumber: trailer.trailer_number ?? "",
-            eventType: "vessel_arrived",
-            eventTitle: "Vessel trailer marked arrived",
-            eventDescription: "Expected trailer marked as arrived.",
-            sourceModule: "vessel",
-            sourceRecordId: trailer.id,
-            previousStatus: trailer.arrival_status ?? trailer.status,
-            newStatus: "arrived",
-            metadata: {
-              vessel_trailer_id: trailer.id,
-              vessel_operation_id: trailer.vessel_operation_id,
-              arrived_at: nowIso,
-            },
-            performedBy: operatorName,
-            createdAt: nowIso,
-          });
-        } catch (activityError) {
-          console.error("Unable to log trailer activity for vessel arrival:", activityError);
-        }
-
+        const dischargedAt = discharged.dischargedAt ?? nowIso;
         setSuccess(`Arrival confirmed for ${trailer.trailer_number ?? "trailer"}.`);
+        setTrailers((current) =>
+          sortVesselOperationTrailersForArrivals(
+            current.map((item) =>
+              item.id === trailer.id
+                ? {
+                    ...item,
+                    arrival_status: "arrived",
+                    status: "arrived",
+                    discharged_at: dischargedAt,
+                    arrival_confirmed_at: item.arrival_confirmed_at ?? dischargedAt,
+                    arrived_at: item.arrived_at ?? dischargedAt,
+                    arrival_confirmed_by: operatorName,
+                    updated_at: nowIso,
+                  }
+                : item,
+            ),
+          ),
+        );
         await loadArrivals();
       } catch (confirmErr) {
         console.error("Unable to confirm arrival:", confirmErr);
@@ -421,6 +383,7 @@ function VesselArrivalsPageContent() {
             status: "expected",
             arrival_status: "available_for_arrival",
             arrived_at: null,
+            discharged_at: null,
             arrival_confirmed_at: null,
             arrival_confirmed_by: null,
             inspection_started_at: null,
@@ -664,7 +627,7 @@ function VesselArrivalsPageContent() {
               const inspectionLabel = inspectionState === "completed" || inspectionState === "issues_found" ? "Inspected" : "Inspection Pending";
               const isInspected = inspectionState === "completed" || inspectionState === "issues_found";
               const arrivalLabel = trailer.arrival_status === "arrived" ? "Arrived" : getVesselArrivalWorkflowLabel(workflowState);
-              const canMarkArrived = (operation.list_status ?? "draft") === "confirmed" && trailer.arrival_status === "available_for_arrival" && !trailer.arrival_record_id;
+              const canMarkArrived = (operation.list_status ?? "draft") === "confirmed" && (trailer.arrival_status === "available_for_arrival" || trailer.arrival_status === "expected") && !trailer.arrival_record_id;
               const canUndo = trailer.arrival_status === "arrived" && !trailer.arrival_record_id && !trailer.inspection_started_at && !trailer.inspection_completed_at;
               const canConfirmReception = canConfirmVesselTrailerReception(trailer, operation);
               const canOpenInspection = trailer.arrival_status === "arrived" && !trailer.arrival_record_id;

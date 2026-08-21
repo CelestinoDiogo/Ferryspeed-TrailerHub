@@ -3,12 +3,15 @@ import {
   applyPlanningOwnershipSelection,
   canCancelVesselTrailer,
   canUndoVesselTrailerCancellation,
+  compareTrailerNumber,
   computeVesselOperationSummary,
   deriveVesselWorkflowStep,
   getCompletionReadiness,
   getPlanningReadiness,
+  getVesselArrivalWorkflowState,
   resolveVesselReceptionLoadStatus,
   resolveVesselReceptionOwnership,
+  sortVesselOperationTrailersForArrivals,
   validateTrailerPlanning,
   type VesselOperationRecord,
   type VesselOperationTrailerRecord,
@@ -51,6 +54,7 @@ const makeTrailer = (overrides: Partial<VesselOperationTrailerRecord> = {}): Ves
   manifest_change_reason: null,
   status: "expected",
   arrival_status: "expected",
+  discharged_at: null,
   arrival_confirmed_at: null,
   inspection_completed_at: null,
   has_damage: false,
@@ -295,5 +299,58 @@ describe("planning ownership controls", () => {
     const readiness = getPlanningReadiness([trailer]);
     expect(readiness.canConfirmList).toBe(false);
     expect(readiness.incompleteTrailers[0].issues.map((issue) => issue.message)).toContain("Select trailer ownership.");
+  });
+
+  it("sorts vessel trailers into one natural trailer-number list instead of a priority section", () => {
+    const sorted = sortVesselOperationTrailersForArrivals([
+      makeTrailer({ id: "p", trailer_number: "PRO812", priority_level: "priority" }),
+      makeTrailer({ id: "c", trailer_number: "CR443", priority_level: "normal" }),
+      makeTrailer({ id: "f", trailer_number: "FS59", priority_level: "priority" }),
+      makeTrailer({ id: "d", trailer_number: "DDA1303" }),
+      makeTrailer({ id: "k", trailer_number: "PKD7" }),
+      makeTrailer({ id: "e", trailer_number: "DDF07" }),
+      makeTrailer({ id: "pfc", trailer_number: "PFC06" }),
+    ]);
+
+    expect(sorted.map((row) => row.trailer_number)).toEqual([
+      "CR443",
+      "DDA1303",
+      "DDF07",
+      "FS59",
+      "PFC06",
+      "PKD7",
+      "PRO812",
+    ]);
+    expect(compareTrailerNumber("FS59", "FS100")).toBeLessThan(0);
+    expect(sorted.filter((row) => row.priority_level === "priority").map((row) => row.trailer_number)).toEqual(["FS59", "PRO812"]);
+  });
+
+  it("moves arrived trailers out of pending arrival into inspection pending without duplicating stages", () => {
+    const pending = makeTrailer({ id: "pending", arrival_status: "expected", status: "expected" });
+    const arrived = makeTrailer({
+      id: "arrived",
+      arrival_status: "arrived",
+      status: "arrived",
+      arrived_at: "2026-08-21T10:00:00.000Z",
+    });
+    const inspected = makeTrailer({
+      id: "inspected",
+      arrival_status: "arrived",
+      status: "inspected",
+      inspection_completed_at: "2026-08-21T10:30:00.000Z",
+    });
+
+    expect(getVesselArrivalWorkflowState(pending)).toBe("expected");
+    expect(getVesselArrivalWorkflowState(arrived)).toBe("inspection_pending");
+    expect(getVesselArrivalWorkflowState(inspected)).toBe("inspected");
+
+    const pendingList = [pending, arrived, inspected].filter((row) => getVesselArrivalWorkflowState(row) === "expected");
+    const nextStep = [pending, arrived, inspected].filter((row) => getVesselArrivalWorkflowState(row) === "inspection_pending");
+    const completed = [pending, arrived, inspected].filter((row) => getVesselArrivalWorkflowState(row) === "inspected");
+
+    expect(pendingList.map((row) => row.id)).toEqual(["pending"]);
+    expect(nextStep.map((row) => row.id)).toEqual(["arrived"]);
+    expect(completed.map((row) => row.id)).toEqual(["inspected"]);
+    expect(new Set([...pendingList, ...nextStep, ...completed]).size).toBe(3);
   });
 });

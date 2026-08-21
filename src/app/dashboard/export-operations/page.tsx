@@ -31,6 +31,10 @@ import {
 import {
   COMPOUND_REFRESH_STORAGE_KEY,
   EXPORT_ACTIVE_STATUSES,
+  ASSIGN_TRAILER_BEFORE_OPERATION_MESSAGE,
+  getExportAllocationTrailerLabel,
+  hasAssignedTrailer,
+  isExportAllocationAtCustomer,
   isExportAllocationOffCompoundStatus,
   getAdvanceStatusActionLabel,
   getExportAllocationPriorityClasses,
@@ -48,6 +52,12 @@ import {
 import { getTrailerOwnershipBadgeLabel, getTrailerOwnershipType, type TrailerOwnershipType } from "@/lib/trailer-ownership";
 import { resolveHistoricalOwnership, type HistoricalOwnershipSnapshot } from "@/lib/reports/historical-trailer-ownership";
 import { advanceExportAllocationStatus, undoExportAllocationStatus } from "@/lib/operations/export-lifecycle";
+import {
+  toExportAllocationConfirmRows,
+  UNASSIGNED_EXPORT_TRAILER_LABEL,
+  type ExportAllocationImportPreview,
+} from "@/lib/imports/export-allocation-import";
+import { getSessionToken } from "@/lib/voice/session";
 
 type TrailerLoadSnapshot = {
   id: string;
@@ -138,8 +148,11 @@ const formatDateTime = (value?: string | null) => {
   }
 };
 
-const STATUS_OPTIONS: Array<{ value: "all" | ExportAllocationStatus | "at_customer" | "overdue"; label: string }> = [
+type HeaderStatusFilter = "all" | "active" | "at_customer" | "completed";
+
+const STATUS_OPTIONS: Array<{ value: "all" | ExportAllocationStatus | "active" | "at_customer" | "overdue"; label: string }> = [
   { value: "all", label: "All Statuses" },
+  { value: "active", label: "Active" },
   { value: "allocated", label: "Allocated" },
   { value: "delivered_empty", label: "Delivered Empty" },
   { value: "waiting_loading", label: "Waiting Loading" },
@@ -161,7 +174,7 @@ const isPrintableStatus = (value: string): value is ExportAllocationStatus =>
 const getStatusQueryValue = (value: string | null) => {
   const normalized = normalizeText(value);
 
-  if (normalized === "at_customer" || normalized === "overdue" || normalized === "all") {
+  if (normalized === "active" || normalized === "at_customer" || normalized === "overdue" || normalized === "all") {
     return normalized;
   }
 
@@ -185,6 +198,8 @@ const getStatusLabel = (value: string) => {
   switch (value) {
     case "all":
       return "All Statuses";
+    case "active":
+      return "Active";
     case "at_customer":
       return "At Customer";
     case "overdue":
@@ -286,6 +301,10 @@ function ExportOperationsPageContent() {
   const [panelAllocationId, setPanelAllocationId] = useState<string | null>(null);
   const [prefixFilter, setPrefixFilter] = useState<string>("all");
   const [sortBy, setSortBy] = useState<"collection_date" | "trailer_asc" | "trailer_desc">("collection_date");
+  const [importPreview, setImportPreview] = useState<ExportAllocationImportPreview | null>(null);
+  const [importFileName, setImportFileName] = useState<string | null>(null);
+  const [isImporting, setIsImporting] = useState(false);
+  const [isConfirmingImport, setIsConfirmingImport] = useState(false);
 
   const historyRange = useMemo<HistoryDateRangeValue>(() => {
     const preset = normalizeHistoryPreset(historyPresetQuery);
@@ -377,6 +396,114 @@ function ExportOperationsPageContent() {
     const params = new URLSearchParams();
     params.set("history", "today");
     router.replace(`${pathname}?${params.toString()}`, { scroll: false });
+  };
+
+  const applyHeaderStatusFilter = (next: HeaderStatusFilter) => {
+    if (next !== "all" && statusFilter === next) {
+      updateFilters({ status: "all" });
+      return;
+    }
+
+    updateFilters({ status: next });
+  };
+
+  const handleImportExcelSelected = async (file: File | null) => {
+    if (!file) {
+      return;
+    }
+
+    setIsImporting(true);
+    setError(null);
+    setSuccess(null);
+    setWarning(null);
+    setImportPreview(null);
+    setImportFileName(file.name);
+
+    try {
+      const token = await getSessionToken();
+      const formData = new FormData();
+      formData.set("file", file);
+      formData.set("purpose", "export");
+
+      const response = await fetch("/api/imports/spreadsheet?purpose=export", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+        body: formData,
+      });
+
+      const payload = (await response.json()) as { preview?: ExportAllocationImportPreview; error?: string };
+      if (!response.ok || !payload.preview) {
+        throw new Error(payload.error || "Unable to read this Excel file.");
+      }
+
+      setImportPreview(payload.preview);
+    } catch (importError) {
+      setImportFileName(null);
+      setError(importError instanceof Error ? importError.message : "Unable to read this Excel file.");
+    } finally {
+      setIsImporting(false);
+    }
+  };
+
+  const handleConfirmImportedAllocations = async () => {
+    if (!importPreview) {
+      return;
+    }
+
+    const rows = toExportAllocationConfirmRows(importPreview);
+    if (rows.length === 0) {
+      setError("There are no import rows to confirm.");
+      return;
+    }
+
+    setIsConfirmingImport(true);
+    setError(null);
+    setWarning(null);
+
+    try {
+      const token = await getSessionToken();
+      const response = await fetch("/api/imports/export-allocations", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ rows }),
+      });
+
+      const payload = (await response.json()) as {
+        error?: string;
+        result?: {
+          created: Array<{ id: string; trailerNumber: string; customer: string }>;
+          blockedUnassigned: Array<{ customer: string; reason: string }>;
+          conflicts: Array<{ reason: string }>;
+        };
+      };
+
+      if (!response.ok && !payload.result?.created?.length) {
+        throw new Error(payload.error || "Unable to confirm export Excel import.");
+      }
+
+      const createdCount = payload.result?.created.length ?? 0;
+      const unassignedCreated = payload.result?.created.filter((row) => !row.trailerNumber).length ?? 0;
+      if (createdCount > 0) {
+        setSuccess(
+          unassignedCreated > 0
+            ? `${createdCount} export allocation${createdCount === 1 ? "" : "s"} created from Excel, including ${unassignedCreated} unassigned.`
+            : `${createdCount} export allocation${createdCount === 1 ? "" : "s"} created from Excel.`,
+        );
+      }
+
+      setImportPreview(null);
+      setImportFileName(null);
+      await loadAllocations({ showLoading: false });
+    } catch (confirmError) {
+      setError(confirmError instanceof Error ? confirmError.message : "Unable to confirm export Excel import.");
+    } finally {
+      setIsConfirmingImport(false);
+    }
   };
 
   const loadAllocations = async (options?: { showLoading?: boolean }) => {
@@ -515,8 +642,12 @@ function ExportOperationsPageContent() {
         if (!isExportAllocationOverdue(item, nowIso)) {
           return false;
         }
+      } else if (statusFilter === "active") {
+        if (!EXPORT_ACTIVE_STATUSES.has(item.status)) {
+          return false;
+        }
       } else if (statusFilter === "at_customer") {
-        if (item.status !== "delivered_empty" && item.status !== "waiting_loading") {
+        if (!isExportAllocationAtCustomer(item.status)) {
           return false;
         }
       } else if (statusFilter !== "all" && item.status !== statusFilter) {
@@ -526,6 +657,7 @@ function ExportOperationsPageContent() {
       if (normalizedSearch) {
         const searchTargets = [
           item.trailer_number,
+          getExportAllocationTrailerLabel(item),
           item.customer,
           item.collection_address,
           item.haulier,
@@ -719,6 +851,11 @@ function ExportOperationsPageContent() {
       return;
     }
 
+    if (!hasAssignedTrailer(allocation)) {
+      setError(ASSIGN_TRAILER_BEFORE_OPERATION_MESSAGE);
+      return;
+    }
+
     startAction(allocation.id);
     setError(null);
     setSuccess(null);
@@ -837,8 +974,10 @@ function ExportOperationsPageContent() {
   };
 
   const activeCount = allocations.filter((item) => EXPORT_ACTIVE_STATUSES.has(item.status)).length;
-  const atCustomerCount = allocations.filter((item) => item.status === "delivered_empty" || item.status === "waiting_loading").length;
+  const atCustomerCount = allocations.filter((item) => isExportAllocationAtCustomer(item.status)).length;
   const completedCount = allocations.filter((item) => item.status === "completed").length;
+  const headerCardClass = (active: boolean, idleClass: string, activeClass: string) =>
+    `rounded-2xl border p-4 text-left transition ${active ? activeClass : idleClass}`;
 
   const handleUndoFromToast = async () => {
     if (!undoCandidateAllocationId) {
@@ -890,7 +1029,7 @@ function ExportOperationsPageContent() {
     const selectedRows = filteredAllocations.filter((item) => visibleSelectedAllocationIds.includes(item.id));
     for (const allocation of selectedRows) {
       const next = getNextExportAllocationStatus(allocation.status);
-      if (!next) {
+      if (!next || !hasAssignedTrailer(allocation)) {
         continue;
       }
 
@@ -995,22 +1134,134 @@ function ExportOperationsPageContent() {
         ) : null}
 
         <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <article className="rounded-2xl border border-white/10 bg-slate-900/70 p-4">
+          <button
+            type="button"
+            aria-pressed={statusFilter === "all"}
+            onClick={() => applyHeaderStatusFilter("all")}
+            className={headerCardClass(
+              statusFilter === "all",
+              "border-white/10 bg-slate-900/70 hover:border-cyan-400/40",
+              "border-cyan-400/70 bg-cyan-500/20",
+            )}
+          >
             <p className="text-xs uppercase tracking-[0.24em] text-slate-400">Total Allocations</p>
             <p className="mt-2 text-2xl font-bold text-white">{allocations.length}</p>
-          </article>
-          <article className="rounded-2xl border border-cyan-500/30 bg-cyan-500/10 p-4">
+            <p className="mt-1 text-xs text-slate-400">Show all</p>
+          </button>
+          <button
+            type="button"
+            aria-pressed={statusFilter === "active"}
+            onClick={() => applyHeaderStatusFilter("active")}
+            className={headerCardClass(
+              statusFilter === "active",
+              "border-cyan-500/30 bg-cyan-500/10 hover:border-cyan-400/50",
+              "border-cyan-400/80 bg-cyan-500/25 ring-2 ring-cyan-300/40",
+            )}
+          >
             <p className="text-xs uppercase tracking-[0.24em] text-cyan-200">Active</p>
             <p className="mt-2 text-2xl font-bold text-white">{activeCount}</p>
-          </article>
-          <article className="rounded-2xl border border-orange-500/30 bg-orange-500/10 p-4">
+          </button>
+          <button
+            type="button"
+            aria-pressed={statusFilter === "at_customer"}
+            onClick={() => applyHeaderStatusFilter("at_customer")}
+            className={headerCardClass(
+              statusFilter === "at_customer",
+              "border-orange-500/30 bg-orange-500/10 hover:border-orange-400/50",
+              "border-orange-400/80 bg-orange-500/25 ring-2 ring-orange-300/40",
+            )}
+          >
             <p className="text-xs uppercase tracking-[0.24em] text-orange-200">At Customer</p>
             <p className="mt-2 text-2xl font-bold text-white">{atCustomerCount}</p>
-          </article>
-          <article className="rounded-2xl border border-violet-500/30 bg-violet-500/10 p-4">
+          </button>
+          <button
+            type="button"
+            aria-pressed={statusFilter === "completed"}
+            onClick={() => applyHeaderStatusFilter("completed")}
+            className={headerCardClass(
+              statusFilter === "completed",
+              "border-violet-500/30 bg-violet-500/10 hover:border-violet-400/50",
+              "border-violet-400/80 bg-violet-500/25 ring-2 ring-violet-300/40",
+            )}
+          >
             <p className="text-xs uppercase tracking-[0.24em] text-violet-200">Completed</p>
             <p className="mt-2 text-2xl font-bold text-white">{completedCount}</p>
-          </article>
+          </button>
+        </section>
+
+        <section className="rounded-3xl border border-white/10 bg-slate-900/70 p-4 shadow-lg shadow-black/20 backdrop-blur sm:p-5">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-400">Excel import</p>
+              <p className="mt-1 text-sm text-slate-300">
+                Preview export allocations from Excel before creating them. Trailer No. may be blank and is shown as {UNASSIGNED_EXPORT_TRAILER_LABEL}.
+              </p>
+            </div>
+            <label className={`rounded-xl bg-cyan-500 px-3 py-2 text-xs font-semibold text-slate-950 ${isImporting ? "opacity-60" : "hover:bg-cyan-400 cursor-pointer"}`}>
+              {isImporting ? "Reading Excel..." : "Import Excel"}
+              <input
+                type="file"
+                accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                className="hidden"
+                disabled={isImporting || isConfirmingImport}
+                onChange={(event) => {
+                  const file = event.target.files?.[0] ?? null;
+                  event.target.value = "";
+                  void handleImportExcelSelected(file);
+                }}
+              />
+            </label>
+          </div>
+          {importPreview ? (
+            <div className="mt-4 space-y-3 rounded-2xl border border-white/10 bg-slate-950/60 p-4 text-sm">
+              <p className="text-slate-200">
+                {importFileName ? `${importFileName}: ` : ""}
+                {importPreview.accepted.length} ready, {importPreview.unassigned.length} unassigned, {importPreview.warnings.length} warning{importPreview.warnings.length === 1 ? "" : "s"}, {importPreview.invalid.length} invalid, {importPreview.duplicates.length} duplicate{importPreview.duplicates.length === 1 ? "" : "s"}, {importPreview.conflicts.length} trailer conflict{importPreview.conflicts.length === 1 ? "" : "s"}.
+              </p>
+              {importPreview.accepted.map((row) => (
+                <p key={`ready-${row.rowNumber}-${row.trailer_number}`} className="text-emerald-200">
+                  Ready: {row.trailer_number} · {row.customer}
+                </p>
+              ))}
+              {importPreview.unassigned.map((row) => (
+                <p key={`unassigned-${row.rowNumber}-${row.customer}`} className="text-cyan-200">
+                  Unassigned: {UNASSIGNED_EXPORT_TRAILER_LABEL} · {row.customer}
+                </p>
+              ))}
+              {importPreview.warnings.map((warning) => (
+                <p key={warning} className="text-amber-200">{warning}</p>
+              ))}
+              {importPreview.conflicts.map((item) => (
+                <p key={`conflict-${item.reason}`} className="text-orange-200">{item.reason}</p>
+              ))}
+              {importPreview.duplicates.map((item) => (
+                <p key={`dup-${item.reason}`} className="text-slate-400">{item.reason}</p>
+              ))}
+              {importPreview.invalid.map((item) => (
+                <p key={`invalid-${item.reason}`} className="text-rose-200">{item.sourceLine ? `${item.sourceLine}: ` : ""}{item.reason}</p>
+              ))}
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => void handleConfirmImportedAllocations()}
+                  disabled={isConfirmingImport || (importPreview.accepted.length === 0 && importPreview.unassigned.length === 0)}
+                  className="rounded-xl bg-cyan-500 px-3 py-2 text-xs font-semibold text-slate-950 hover:bg-cyan-400 disabled:opacity-60"
+                >
+                  {isConfirmingImport ? "Creating..." : "Confirm import"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setImportPreview(null);
+                    setImportFileName(null);
+                  }}
+                  className="rounded-xl border border-white/10 bg-slate-800 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-700"
+                >
+                  Discard preview
+                </button>
+              </div>
+            </div>
+          ) : null}
         </section>
 
         <section className="filters rounded-3xl border border-white/10 bg-slate-900/70 p-4 shadow-lg shadow-black/20 backdrop-blur sm:p-5">
@@ -1160,7 +1411,8 @@ function ExportOperationsPageContent() {
           <section className="space-y-3">
             {filteredAllocations.map((allocation) => {
               const canQuickAdvance =
-                allocation.status === "allocated" || allocation.status === "delivered_empty" || allocation.status === "waiting_loading" || allocation.status === "collected_loaded";
+                hasAssignedTrailer(allocation)
+                && (allocation.status === "allocated" || allocation.status === "delivered_empty" || allocation.status === "waiting_loading" || allocation.status === "collected_loaded");
               const nextActionLabel = canQuickAdvance ? getAdvanceStatusActionLabel(allocation.status) : null;
               const canCancel = allocation.status !== "completed" && allocation.status !== "cancelled";
               const canUndo = allocation.status === "delivered_empty" || allocation.status === "waiting_loading" || allocation.status === "collected_loaded";
@@ -1184,12 +1436,15 @@ function ExportOperationsPageContent() {
                       <p className="mt-1 text-xl font-semibold text-white">
                         {allocation.trailer_id ? (
                           <Link href={`/dashboard/trailers/${allocation.trailer_id}`} className="underline decoration-cyan-400/60 underline-offset-2 hover:text-cyan-200">
-                            {allocation.trailer_number ?? "-"}
+                            {getExportAllocationTrailerLabel(allocation)}
                           </Link>
                         ) : (
-                          allocation.trailer_number ?? "-"
+                          getExportAllocationTrailerLabel(allocation)
                         )}
                       </p>
+                      {!hasAssignedTrailer(allocation) ? (
+                        <p className="mt-1 text-xs text-amber-200">{ASSIGN_TRAILER_BEFORE_OPERATION_MESSAGE}</p>
+                      ) : null}
                     </div>
                     <div className="flex flex-wrap gap-2">
                       <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${getExportAllocationStatusClasses(allocation.status)}`}>
@@ -1394,7 +1649,7 @@ function ExportOperationsPageContent() {
             rows={printAllocations}
             rowClassName={(allocation) => (allocation.priority === "urgent" ? "print-urgent" : undefined)}
             columns={[
-              { key: "trailer_number", header: "Trailer", render: (allocation) => allocation.trailer_number ?? "—" },
+              { key: "trailer_number", header: "Trailer", render: (allocation) => getExportAllocationTrailerLabel(allocation) },
               { key: "ownership", header: "Ownership", render: (allocation) => getTrailerOwnershipBadgeLabel(allocation.ownershipType ?? "unknown") },
               { key: "customer", header: "Customer", render: (allocation) => allocation.customer ?? "—" },
               { key: "collection_address", header: "Collection Address", render: (allocation) => allocation.collection_address ?? "—" },

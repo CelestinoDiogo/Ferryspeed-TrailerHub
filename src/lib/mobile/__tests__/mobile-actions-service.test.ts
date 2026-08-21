@@ -7,12 +7,14 @@ const {
   getTemperatureToleranceSettingsFromStorageMock,
   isTemperatureOutOfRangeMock,
   confirmTrailerDepartureMock,
+  markVesselTrailerDischargedMock,
 } = vi.hoisted(() => ({
   moveCompoundTrailerMock: vi.fn(),
   createTrailerActivityMock: vi.fn(),
   getTemperatureToleranceSettingsFromStorageMock: vi.fn(),
   isTemperatureOutOfRangeMock: vi.fn(),
   confirmTrailerDepartureMock: vi.fn(),
+  markVesselTrailerDischargedMock: vi.fn(),
 }));
 
 vi.mock("@/lib/compound-yard", () => ({
@@ -30,6 +32,10 @@ vi.mock("@/lib/temperature-tolerance", () => ({
 
 vi.mock("@/lib/operations/confirm-departure", () => ({
   confirmTrailerDeparture: confirmTrailerDepartureMock,
+}));
+
+vi.mock("@/lib/operations/mark-vessel-trailer-discharged", () => ({
+  markVesselTrailerDischarged: markVesselTrailerDischargedMock,
 }));
 
 type QueryRow = Record<string, unknown>;
@@ -82,6 +88,18 @@ describe("executeMobileAction", () => {
     moveCompoundTrailerMock.mockResolvedValue(undefined);
     getTemperatureToleranceSettingsFromStorageMock.mockReturnValue({});
     isTemperatureOutOfRangeMock.mockReturnValue(false);
+    markVesselTrailerDischargedMock.mockResolvedValue({
+      vesselTrailerId: "vt-1",
+      dischargedAt: "2026-08-21T10:00:00.000Z",
+      alreadyDischarged: false,
+      trailer: {
+        id: "vt-1",
+        vessel_operation_id: "op-1",
+        trailer_number: "FS1001",
+        arrival_status: "arrived",
+        discharged_at: "2026-08-21T10:00:00.000Z",
+      },
+    });
   });
 
   it("returns conflict for stale load status", async () => {
@@ -461,6 +479,99 @@ describe("executeMobileAction", () => {
       expect.objectContaining({
         trailerId: "11111111-1111-4111-8111-111111111111",
         operatorName: "Supervisor One",
+      }),
+    );
+  });
+
+  it("does not rewrite discharge time for an already arrived trailer", async () => {
+    const supabase = createSupabaseMock({
+      vessel_operation_trailers: [
+        {
+          id: "vt-1",
+          vessel_operation_id: "op-1",
+          trailer_id: "trailer-1",
+          trailer_number: "FS1001",
+          arrival_status: "arrived",
+          arrival_record_id: "trailer-1",
+          discharged_at: "2026-08-21T10:00:00.000Z",
+          arrived_at: "2026-08-21T10:15:00.000Z",
+          arrival_confirmed_at: "2026-08-21T10:15:00.000Z",
+          status: "arrived",
+          inspection_started_at: null,
+          inspection_completed_at: null,
+        },
+      ],
+    });
+
+    const result = await executeMobileAction(supabase, user, {
+      actionType: "MARK_ARRIVED",
+      payload: {
+        vesselTrailerId: "vt-1",
+        trailerNumber: "FS1001",
+      },
+    });
+
+    expect(result.status).toBe("success");
+    expect(markVesselTrailerDischargedMock).not.toHaveBeenCalled();
+    expect((supabase as { rpc: { mock: { calls: unknown[] } } }).rpc).not.toHaveBeenCalled();
+  });
+
+  it("records discharge before reception and does not let reception replace discharge time", async () => {
+    const supabase = createSupabaseMock({
+      vessel_operation_trailers: [
+        {
+          id: "vt-1",
+          vessel_operation_id: "op-1",
+          trailer_id: null,
+          trailer_number: "FS1001",
+          arrival_status: "available_for_arrival",
+          arrival_record_id: null,
+          discharged_at: null,
+          arrived_at: null,
+          arrival_confirmed_at: null,
+          status: "expected",
+          inspection_started_at: null,
+          inspection_completed_at: null,
+          has_damage: false,
+          has_temperature_alert: false,
+        },
+      ],
+      trailers: [],
+    }, { data: "trailer-1" });
+
+    const result = await executeMobileAction(supabase, user, {
+      actionType: "MARK_ARRIVED",
+      payload: {
+        vesselTrailerId: "vt-1",
+        trailerNumber: "FS1001",
+        receivedAt: "2026-08-21T10:00:00.000Z",
+      },
+    });
+
+    const rpc = (supabase as { rpc: { mock: { calls: Array<[string, Record<string, unknown>]> } } & ((...args: unknown[]) => unknown) }).rpc;
+    expect(result.status).toBe("success");
+    expect(markVesselTrailerDischargedMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        vesselTrailerId: "vt-1",
+        dischargedAt: "2026-08-21T10:00:00.000Z",
+      }),
+    );
+    expect(rpc).toHaveBeenCalledWith(
+      "confirm_vessel_trailer_arrival",
+      expect.objectContaining({
+        p_vessel_operation_trailer_id: "vt-1",
+        p_received_at: "2026-08-21T10:00:00.000Z",
+      }),
+    );
+    expect(rpc.mock.calls[0][1]).not.toHaveProperty("discharged_at");
+    expect(createTrailerActivityMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "arrived",
+        eventTitle: "Vessel trailer received",
+        metadata: expect.objectContaining({
+          discharged_at: "2026-08-21T10:00:00.000Z",
+          arrival_confirmed_at: "2026-08-21T10:00:00.000Z",
+        }),
       }),
     );
   });

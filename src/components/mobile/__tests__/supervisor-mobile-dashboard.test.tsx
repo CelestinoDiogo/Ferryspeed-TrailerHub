@@ -736,9 +736,41 @@ describe("SupervisorMobileDashboard", () => {
       expect(fetchMock).toHaveBeenCalledTimes(1);
     });
 
-    expect(screen.getByText("FS2001")).toBeInTheDocument();
+    expect(screen.queryByText("FS2001")).not.toBeInTheDocument();
     expect(screen.queryByText("FS2002")).not.toBeInTheDocument();
     expect(screen.queryByText("FS1001")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Pending Arrival" })).toBeInTheDocument();
+  });
+
+  it("moves a trailer from pending arrival to inspection pending after Arrived", async () => {
+    render(<SupervisorMobileDashboard />);
+    const user = await openVesselWorkspace();
+
+    await user.click(screen.getByRole("button", { name: "Pending Arrival" }));
+    expect(screen.getByText("FS1001")).toBeInTheDocument();
+    expect(screen.queryByText("FS1002")).not.toBeInTheDocument();
+
+    await user.click(within(getTrailerCard("FS1001")).getByRole("button", { name: "Arrived" }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    expect(screen.queryByText("FS1001")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Inspection Pending" }));
+    expect(screen.getByText("FS1001")).toBeInTheDocument();
+    expect(screen.getByText("FS1002")).toBeInTheDocument();
+    expect(screen.getAllByText("FS1001")).toHaveLength(1);
+  });
+
+  it("keeps inspected trailers out of inspection pending", async () => {
+    render(<SupervisorMobileDashboard />);
+    const user = await openVesselWorkspace();
+
+    await user.click(screen.getByRole("button", { name: "Inspection Pending" }));
+    expect(screen.getByText("FS1002")).toBeInTheDocument();
+    expect(screen.queryByText("FS1003")).not.toBeInTheDocument();
   });
 
   it("keeps touch workflow usable when speech recognition is unsupported", async () => {

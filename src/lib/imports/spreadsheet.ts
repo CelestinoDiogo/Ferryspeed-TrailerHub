@@ -91,8 +91,10 @@ const emptyPresentationRow = (sourceLine = ""): PresentationListRow => ({
   sourceLine,
 });
 
-const normalizeHeader = (value: string) =>
+export const normalizeSpreadsheetHeader = (value: string) =>
   value.trim().toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+
+const normalizeHeader = (value: string) => normalizeSpreadsheetHeader(value);
 
 const normalizeSectionText = (value: string) =>
   value.trim().toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
@@ -312,10 +314,7 @@ const parseSheetRows = (
   return parsed;
 };
 
-export function parseFerryspeedPresentationList(bytes: Uint8Array): {
-  sheetName: string;
-  rows: PresentationListRow[];
-} {
+export function readSpreadsheetWorkbookGrids(bytes: Uint8Array): Array<{ name: string; rows: string[][] }> {
   let workbook: XLSX.WorkBook;
   try {
     workbook = XLSX.read(bytes, {
@@ -337,13 +336,29 @@ export function parseFerryspeedPresentationList(bytes: Uint8Array): {
     throw new SpreadsheetImportValidationError("This workbook does not contain any worksheets.");
   }
 
-  for (const sheetName of preferredSheetOrder(sheetNames)) {
-    const sheet = workbook.Sheets[sheetName];
+  return sheetNames.flatMap((name) => {
+    const sheet = workbook.Sheets[name];
     if (!sheet) {
+      return [];
+    }
+
+    return [{ name, rows: sheetToGrid(sheet) }];
+  });
+}
+
+export function parseFerryspeedPresentationList(bytes: Uint8Array): {
+  sheetName: string;
+  rows: PresentationListRow[];
+} {
+  const sheets = readSpreadsheetWorkbookGrids(bytes);
+  const byName = new Map(sheets.map((sheet) => [sheet.name, sheet.rows]));
+
+  for (const sheetName of preferredSheetOrder(sheets.map((sheet) => sheet.name))) {
+    const grid = byName.get(sheetName);
+    if (!grid) {
       continue;
     }
 
-    const grid = sheetToGrid(sheet);
     const header = findHeader(grid);
     if (!header) {
       continue;

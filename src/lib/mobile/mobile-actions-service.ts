@@ -12,6 +12,7 @@ import {
 } from "@/lib/vessel-operations";
 import { moveCompoundTrailer } from "@/lib/compound-yard";
 import { confirmTrailerDeparture } from "@/lib/operations/confirm-departure";
+import { markVesselTrailerDischarged } from "@/lib/operations/mark-vessel-trailer-discharged";
 import { createTrailerActivity } from "@/lib/trailer-activity";
 import { getTemperatureToleranceSettingsFromStorage, isTemperatureOutOfRange } from "@/lib/temperature-tolerance";
 import { TrailerJobConflictError } from "@/lib/trailer-job-eligibility";
@@ -50,6 +51,9 @@ type MobileActionResult = {
     addedAfterConfirmation: boolean | null;
     hasDamage: boolean | null;
     hasTemperatureAlert: boolean | null;
+    dischargedAt: string | null;
+    arrivedAt: string | null;
+    arrivalConfirmedAt: string | null;
   } | null;
 };
 
@@ -112,6 +116,9 @@ const asVesselTrailerState = (row: VesselOperationTrailerRecord) => {
     addedAfterConfirmation: row.added_after_confirmation ?? null,
     hasDamage: row.has_damage ?? null,
     hasTemperatureAlert: row.has_temperature_alert ?? null,
+    dischargedAt: row.discharged_at ?? null,
+    arrivedAt: row.arrived_at ?? null,
+    arrivalConfirmedAt: row.arrival_confirmed_at ?? null,
   };
 };
 
@@ -119,7 +126,7 @@ const getVesselTrailer = async (supabase: RouteSupabase, vesselTrailerId: string
   const { data, error } = await supabase
     .from("vessel_operation_trailers")
     .select(
-      "id, vessel_operation_id, trailer_id, trailer_number, customer, load_status, status, arrival_status, arrival_record_id, inspection_started_at, inspection_completed_at, expected_front_temperature, expected_rear_temperature, expected_temperature_unit, temperature_required, has_damage, has_temperature_alert, cancelled_at, cancelled_by, cancellation_reason, no_show_at, no_show_by, no_show_reason, added_after_confirmation",
+      "id, vessel_operation_id, trailer_id, trailer_number, customer, load_status, status, arrival_status, arrival_record_id, discharged_at, arrived_at, arrival_confirmed_at, inspection_started_at, inspection_completed_at, expected_front_temperature, expected_rear_temperature, expected_temperature_unit, temperature_required, has_damage, has_temperature_alert, cancelled_at, cancelled_by, cancellation_reason, no_show_at, no_show_by, no_show_reason, added_after_confirmation",
     )
     .eq("id", vesselTrailerId)
     .maybeSingle();
@@ -147,7 +154,7 @@ const resolveVesselTrailerForArrival = async (
   const query = supabase
     .from("vessel_operation_trailers")
     .select(
-      "id, vessel_operation_id, trailer_id, trailer_number, customer, load_status, status, arrival_status, arrival_record_id, inspection_started_at, inspection_completed_at, expected_front_temperature, expected_rear_temperature, expected_temperature_unit, temperature_required, has_damage, has_temperature_alert, cancelled_at, cancelled_by, cancellation_reason, no_show_at, no_show_by, no_show_reason, added_after_confirmation",
+      "id, vessel_operation_id, trailer_id, trailer_number, customer, load_status, status, arrival_status, arrival_record_id, discharged_at, arrived_at, arrival_confirmed_at, inspection_started_at, inspection_completed_at, expected_front_temperature, expected_rear_temperature, expected_temperature_unit, temperature_required, has_damage, has_temperature_alert, cancelled_at, cancelled_by, cancellation_reason, no_show_at, no_show_by, no_show_reason, added_after_confirmation",
     )
     .ilike("trailer_number", normalizedTrailerNumber)
     .order("updated_at", { ascending: false })
@@ -271,7 +278,7 @@ const runAddVesselTrailer = async (
   const { data: existingRows, error: existingError } = await supabase
     .from("vessel_operation_trailers")
     .select(
-      "id, vessel_operation_id, trailer_id, trailer_number, customer, load_status, status, arrival_status, arrival_record_id, inspection_started_at, inspection_completed_at, expected_front_temperature, expected_rear_temperature, expected_temperature_unit, temperature_required, has_damage, has_temperature_alert, cancelled_at, cancelled_by, cancellation_reason, no_show_at, no_show_by, no_show_reason, added_after_confirmation",
+      "id, vessel_operation_id, trailer_id, trailer_number, customer, load_status, status, arrival_status, arrival_record_id, discharged_at, arrived_at, arrival_confirmed_at, inspection_started_at, inspection_completed_at, expected_front_temperature, expected_rear_temperature, expected_temperature_unit, temperature_required, has_damage, has_temperature_alert, cancelled_at, cancelled_by, cancellation_reason, no_show_at, no_show_by, no_show_reason, added_after_confirmation",
     )
     .eq("vessel_operation_id", payload.operationId)
     .ilike("trailer_number", normalizedTrailerNumber)
@@ -338,7 +345,7 @@ const runAddVesselTrailer = async (
     .from("vessel_operation_trailers")
     .insert(insertPayload as never)
     .select(
-      "id, vessel_operation_id, trailer_id, trailer_number, customer, load_status, status, arrival_status, arrival_record_id, inspection_started_at, inspection_completed_at, expected_front_temperature, expected_rear_temperature, expected_temperature_unit, temperature_required, has_damage, has_temperature_alert, cancelled_at, cancelled_by, cancellation_reason, no_show_at, no_show_by, no_show_reason, added_after_confirmation",
+      "id, vessel_operation_id, trailer_id, trailer_number, customer, load_status, status, arrival_status, arrival_record_id, discharged_at, arrived_at, arrival_confirmed_at, inspection_started_at, inspection_completed_at, expected_front_temperature, expected_rear_temperature, expected_temperature_unit, temperature_required, has_damage, has_temperature_alert, cancelled_at, cancelled_by, cancellation_reason, no_show_at, no_show_by, no_show_reason, added_after_confirmation",
     )
     .maybeSingle();
 
@@ -467,7 +474,7 @@ const runSetPreArrivalOutcome = async (
     .eq("id", trailer.id)
     .in("arrival_status", ["expected", "available_for_arrival", "cancelled", "no_show"])
     .select(
-      "id, vessel_operation_id, trailer_id, trailer_number, customer, load_status, status, arrival_status, arrival_record_id, inspection_started_at, inspection_completed_at, expected_front_temperature, expected_rear_temperature, expected_temperature_unit, temperature_required, has_damage, has_temperature_alert, cancelled_at, cancelled_by, cancellation_reason, no_show_at, no_show_by, no_show_reason, added_after_confirmation",
+      "id, vessel_operation_id, trailer_id, trailer_number, customer, load_status, status, arrival_status, arrival_record_id, discharged_at, arrived_at, arrival_confirmed_at, inspection_started_at, inspection_completed_at, expected_front_temperature, expected_rear_temperature, expected_temperature_unit, temperature_required, has_damage, has_temperature_alert, cancelled_at, cancelled_by, cancellation_reason, no_show_at, no_show_by, no_show_reason, added_after_confirmation",
     )
     .maybeSingle();
 
@@ -588,7 +595,7 @@ const runUndoPreArrivalOutcome = async (
     .eq("id", trailer.id)
     .eq("arrival_status", outcome)
     .select(
-      "id, vessel_operation_id, trailer_id, trailer_number, customer, load_status, status, arrival_status, arrival_record_id, inspection_started_at, inspection_completed_at, expected_front_temperature, expected_rear_temperature, expected_temperature_unit, temperature_required, has_damage, has_temperature_alert, cancelled_at, cancelled_by, cancellation_reason, no_show_at, no_show_by, no_show_reason, added_after_confirmation",
+      "id, vessel_operation_id, trailer_id, trailer_number, customer, load_status, status, arrival_status, arrival_record_id, discharged_at, arrived_at, arrival_confirmed_at, inspection_started_at, inspection_completed_at, expected_front_temperature, expected_rear_temperature, expected_temperature_unit, temperature_required, has_damage, has_temperature_alert, cancelled_at, cancelled_by, cancellation_reason, no_show_at, no_show_by, no_show_reason, added_after_confirmation",
     )
     .maybeSingle();
 
@@ -677,7 +684,17 @@ const runMarkArrived = async (
     });
   }
 
-  if (trailer.arrival_status === "arrived" || trailer.arrival_record_id) {
+  if (trailer.arrival_record_id) {
+    return {
+      ok: true,
+      status: "success",
+      message: `${trailer.trailer_number ?? "Trailer"} is already marked as arrived.`,
+      retryable: false,
+      updatedVesselTrailer: asVesselTrailerState(trailer),
+    };
+  }
+
+  if (trailer.arrival_status === "arrived") {
     return {
       ok: true,
       status: "success",
@@ -688,6 +705,16 @@ const runMarkArrived = async (
   }
 
   try {
+    const dischargedAt = payload.receivedAt ?? new Date().toISOString();
+    const discharge = await markVesselTrailerDischarged({
+      supabase,
+      vesselTrailerId: trailer.id,
+      operatorName,
+      dischargedAt,
+      sourceModule: "vessel",
+      eventDescription: "Trailer discharged from vessel from Master Mobile.",
+    });
+
     const receivedAt = payload.receivedAt ?? new Date().toISOString();
 
     const { data: trailerId, error: confirmError } = await supabase.rpc("confirm_vessel_trailer_arrival", {
@@ -717,9 +744,9 @@ const runMarkArrived = async (
       supabaseClient: supabase,
       trailerId: arrivalTrailer?.id ?? trailer.trailer_id ?? null,
       trailerNumber: trailer.trailer_number ?? "UNKNOWN",
-      eventType: "vessel_arrived",
-      eventTitle: "Vessel trailer marked arrived",
-      eventDescription: "Arrival confirmed from Master Mobile.",
+      eventType: "arrived",
+      eventTitle: "Vessel trailer received",
+      eventDescription: "Reception confirmed from Master Mobile.",
       sourceModule: "vessel",
       sourceRecordId: trailer.id,
       previousStatus: trailer.arrival_status ?? trailer.status,
@@ -727,6 +754,8 @@ const runMarkArrived = async (
       metadata: {
         vessel_trailer_id: trailer.id,
         vessel_operation_id: trailer.vessel_operation_id,
+        discharged_at: discharge.dischargedAt,
+        arrival_confirmed_at: receivedAt,
       },
       performedBy: operatorName,
       createdAt: receivedAt,

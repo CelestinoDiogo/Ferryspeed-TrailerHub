@@ -47,6 +47,14 @@ export const buildVesselPresentationWorkbook = () =>
     ["Signature", "", "", "", "", "", "", "", "", "", ""],
   ]);
 
+export const buildExportAllocationWorkbook = (
+  rows: Array<Array<string | number>> = [
+    ["Trailer No.", "Customer", "Collection Address", "Haulier", "Booking Reference", "Load Type", "Collection Date", "Expected Return", "Priority", "Notes"],
+    ["PRO810", "Acme Exports", "Yard 1", "Haulier A", "EXP-1", "Empty", "2026-08-21", "2026-08-28", "high", "Ready row"],
+    ["", "Blank Trailer Customer", "Yard 2", "Haulier B", "EXP-2", "Empty", "2026-08-22", "", "normal", "Unassigned row"],
+  ],
+) => buildWorkbook("EXPORT ALLOCATIONS", rows);
+
 export const buildDeparturePresentationWorkbook = () =>
   buildWorkbook("FERRYSPEED VPL", [
     ["Ferryspeed Voyage Presentation List"],

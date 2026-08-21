@@ -64,6 +64,7 @@ export type VesselOperationalReportData = {
     arrivalStatusRaw: string | null;
     arrivedAt: string | null;
     arrivalTime: string | null;
+    dischargedAt: string | null;
     inspectionStatus: string;
     inspectionCompletedAt: string | null;
     receptionStatus: string;

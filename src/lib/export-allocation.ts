@@ -53,9 +53,34 @@ export type ExportAllocationFilter =
   | "collected_loaded"
   | "completed"
   | "cancelled"
+  | "active"
   | "at_customer"
   | "overdue"
   | "all";
+
+export const UNASSIGNED_EXPORT_TRAILER_LABEL = "Trailer to be selected";
+
+export const ASSIGN_TRAILER_BEFORE_OPERATION_MESSAGE =
+  "Assign a trailer before continuing this operation.";
+
+export function hasAssignedTrailer(allocation: {
+  trailer_id?: string | null;
+  trailer_number?: string | null;
+}) {
+  return Boolean(allocation.trailer_id?.trim());
+}
+
+export function getExportAllocationTrailerLabel(allocation: {
+  trailer_id?: string | null;
+  trailer_number?: string | null;
+}) {
+  if (!hasAssignedTrailer(allocation)) {
+    return UNASSIGNED_EXPORT_TRAILER_LABEL;
+  }
+
+  const trailerNumber = allocation.trailer_number?.trim();
+  return trailerNumber || "Unknown";
+}
 
 export const EXPORT_ACTIVE_STATUSES: ReadonlySet<ExportAllocationStatus> =
   new Set([
@@ -307,6 +332,7 @@ export function getExportAllocationFilterFromQuery(
     case "collected_loaded":
     case "completed":
     case "cancelled":
+    case "active":
     case "at_customer":
     case "overdue":
     case "all":
@@ -435,6 +461,12 @@ export function isExportAllocationActive(
   status: ExportAllocationStatus,
 ): boolean {
   return EXPORT_ACTIVE_STATUSES.has(status);
+}
+
+export function isExportAllocationAtCustomer(
+  status: ExportAllocationStatus,
+): boolean {
+  return status === "delivered_empty" || status === "waiting_loading";
 }
 
 export function isExportAllocationOverdue(

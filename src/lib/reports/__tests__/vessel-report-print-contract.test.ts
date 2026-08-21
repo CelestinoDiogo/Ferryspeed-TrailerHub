@@ -20,6 +20,10 @@ describe("Vessel Report consolidated print contract", () => {
     for (const heading of ["Trailer", "Discharged Time", "Front Temp", "Rear Temp", "Damage", "Priority", "Notes"]) {
       expect(consolidatedTable).toContain(`>${heading}</th>`);
     }
+
+    expect(printSource).toContain("formatVesselDateTime(trailer.dischargedAt)");
+    expect(consolidatedTable).not.toContain("formatVesselDateTime(trailer.arrivedAt)");
+    expect(consolidatedTable).not.toContain("formatVesselDateTime(trailer.arrivalTime)");
   });
 
   it("limits the consolidated table to temperature-required or damaged trailers", () => {

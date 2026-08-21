@@ -2,9 +2,11 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, Json } from "@/lib/database.types";
 import {
   assignNextWaitingTrailerAfterDeliveredEmpty,
+  ASSIGN_TRAILER_BEFORE_OPERATION_MESSAGE,
   getExportAllocationStatusLabel,
   getExportAllocationTimestampField,
   getNextExportAllocationStatus,
+  hasAssignedTrailer,
   normalizeExportAllocationStatus,
   type ExportAllocationRecord,
   type ExportAllocationStatus,
@@ -151,6 +153,10 @@ export const advanceExportAllocationStatus = async (
 
   if (nextStatus === "allocated") {
     throw new Error("Allocated is not a forward transition target.");
+  }
+
+  if (nextStatus !== "cancelled" && !hasAssignedTrailer(input.allocation)) {
+    throw new Error(ASSIGN_TRAILER_BEFORE_OPERATION_MESSAGE);
   }
 
   let occurredAt = new Date().toISOString();

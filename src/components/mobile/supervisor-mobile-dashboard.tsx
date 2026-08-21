@@ -11,8 +11,11 @@ import { toRoleLabel, type RoleKey } from "@/lib/auth/roles";
 import { useCurrentUser } from "@/lib/auth/use-current-user";
 import type { Database } from "@/lib/database.types";
 import {
+  ASSIGN_TRAILER_BEFORE_OPERATION_MESSAGE,
   getAdvanceStatusActionLabel,
   getExportAllocationStatusLabel,
+  getExportAllocationTrailerLabel,
+  hasAssignedTrailer,
   normalizeExportAllocationRecord,
   type ExportAllocationRecord,
   type ExportAllocationStatus,
@@ -33,6 +36,11 @@ import {
   withTrailerJobCommitments,
 } from "@/lib/trailer-job-eligibility";
 import { saveVesselInspectionPhoto } from "@/lib/vessel-inspection-photos";
+import {
+  compareTrailerNumber,
+  isArrivedVesselArrivalStatus,
+  isPendingVesselArrivalStatus,
+} from "@/lib/vessel-operations";
 import {
   buildQuayTrailerVoiceSummary,
   executeQuayVoiceCommand,
@@ -99,6 +107,7 @@ type VesselTrailerRow = Pick<
   | "inspection_completed_at"
   | "has_temperature_alert"
   | "has_damage"
+  | "discharged_at"
 >;
 
 type OperationalAlertRow = Pick<
@@ -230,12 +239,9 @@ const parseNumericInput = (value: string) => {
   return Number.isFinite(parsed) ? parsed : null;
 };
 
-const isArrivedState = (arrivalStatus?: string | null) => normalizeText(arrivalStatus) === "arrived";
+const isArrivedState = (arrivalStatus?: string | null) => isArrivedVesselArrivalStatus(arrivalStatus);
 
-const isPendingArrivalState = (arrivalStatus?: string | null) => {
-  const normalized = normalizeText(arrivalStatus);
-  return normalized === "expected" || normalized === "available_for_arrival";
-};
+const isPendingArrivalState = (arrivalStatus?: string | null) => isPendingVesselArrivalStatus(arrivalStatus);
 
 const isTemperatureRequired = (row: VesselTrailerRow) => {
   if (row.expected_front_temperature !== null || row.expected_rear_temperature !== null) {
@@ -362,7 +368,7 @@ export function SupervisorMobileDashboard() {
           .limit(30),
         supabase
           .from("vessel_operation_trailers")
-          .select("id, vessel_operation_id, trailer_id, trailer_number, customer, arrival_status, priority_level, temperature_required, expected_front_temperature, expected_rear_temperature, expected_temperature_unit, inspection_started_at, inspection_completed_at, has_temperature_alert, has_damage")
+          .select("id, vessel_operation_id, trailer_id, trailer_number, customer, arrival_status, priority_level, temperature_required, expected_front_temperature, expected_rear_temperature, expected_temperature_unit, inspection_started_at, inspection_completed_at, has_temperature_alert, has_damage, discharged_at")
           .limit(800),
         supabase
           .from("operational_alerts")
@@ -562,15 +568,17 @@ export function SupervisorMobileDashboard() {
     });
 
     if (!normalized) {
-      return quickFiltered;
+      return [...quickFiltered].sort((left, right) => compareTrailerNumber(left.trailer_number, right.trailer_number));
     }
 
-    return quickFiltered.filter((row) => {
-      return (
-        (row.trailer_number ?? "").toLowerCase().includes(normalized) ||
-        (row.customer ?? "").toLowerCase().includes(normalized)
-      );
-    });
+    return quickFiltered
+      .filter((row) => {
+        return (
+          (row.trailer_number ?? "").toLowerCase().includes(normalized) ||
+          (row.customer ?? "").toLowerCase().includes(normalized)
+        );
+      })
+      .sort((left, right) => compareTrailerNumber(left.trailer_number, right.trailer_number));
   }, [selectedVesselRows, vesselQuickFilter, vesselFilter]);
 
   const trailersWithCommitments = useMemo(() => {
@@ -750,13 +758,74 @@ export function SupervisorMobileDashboard() {
         }),
       });
 
-      const payload = (await response.json()) as { error?: string; message?: string; status?: string };
+      const payload = (await response.json()) as {
+        error?: string;
+        message?: string;
+        status?: string;
+        updatedVesselTrailer?: {
+          vesselTrailerId?: string;
+          arrivalStatus?: string | null;
+          status?: string | null;
+          inspectionStartedAt?: string | null;
+          inspectionCompletedAt?: string | null;
+          hasDamage?: boolean | null;
+          hasTemperatureAlert?: boolean | null;
+          dischargedAt?: string | null;
+        } | null;
+      };
       if (!response.ok || payload.status === "failed" || payload.status === "conflict") {
         throw new Error(payload.error ?? payload.message ?? input.fallbackError);
       }
 
       setSuccess(input.successMessage ?? payload.message ?? "Action completed.");
       await loadData({ showLoading: false });
+
+      const nowIso = new Date().toISOString();
+      setVesselTrailers((current) =>
+        current.map((row) => {
+          if (row.id !== input.trailerRowId) {
+            return row;
+          }
+
+          const updated = payload.updatedVesselTrailer;
+          if (updated) {
+            return {
+              ...row,
+              arrival_status: updated.arrivalStatus ?? row.arrival_status,
+              inspection_started_at: updated.inspectionStartedAt ?? row.inspection_started_at,
+              inspection_completed_at: updated.inspectionCompletedAt ?? row.inspection_completed_at,
+              has_damage: updated.hasDamage ?? row.has_damage,
+              has_temperature_alert: updated.hasTemperatureAlert ?? row.has_temperature_alert,
+              discharged_at: updated.dischargedAt ?? row.discharged_at,
+            };
+          }
+
+          if (input.actionType === "MARK_ARRIVED") {
+            return {
+              ...row,
+              arrival_status: "arrived",
+              discharged_at: row.discharged_at ?? nowIso,
+            };
+          }
+
+          if (input.actionType === "START_INSPECTION") {
+            return {
+              ...row,
+              inspection_started_at: row.inspection_started_at ?? nowIso,
+            };
+          }
+
+          if (input.actionType === "COMPLETE_INSPECTION") {
+            return {
+              ...row,
+              arrival_status: "arrived",
+              inspection_completed_at: row.inspection_completed_at ?? nowIso,
+            };
+          }
+
+          return row;
+        }),
+      );
       return true;
     } catch (actionErr) {
       setError(actionErr instanceof Error ? actionErr.message : input.fallbackError);
@@ -1811,13 +1880,16 @@ export function SupervisorMobileDashboard() {
                   <div className="space-y-2">
                     {exportRows.length === 0 ? <p className="text-sm text-slate-500">No export allocations found.</p> : null}
                     {exportRows.map((row) => {
-                      const nextAction = getAdvanceStatusActionLabel(row.status);
+                      const nextAction = hasAssignedTrailer(row) ? getAdvanceStatusActionLabel(row.status) : null;
                       const pending = hasAction("EXPORT_ADVANCE", row.id);
 
                       return (
                         <article key={row.id} className="rounded-2xl border border-slate-200 bg-white p-3">
-                          <p className="text-lg font-semibold text-slate-900">{row.trailer_number ?? "-"}</p>
+                          <p className="text-lg font-semibold text-slate-900">{getExportAllocationTrailerLabel(row)}</p>
                           <p className="text-xs text-slate-600">{row.customer ?? "-"}</p>
+                          {!hasAssignedTrailer(row) ? (
+                            <p className="mt-1 text-xs text-amber-700">{ASSIGN_TRAILER_BEFORE_OPERATION_MESSAGE}</p>
+                          ) : null}
                           <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
                             <InfoPill label="Status" value={getExportAllocationStatusLabel(row.status)} />
                             <InfoPill label="Priority" value={row.priority ?? "normal"} />

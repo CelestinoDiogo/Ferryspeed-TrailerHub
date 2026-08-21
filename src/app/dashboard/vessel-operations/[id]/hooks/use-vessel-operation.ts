@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabase";
+import { markVesselTrailerDischarged } from "@/lib/operations/mark-vessel-trailer-discharged";
 import { createTrailerActivity } from "@/lib/trailer-activity";
 import {
   deriveVesselWorkflowStep,
@@ -337,7 +338,7 @@ export function useVesselOperation(operationId: string): UseVesselOperationResul
           .single(),
         supabase
           .from("vessel_operation_trailers")
-          .select("id, vessel_operation_id, trailer_id, trailer_number, customer, booking_reference, load_status, load_description, temperature_required, expected_front_temperature, expected_rear_temperature, expected_temperature_unit, priority_level, priority_reason, planned_destination, planning_notes, ownership_type, trailer_source, external_company, added_after_confirmation, added_after_confirmation_at, added_after_confirmation_by, manifest_change_reason, status, arrived_at, arrival_status, arrival_confirmed_at, arrival_record_id, arrival_confirmed_by, inspection_started_at, inspection_completed_at, position_assigned_at, assigned_position, has_damage, has_temperature_alert, created_at, updated_at")
+          .select("id, vessel_operation_id, trailer_id, trailer_number, customer, booking_reference, load_status, load_description, temperature_required, expected_front_temperature, expected_rear_temperature, expected_temperature_unit, priority_level, priority_reason, planned_destination, planning_notes, ownership_type, trailer_source, external_company, added_after_confirmation, added_after_confirmation_at, added_after_confirmation_by, manifest_change_reason, status, arrived_at, discharged_at, arrival_status, arrival_confirmed_at, arrival_record_id, arrival_confirmed_by, inspection_started_at, inspection_completed_at, position_assigned_at, assigned_position, has_damage, has_temperature_alert, created_at, updated_at")
           .eq("vessel_operation_id", operationId)
           .order("created_at", { ascending: true }),
       ]);
@@ -923,76 +924,39 @@ export function useVesselOperation(operationId: string): UseVesselOperationResul
       try {
         const nowIso = new Date().toISOString();
         const operatorName = await resolveOperatorName();
-        const { data: updatedTrailer, error: updateError } = await supabase
-          .from("vessel_operation_trailers")
-          .update({
-            status: "arrived",
-            arrival_status: "arrived",
-            arrived_at: nowIso,
-            arrival_confirmed_at: nowIso,
-            arrival_confirmed_by: operatorName,
-            updated_at: nowIso,
-          })
-          .eq("id", trailer.id)
-          .in("arrival_status", ["available_for_arrival", "expected"])
-          .is("arrival_record_id", null)
-          .select("id")
-          .maybeSingle();
+        const discharged = await markVesselTrailerDischarged({
+          supabase,
+          vesselTrailerId: trailer.id,
+          operatorName,
+          dischargedAt: nowIso,
+          sourceModule: "vessel",
+        });
 
-        if (updateError) {
-          throw updateError;
-        }
-
-        if (!updatedTrailer) {
+        if (discharged.alreadyDischarged) {
           setError("Arrival is no longer available for this trailer.");
           return;
         }
 
-        const { error: eventError } = await supabase.from("trailer_events").insert({
-          trailer_id: null,
-          trailer_number: trailer.trailer_number ?? null,
-          event_type: "vessel_trailer_marked_arrived",
-          event_description: "Expected trailer marked as arrived.",
-          old_value: {
-            vessel_trailer_id: trailer.id,
-            arrival_status: trailer.arrival_status,
-          },
-          new_value: {
-            vessel_trailer_id: trailer.id,
-            arrival_status: "arrived",
-            arrived_at: nowIso,
-            arrived_by: operatorName,
-          },
-        });
-
-        if (eventError) {
-          logVesselSupabaseError("Insert mark arrived event failed", eventError);
-        }
-
-        try {
-          await createTrailerActivity({
-            trailerId: trailer.trailer_id ?? null,
-            trailerNumber: trailer.trailer_number ?? "",
-            eventType: "vessel_arrived",
-            eventTitle: "Vessel trailer marked arrived",
-            eventDescription: "Expected trailer marked as arrived.",
-            sourceModule: "vessel",
-            sourceRecordId: trailer.id,
-            previousStatus: trailer.arrival_status ?? trailer.status,
-            newStatus: "arrived",
-            metadata: {
-              vessel_trailer_id: trailer.id,
-              vessel_operation_id: trailer.vessel_operation_id,
-              arrived_at: nowIso,
-            },
-            performedBy: operatorName,
-            createdAt: nowIso,
-          });
-        } catch (activityError) {
-          console.error("Unable to log trailer activity for vessel arrival:", activityError);
-        }
-
+        const dischargedAt = discharged.dischargedAt ?? nowIso;
         setSuccess(`Arrival confirmed for ${trailer.trailer_number ?? "trailer"}.`);
+        setTrailers((current) =>
+          sortVesselOperationTrailersForArrivals(
+            current.map((item) =>
+              item.id === trailer.id
+                ? {
+                    ...item,
+                    status: "arrived",
+                    arrival_status: "arrived",
+                    discharged_at: dischargedAt,
+                    arrived_at: item.arrived_at ?? dischargedAt,
+                    arrival_confirmed_at: item.arrival_confirmed_at ?? dischargedAt,
+                    arrival_confirmed_by: operatorName,
+                    updated_at: nowIso,
+                  }
+                : item,
+            ),
+          ),
+        );
         await loadOperation();
       } catch (arrivalErr) {
         console.error("Unable to confirm arrival:", arrivalErr);

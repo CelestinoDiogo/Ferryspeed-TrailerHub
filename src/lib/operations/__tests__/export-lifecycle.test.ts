@@ -4,6 +4,10 @@ import type { Database } from "@/lib/database.types";
 import type { ExportAllocationRecord, ExportAllocationStatus } from "@/lib/export-allocation";
 import { advanceExportAllocationStatus, undoExportAllocationStatus } from "@/lib/operations/export-lifecycle";
 
+vi.mock("@/lib/operations/trailer-lifecycle", () => ({
+  recordTrailerLifecycleEvent: vi.fn(async () => undefined),
+}));
+
 const makeAllocation = (status: ExportAllocationStatus): ExportAllocationRecord => ({
   id: `allocation-${status}`,
   trailer_id: "trailer-a",
@@ -70,6 +74,58 @@ describe("atomic export load lifecycle", () => {
       p_performed_by: "Operator",
     });
     expect(from).not.toHaveBeenCalled();
+  });
+
+  it("blocks trailer-dependent advance while the allocation is unassigned", async () => {
+    const { client, rpc, from } = makeClient();
+
+    await expect(advanceExportAllocationStatus(client, {
+      allocation: {
+        id: "allocation-unassigned",
+        trailer_id: null,
+        trailer_number: null,
+        customer: "Later Assign",
+        priority: "normal",
+        status: "allocated",
+      },
+      sourceModule: "export",
+      skipWaitingAutoAssign: true,
+    })).rejects.toThrow("Assign a trailer before continuing this operation.");
+
+    expect(rpc).not.toHaveBeenCalled();
+    expect(from).not.toHaveBeenCalled();
+  });
+
+  it("allows cancelling an unassigned allocation", async () => {
+    const updateEq = vi.fn(async () => ({ error: null }));
+    const from = vi.fn(() => ({
+      update: () => ({
+        eq: () => ({
+          eq: updateEq,
+        }),
+      }),
+    }));
+    const rpc = vi.fn();
+    const client = { rpc, from } as unknown as SupabaseClient<Database>;
+
+    const result = await advanceExportAllocationStatus(client, {
+      allocation: {
+        id: "allocation-unassigned",
+        trailer_id: null,
+        trailer_number: null,
+        customer: "Later Assign",
+        priority: "normal",
+        status: "allocated",
+      },
+      sourceModule: "export",
+      targetStatus: "cancelled",
+      skipWaitingAutoAssign: true,
+    });
+
+    expect(result.nextStatus).toBe("cancelled");
+    expect(rpc).not.toHaveBeenCalled();
+    expect(from).toHaveBeenCalled();
+    expect(updateEq).toHaveBeenCalled();
   });
 
   it("does not attempt a browser fallback when the transaction fails", async () => {

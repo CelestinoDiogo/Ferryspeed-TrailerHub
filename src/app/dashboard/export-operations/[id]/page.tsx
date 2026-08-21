@@ -17,7 +17,10 @@ import { supabase } from "@/lib/supabase";
 import {
   COMPOUND_REFRESH_STORAGE_KEY,
   EXPORT_ACTIVE_STATUS_QUERY_VALUES,
+  ASSIGN_TRAILER_BEFORE_OPERATION_MESSAGE,
   getAdvanceStatusActionLabel,
+  getExportAllocationTrailerLabel,
+  hasAssignedTrailer,
   isExportAllocationOffCompoundStatus,
   getExportAllocationPriorityClasses,
   getExportAllocationPriorityLabel,
@@ -28,6 +31,7 @@ import {
   isExportAllocationOverdue,
   isTrailerAvailableForExportAllocation,
   normalizeExportAllocationRecord,
+  UNASSIGNED_EXPORT_TRAILER_LABEL,
   type ExportAllocationPriority,
   type ExportAllocationRecord,
   type ExportAllocationStatus,
@@ -38,6 +42,7 @@ import {
   getTrailerIdsReservedByActiveDeliveryBookings,
 } from "@/lib/delivery-booking-availability";
 import { isTrailerEligibleForNewExportJob } from "@/lib/trailer-job-eligibility";
+import { getSessionToken } from "@/lib/voice/session";
 
 type TrailerOption = {
   id: string;
@@ -360,6 +365,11 @@ function ExportAllocationDetailsContent() {
       return;
     }
 
+    if (!hasAssignedTrailer(allocation)) {
+      setError(ASSIGN_TRAILER_BEFORE_OPERATION_MESSAGE);
+      return;
+    }
+
     setIsSaving(true);
     setError(null);
     setSuccess(null);
@@ -506,64 +516,40 @@ function ExportAllocationDetailsContent() {
 
     try {
       let trailerNumber = allocation.trailer_number ?? null;
-      if (allocation.status !== "allocated" && formState.trailer_id !== (allocation.trailer_id ?? "")) {
+      const currentTrailerId = allocation.trailer_id?.trim() || null;
+      const nextTrailerId = formState.trailer_id.trim() || null;
+
+      if (allocation.status !== "allocated" && nextTrailerId !== currentTrailerId) {
         throw new Error("Trailer cannot be changed after status progressed beyond allocated.");
       }
 
-      if (formState.trailer_id !== (allocation.trailer_id ?? "")) {
-        const activeStatuses = [...EXPORT_ACTIVE_STATUS_QUERY_VALUES];
-        const [{ data: trailerData, error: trailerError }, { data: activeForTrailer, error: activeError }, { data: deliveryForTrailer, error: deliveryError }] = await Promise.all([
-          supabase
-            .from("trailers")
-            .select("id, trailer_number, load_status, departure_date, compound_position, trailer_source, is_local, operational_status")
-            .eq("id", formState.trailer_id)
-            .single(),
-          supabase
-            .from("export_allocations")
-            .select("id")
-            .eq("trailer_id", formState.trailer_id)
-            .neq("id", allocation.id)
-            .in("status", activeStatuses)
-            .limit(1),
-          supabase
-            .from("delivery_bookings")
-            .select("id, trailer_id, status")
-            .eq("trailer_id", formState.trailer_id)
-            .not("status", "in", DELIVERY_BOOKING_RELEASE_STATUS_QUERY)
-            .limit(1),
-        ]);
+      if (currentTrailerId && !nextTrailerId) {
+        throw new Error("Assigned trailers cannot be cleared. Cancel the allocation if it is no longer required.");
+      }
 
-        if (trailerError || !trailerData) {
-          throw new Error(trailerError?.message || "Unable to validate selected trailer.");
+      if (nextTrailerId && nextTrailerId !== currentTrailerId) {
+        const token = await getSessionToken();
+        const response = await fetch("/api/export-allocations/assign-trailer", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            allocationId: allocation.id,
+            trailerId: nextTrailerId,
+          }),
+        });
+        const payload = (await response.json()) as { error?: string; result?: { trailerNumber?: string | null } };
+        if (!response.ok) {
+          throw new Error(payload.error || "Unable to assign trailer.");
         }
-
-        if (activeError) {
-          throw new Error(activeError.message || "Unable to validate selected trailer.");
-        }
-
-        if (deliveryError) {
-          throw new Error(deliveryError.message || "Unable to validate selected trailer.");
-        }
-
-        const hasActive = (activeForTrailer ?? []).length > 0;
-        const trailer = trailerData as TrailerOption;
-
-        if (
-          !isTrailerAvailableForExportAllocation(trailer, hasActive)
-          || !isTrailerEligibleForNewExportJob({
-            hasActiveDelivery: getTrailerIdsReservedByActiveDeliveryBookings(deliveryForTrailer ?? []).has(formState.trailer_id),
-            activeExportStatus: null,
-          })
-        ) {
-          throw new Error("This trailer is no longer available for allocation.");
-        }
-
-        trailerNumber = trailer.trailer_number ?? null;
+        trailerNumber = payload.result?.trailerNumber ?? trailerNumber;
       }
 
       const updatePayload = {
-        trailer_id: formState.trailer_id,
-        trailer_number: trailerNumber,
+        trailer_id: nextTrailerId,
+        trailer_number: nextTrailerId ? trailerNumber : null,
         customer: formState.customer.trim(),
         collection_address: formState.collection_address.trim() || null,
         haulier: formState.haulier.trim() || null,
@@ -601,7 +587,7 @@ function ExportAllocationDetailsContent() {
 
       const { error: eventError } = await supabase.from("trailer_events").insert({
         trailer_id: updatePayload.trailer_id,
-        trailer_number: updatePayload.trailer_number,
+        trailer_number: updatePayload.trailer_number ?? UNASSIGNED_EXPORT_TRAILER_LABEL,
         event_type: "export_allocation_updated",
         event_description: "Export allocation details updated.",
         old_value: oldValue,
@@ -667,7 +653,7 @@ function ExportAllocationDetailsContent() {
   }
 
   const canCancel = allocation.status !== "completed" && allocation.status !== "cancelled";
-  const nextStatusLabel = getAdvanceStatusActionLabel(allocation.status);
+  const nextStatusLabel = hasAssignedTrailer(allocation) ? getAdvanceStatusActionLabel(allocation.status) : null;
   const canUndo = Boolean(getUndoTargetStatus());
   const overdue = isExportAllocationOverdue(allocation);
 
@@ -732,7 +718,7 @@ function ExportAllocationDetailsContent() {
           <div className="mt-4 grid gap-3 text-sm text-slate-300 sm:grid-cols-2 xl:grid-cols-4">
             <div>
               <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Trailer</p>
-              <p className="mt-1 font-semibold text-white">{allocation.trailer_number ?? "-"}</p>
+              <p className="mt-1 font-semibold text-white">{getExportAllocationTrailerLabel(allocation)}</p>
               {allocation.trailer_id ? (
                 <Link href={`/dashboard/trailers/${allocation.trailer_id}`} className="mt-1 inline-block text-xs text-cyan-200 underline hover:text-cyan-100">
                   Open Trailer
@@ -759,6 +745,10 @@ function ExportAllocationDetailsContent() {
               >
                 {isSaving ? "Updating..." : nextStatusLabel}
               </button>
+            ) : !hasAssignedTrailer(allocation) && allocation.status === "allocated" ? (
+              <p className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs font-semibold text-amber-200">
+                {ASSIGN_TRAILER_BEFORE_OPERATION_MESSAGE}
+              </p>
             ) : null}
             {canUndo ? (
               <button
@@ -817,12 +807,15 @@ function ExportAllocationDetailsContent() {
             <form onSubmit={handleSaveEdit} className="mt-4 grid gap-4 md:grid-cols-2">
               <div>
                 <label className="mb-2 block text-sm font-medium text-slate-200">Trailer</label>
-                {allocation.status === "allocated" ? (
+                    {allocation.status === "allocated" ? (
                   <select
                     value={formState.trailer_id}
                     onChange={(event) => handleFieldChange("trailer_id", event.target.value)}
                     className="w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm outline-none"
                   >
+                    {!hasAssignedTrailer(allocation) ? (
+                      <option value="">{UNASSIGNED_EXPORT_TRAILER_LABEL}</option>
+                    ) : null}
                     {availableTrailers.map((trailer) => (
                       <option key={trailer.id} value={trailer.id}>
                         {formatTrailerOption(trailer)}
@@ -831,7 +824,7 @@ function ExportAllocationDetailsContent() {
                   </select>
                 ) : (
                   <input
-                    value={allocation.trailer_number ?? "-"}
+                    value={getExportAllocationTrailerLabel(allocation)}
                     readOnly
                     className="w-full rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-3 text-sm text-slate-400 outline-none"
                   />

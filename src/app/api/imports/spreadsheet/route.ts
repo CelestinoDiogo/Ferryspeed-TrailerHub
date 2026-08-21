@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { previewDepartureSpreadsheet, type DepartureImportCandidate } from "@/lib/imports/departure-import";
+import { previewExportAllocationSpreadsheet, type ExportAllocationImportCandidate } from "@/lib/imports/export-allocation-import";
 import { SpreadsheetImportValidationError, validateSpreadsheetUpload } from "@/lib/imports/spreadsheet-security";
 import { previewVesselTrailerSpreadsheet } from "@/lib/imports/vessel-trailer-list-import";
 import {
@@ -18,7 +19,7 @@ import {
 
 export const runtime = "nodejs";
 
-const purposeSchema = z.enum(["vessel_list", "departure"]);
+const purposeSchema = z.enum(["vessel_list", "departure", "export"]);
 const existingNumbersSchema = z.array(z.string());
 
 export async function POST(request: Request) {
@@ -38,7 +39,7 @@ export async function POST(request: Request) {
     await requireRbacPermission(
       supabase,
       user.id,
-      purpose === "vessel_list" ? "vessel_operations" : "departures",
+      purpose === "vessel_list" ? "vessel_operations" : purpose === "export" ? "export_operations" : "departures",
       "edit",
     );
 
@@ -90,6 +91,18 @@ export async function POST(request: Request) {
 
     if (exportError) {
       throw new Error(exportError.message || "Unable to check export reservations.");
+    }
+
+    if (purpose === "export") {
+      const candidates = withTrailerJobCommitments((data ?? []) as ExportAllocationImportCandidate[], {
+        reservedByDelivery: getTrailerIdsReservedByActiveDeliveryBookings(activeDeliveries ?? []),
+        exportStatusByTrailerId: getActiveExportStatusByTrailerId(activeExports ?? []),
+      });
+
+      return Response.json({
+        purpose,
+        preview: previewExportAllocationSpreadsheet(bytes, candidates),
+      });
     }
 
     const candidates = withTrailerJobCommitments((data ?? []) as DepartureImportCandidate[], {

@@ -316,7 +316,7 @@ export async function getVesselOperationReport(
       .single(),
     supabase
       .from("vessel_operation_trailers")
-      .select("id, vessel_operation_id, trailer_id, trailer_number, customer, booking_reference, load_status, temperature_required, expected_front_temperature, expected_rear_temperature, expected_temperature_unit, priority_level, planning_notes, ownership_type, trailer_source, external_company, added_after_confirmation, status, arrived_at, arrival_status, arrival_confirmed_at, arrival_record_id, arrival_confirmed_by, inspection_started_at, inspection_completed_at, position_assigned_at, assigned_position, has_damage, has_temperature_alert")
+      .select("id, vessel_operation_id, trailer_id, trailer_number, customer, booking_reference, load_status, temperature_required, expected_front_temperature, expected_rear_temperature, expected_temperature_unit, priority_level, planning_notes, ownership_type, trailer_source, external_company, added_after_confirmation, status, arrived_at, discharged_at, arrival_status, arrival_confirmed_at, arrival_record_id, arrival_confirmed_by, inspection_started_at, inspection_completed_at, position_assigned_at, assigned_position, has_damage, has_temperature_alert")
       .eq("vessel_operation_id", vesselOperationId)
       .order("created_at", { ascending: true }),
   ]);
@@ -571,6 +571,7 @@ export async function getVesselOperationReport(
       arrivalStatusRaw: trailer.arrival_status ?? null,
       arrivedAt: toIso(trailer.arrival_confirmed_at ?? trailer.arrived_at),
       arrivalTime: toIso(trailer.arrival_confirmed_at ?? trailer.arrived_at),
+      dischargedAt: toIso(trailer.discharged_at),
       inspectionStatus: trailer.status ?? "expected",
       inspectionCompletedAt: toIso(trailer.inspection_completed_at),
       receptionStatus: formatReceptionStatus(trailer),
@@ -705,8 +706,12 @@ export async function getVesselOperationReport(
 
   trailers.forEach((trailer) => {
     const trailerNumber = normalizeTrailerNumber(trailer.trailer_number ?? mainTrailersById.get(trailer.arrival_record_id ?? trailer.trailer_id ?? "")?.trailer_number) || null;
-    if (trailer.arrived_at) {
-      timeline.push({ timestamp: new Date(trailer.arrived_at).toISOString(), event: "Trailer arrival confirmed.", trailerNumber });
+    if (trailer.discharged_at) {
+      timeline.push({ timestamp: new Date(trailer.discharged_at).toISOString(), event: "Trailer discharged from vessel.", trailerNumber });
+    }
+    const receptionAt = trailer.arrival_confirmed_at ?? trailer.arrived_at;
+    if (receptionAt) {
+      timeline.push({ timestamp: new Date(receptionAt).toISOString(), event: "Trailer arrival/reception confirmed.", trailerNumber });
     }
     if (trailer.inspection_started_at) {
       timeline.push({ timestamp: new Date(trailer.inspection_started_at).toISOString(), event: "Inspection started.", trailerNumber });

@@ -83,6 +83,7 @@ const makeReport = (overrides?: { photoUrl?: string | null; includePhotos?: bool
       arrivalStatusRaw: "arrived",
       arrivedAt: "2026-08-01T09:20:00.000Z",
       arrivalTime: "2026-08-01T09:20:00.000Z",
+      dischargedAt: "2026-08-01T09:10:00.000Z",
       inspectionStatus: "inspected",
       inspectionCompletedAt: "2026-08-01T09:30:00.000Z",
       receptionStatus: "Received in Compound",

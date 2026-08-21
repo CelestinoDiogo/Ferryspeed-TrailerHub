@@ -333,7 +333,7 @@ export default function VesselOperationPrintPage() {
                         <td className="border border-slate-200 px-3 py-3">
                           <p className="font-semibold text-slate-950">{trailer.trailerNumber}</p>
                         </td>
-                        <td className="border border-slate-200 px-3 py-3">{formatVesselDateTime(trailer.arrivedAt)}</td>
+                        <td className="border border-slate-200 px-3 py-3">{formatVesselDateTime(trailer.dischargedAt)}</td>
                         <td className="border border-slate-200 px-3 py-3">{formatTemperature(trailer.frontTemperature, trailer.temperatureUnit)}</td>
                         <td className="border border-slate-200 px-3 py-3">{formatTemperature(trailer.rearTemperature, trailer.temperatureUnit)}</td>
                         <td className="border border-slate-200 px-3 py-3">{trailer.hasDamage ? "Yes" : "No"}</td>
