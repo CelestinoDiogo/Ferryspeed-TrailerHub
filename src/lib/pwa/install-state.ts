@@ -1,3 +1,5 @@
+import { resolveRoleAwareEntryPath } from "@/lib/auth/app-entry-path";
+
 export type BeforeInstallPromptEventLike = Event & {
   prompt: () => Promise<void>;
   userChoice: Promise<{ outcome: "accepted" | "dismissed"; platform: string }>;
@@ -38,11 +40,16 @@ export const isInstallDismissed = (dismissedUntil: number | null, nowMs: number)
   return dismissedUntil !== null && dismissedUntil > nowMs;
 };
 
-export const resolvePostLoginPath = (input: { returnTo: string | null; standalone: boolean }) => {
-  const candidate = input.returnTo?.trim();
-  if (candidate && candidate.startsWith("/")) {
-    return candidate;
-  }
-
-  return input.standalone ? "/dashboard/mobile" : "/dashboard";
+export const resolvePostLoginPath = (input: {
+  returnTo: string | null;
+  standalone: boolean;
+  roleKey?: string | null;
+  isActive?: boolean | null;
+}) => {
+  return resolveRoleAwareEntryPath({
+    roleKey: input.roleKey,
+    isActive: input.isActive,
+    returnTo: input.returnTo,
+    standalone: input.standalone,
+  });
 };

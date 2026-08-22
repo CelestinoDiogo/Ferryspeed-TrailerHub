@@ -3,8 +3,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import type { ReactNode } from "react";
+import { resolveRoleHomePath } from "@/lib/auth/app-entry-path";
 import { canAccessModule } from "@/lib/auth/permissions";
 import { useCurrentUser } from "@/lib/auth/use-current-user";
+import { isStandaloneDisplay } from "@/lib/pwa/install-state";
 import { supabase } from "@/lib/supabase";
 
 type DashboardAuthGuardProps = {
@@ -31,7 +33,31 @@ export function DashboardAuthGuard({ children }: DashboardAuthGuardProps) {
   const [isChecking, setIsChecking] = useState(true);
   const [authError, setAuthError] = useState<string | null>(null);
   const hasRedirectedRef = useRef(false);
+  const hasRedirectedHomeRef = useRef(false);
   const isDriverMobileRoute = pathname === "/dashboard/driver" || pathname?.startsWith("/dashboard/driver/");
+
+  const readStandaloneDisplay = () => {
+    if (typeof window === "undefined") {
+      return false;
+    }
+
+    return isStandaloneDisplay({
+      matchMediaStandalone: typeof window.matchMedia === "function"
+        ? window.matchMedia("(display-mode: standalone)").matches
+        : false,
+      navigatorStandalone: (window.navigator as Navigator & { standalone?: boolean }).standalone,
+    });
+  };
+
+  const roleHomePath = roleKey
+    ? resolveRoleHomePath({
+        roleKey,
+        standalone: readStandaloneDisplay(),
+      })
+    : null;
+  const isAlreadyOnRoleHome = Boolean(
+    roleHomePath && (pathname === roleHomePath || pathname?.startsWith(`${roleHomePath}/`)),
+  );
 
   const handleSignOut = useCallback(async () => {
     await supabase.auth.signOut();
@@ -165,6 +191,24 @@ export function DashboardAuthGuard({ children }: DashboardAuthGuardProps) {
     redirectToLogin();
   }, [isLoadingCurrentUser, loadError, redirectToLogin]);
 
+  useEffect(() => {
+    hasRedirectedHomeRef.current = false;
+  }, [pathname]);
+
+  useEffect(() => {
+    if (isChecking || isLoadingCurrentUser || !roleKey || hasRedirectedHomeRef.current) {
+      return;
+    }
+
+    const hasAccess = canAccessModule(roleKey, isDriverMobileRoute ? "driver_mobile" : "dashboard");
+    if (hasAccess || isAlreadyOnRoleHome || !roleHomePath) {
+      return;
+    }
+
+    hasRedirectedHomeRef.current = true;
+    router.replace(roleHomePath);
+  }, [isAlreadyOnRoleHome, isChecking, isDriverMobileRoute, isLoadingCurrentUser, roleHomePath, roleKey, router]);
+
   if (authError) {
     return (
       <div className="min-h-screen bg-slate-100 px-4 py-10 text-slate-900 sm:px-6 lg:px-8">
@@ -203,6 +247,18 @@ export function DashboardAuthGuard({ children }: DashboardAuthGuardProps) {
     : true;
 
   if (!hasRouteAccess) {
+    if (!isAlreadyOnRoleHome && roleHomePath) {
+      return (
+        <div className="min-h-screen bg-slate-100 px-4 py-10 text-slate-900 sm:px-6 lg:px-8">
+          <div className="mx-auto max-w-xl rounded-3xl border border-slate-200 bg-white p-8 shadow-sm">
+            <p className="text-sm font-semibold uppercase tracking-[0.25em] text-cyan-700">Ferryspeed TrailerHub</p>
+            <h1 className="mt-3 text-2xl font-semibold text-slate-950">Opening your workspace</h1>
+            <p className="mt-3 text-sm text-slate-600">Taking you to the screen for your role.</p>
+          </div>
+        </div>
+      );
+    }
+
     return (
       <div className="min-h-screen bg-slate-100 px-4 py-10 text-slate-900 sm:px-6 lg:px-8">
         <div className="mx-auto max-w-xl rounded-3xl border border-rose-200 bg-rose-50 p-8 shadow-sm">

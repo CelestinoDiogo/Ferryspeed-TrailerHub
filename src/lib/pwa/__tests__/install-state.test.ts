@@ -44,9 +44,24 @@ describe("install-state", () => {
     expect(isInstallDismissed(dismissedUntil, 7000)).toBe(false);
   });
 
-  it("resolves post-login route with returnTo guard and standalone fallback", () => {
+  it("resolves post-login route with returnTo guard, role fallback, and standalone home", () => {
     expect(resolvePostLoginPath({ returnTo: "/dashboard/mobile?tab=more", standalone: false })).toBe("/dashboard/mobile?tab=more");
     expect(resolvePostLoginPath({ returnTo: "https://example.com/phish", standalone: false })).toBe("/dashboard");
     expect(resolvePostLoginPath({ returnTo: "", standalone: true })).toBe("/dashboard/mobile");
+    expect(
+      resolvePostLoginPath({
+        returnTo: "/dashboard/mobile",
+        standalone: true,
+        roleKey: "driver",
+        isActive: true,
+      }),
+    ).toBe("/dashboard/driver");
+    expect(
+      resolvePostLoginPath({
+        returnTo: null,
+        standalone: false,
+        roleKey: "supervisor",
+      }),
+    ).toBe("/dashboard");
   });
 });

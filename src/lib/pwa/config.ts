@@ -1,7 +1,7 @@
 export const PWA_APP_NAME = "Ferryspeed TrailerHub";
 export const PWA_SHORT_NAME = "TrailerHub";
 export const PWA_DESCRIPTION = "Ferryspeed trailer and vessel operations management";
-export const PWA_START_URL = "/dashboard/mobile";
+export const PWA_START_URL = "/";
 export const PWA_SCOPE = "/";
 export const PWA_THEME_COLOR = "#0b1220";
 export const PWA_BACKGROUND_COLOR = "#041512";

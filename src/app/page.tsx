@@ -1,5 +1,5 @@
-import { redirect } from "next/navigation";
+import { AppEntry } from "@/components/auth/app-entry";
 
 export default function Home() {
-  redirect("/dashboard");
+  return <AppEntry />;
 }

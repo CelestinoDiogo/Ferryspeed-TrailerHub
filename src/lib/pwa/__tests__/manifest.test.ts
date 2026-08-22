@@ -18,7 +18,10 @@ describe("manifest", () => {
     expect(result.name).toBe(PWA_APP_NAME);
     expect(result.short_name).toBe(PWA_SHORT_NAME);
     expect(result.description).toBe(PWA_DESCRIPTION);
+    expect(result.start_url).toBe("/");
     expect(result.start_url).toBe(PWA_START_URL);
+    expect(PWA_START_URL).not.toBe("/dashboard/mobile");
+    expect(PWA_START_URL).not.toBe("/dashboard/driver");
     expect(result.scope).toBe(PWA_SCOPE);
     expect(result.display).toBe("standalone");
     expect(result.orientation).toBe("portrait-primary");

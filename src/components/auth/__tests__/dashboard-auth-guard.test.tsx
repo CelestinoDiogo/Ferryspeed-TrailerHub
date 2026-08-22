@@ -8,12 +8,13 @@ import { DashboardAuthGuard } from "@/components/auth/dashboard-auth-guard";
 const useCurrentUserMock = vi.hoisted(() => vi.fn());
 const canAccessModuleMock = vi.hoisted(() => vi.fn());
 
-const { replaceMock, refreshMock, getSessionMock, onAuthStateChangeMock, signOutMock } = vi.hoisted(() => ({
+const { replaceMock, refreshMock, getSessionMock, onAuthStateChangeMock, signOutMock, pathnameState } = vi.hoisted(() => ({
   replaceMock: vi.fn(),
   refreshMock: vi.fn(),
   getSessionMock: vi.fn(),
   onAuthStateChangeMock: vi.fn(),
   signOutMock: vi.fn(),
+  pathnameState: { value: "/dashboard/driver" },
 }));
 
 vi.mock("next/navigation", () => ({
@@ -21,7 +22,7 @@ vi.mock("next/navigation", () => ({
     replace: replaceMock,
     refresh: refreshMock,
   }),
-  usePathname: () => "/dashboard/driver",
+  usePathname: () => pathnameState.value,
 }));
 
 vi.mock("@/lib/auth/use-current-user", () => ({
@@ -45,6 +46,7 @@ vi.mock("@/lib/supabase", () => ({
 describe("DashboardAuthGuard", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    pathnameState.value = "/dashboard/driver";
 
     useCurrentUserMock.mockReturnValue({
       userId: "driver-user",
@@ -94,7 +96,7 @@ describe("DashboardAuthGuard", () => {
     expect(canAccessModuleMock).toHaveBeenCalledWith("driver", "driver_mobile");
   });
 
-  it("renders access denied when route permission check fails", async () => {
+  it("renders access denied when route permission check fails on the role home", async () => {
     canAccessModuleMock.mockReturnValue(false);
 
     render(
@@ -108,6 +110,29 @@ describe("DashboardAuthGuard", () => {
     });
 
     expect(screen.queryByText("Driver Content")).not.toBeInTheDocument();
+    expect(replaceMock).not.toHaveBeenCalledWith("/dashboard/driver");
+  });
+
+  it("redirects a Driver off Master Mobile onto Driver Mobile instead of Access Denied", async () => {
+    pathnameState.value = "/dashboard/mobile";
+    canAccessModuleMock.mockImplementation((roleKey: string, moduleKey: string) => roleKey === "driver" && moduleKey === "driver_mobile");
+
+    render(
+      <DashboardAuthGuard>
+        <div>Master Mobile</div>
+      </DashboardAuthGuard>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("Opening your workspace")).toBeInTheDocument();
+    });
+
+    await waitFor(() => {
+      expect(replaceMock).toHaveBeenCalledWith("/dashboard/driver");
+    });
+
+    expect(screen.queryByText("Access denied")).not.toBeInTheDocument();
+    expect(screen.queryByText("Master Mobile")).not.toBeInTheDocument();
   });
 
   it("keeps sign out visible in denied state and signs out to login", async () => {

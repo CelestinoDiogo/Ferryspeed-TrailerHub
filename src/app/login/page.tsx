@@ -2,8 +2,9 @@
 
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { resolveRoleAwareEntryPath } from "@/lib/auth/app-entry-path";
+import { isStandaloneDisplay } from "@/lib/pwa/install-state";
 import { supabase } from "@/lib/supabase";
-import { isStandaloneDisplay, resolvePostLoginPath } from "@/lib/pwa/install-state";
 
 const INVALID_CREDENTIALS_MESSAGE = "Invalid email or password.";
 const UNEXPECTED_SIGN_IN_MESSAGE = "Unable to sign in. Please try again.";
@@ -18,30 +19,24 @@ function LoginContent() {
   const [isCheckingSession, setIsCheckingSession] = useState(true);
   const returnTo = useMemo(() => searchParams.get("returnTo"), [searchParams]);
 
-  const postLoginPath = useMemo(
+  const standalone = useMemo(
     () =>
-      resolvePostLoginPath({
-        returnTo,
-        standalone:
-          typeof window !== "undefined"
-            ? isStandaloneDisplay({
-                matchMediaStandalone: window.matchMedia("(display-mode: standalone)").matches,
-                navigatorStandalone: (window.navigator as Navigator & { standalone?: boolean }).standalone,
-              })
-            : false,
-      }),
-    [returnTo],
+      typeof window !== "undefined"
+        ? isStandaloneDisplay({
+            matchMediaStandalone: window.matchMedia("(display-mode: standalone)").matches,
+            navigatorStandalone: (window.navigator as Navigator & { standalone?: boolean }).standalone,
+          })
+        : false,
+    [],
   );
 
   const resolveRoleAwarePostLoginPath = useCallback(async () => {
-    const safeReturnTo = returnTo?.trim();
-    if (safeReturnTo && safeReturnTo.startsWith("/")) {
-      return safeReturnTo;
-    }
-
     const {
       data: { user },
     } = await supabase.auth.getUser();
+
+    let roleKey: string | null = null;
+    let isActive: boolean | null = null;
 
     if (user?.id) {
       const { data: roleRow } = await supabase
@@ -50,14 +45,17 @@ function LoginContent() {
         .eq("user_id", user.id)
         .maybeSingle();
 
-      const roleKey = typeof roleRow?.role_key === "string" ? roleRow.role_key.trim().toLowerCase() : "";
-      if (roleKey === "driver" && roleRow?.is_active !== false) {
-        return "/dashboard/driver";
-      }
+      roleKey = typeof roleRow?.role_key === "string" ? roleRow.role_key : null;
+      isActive = typeof roleRow?.is_active === "boolean" ? roleRow.is_active : null;
     }
 
-    return postLoginPath;
-  }, [postLoginPath, returnTo]);
+    return resolveRoleAwareEntryPath({
+      roleKey,
+      isActive,
+      returnTo,
+      standalone,
+    });
+  }, [returnTo, standalone]);
 
   const canSubmit = useMemo(() => {
     return !isCheckingSession && !isSubmitting && email.trim().length > 0 && password.length > 0;
@@ -109,7 +107,7 @@ function LoginContent() {
       active = false;
       subscription.unsubscribe();
     };
-  }, [postLoginPath, returnTo, resolveRoleAwarePostLoginPath, router]);
+  }, [resolveRoleAwarePostLoginPath, router]);
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
