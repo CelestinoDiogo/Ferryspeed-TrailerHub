@@ -1,4 +1,5 @@
 import type { Database } from "@/lib/database.types";
+import { syncTrailerCurrentOperationalState } from "@/lib/operations/trailer-current-state";
 
 export const COMPOUND_CAPACITY = 50;
 
@@ -48,6 +49,7 @@ export type CompoundHeatmapRow = {
 
 type CompoundMoveRpcClient = {
   rpc: unknown;
+  from?: unknown;
 };
 
 export const normalizeCompoundPosition = (value?: string | null) => {
@@ -105,7 +107,15 @@ export async function moveCompoundTrailer(
     throw new Error(error.message || "Unable to move trailer in compound.");
   }
 
-  return data as Database["public"]["Tables"]["trailers"]["Row"] | null;
+  const moved = data as Database["public"]["Tables"]["trailers"]["Row"] | null;
+  if (moved?.id && typeof (rpcClient as { from?: unknown }).from === "function") {
+    const synchronized = await syncTrailerCurrentOperationalState(rpcClient as never, moved.id, {
+      intent: "place_on_compound",
+    });
+    return (synchronized as Database["public"]["Tables"]["trailers"]["Row"] | null) ?? moved;
+  }
+
+  return moved;
 }
 
 const getPositionBucket = () => ({

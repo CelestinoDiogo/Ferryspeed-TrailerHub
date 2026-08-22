@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { COMPOUND_REFRESH_STORAGE_KEY } from "@/lib/export-allocation";
 import { isExportAllocationActive, normalizeExportAllocationStatus } from "@/lib/export-allocation";
 import { supabase } from "@/lib/supabase";
+import { syncTrailerCurrentOperationalState } from "@/lib/operations/trailer-current-state";
 
 type CompoundWaitingActiveRow = {
   id: string;
@@ -114,6 +115,16 @@ const extractAssignmentRpcRow = (value: unknown): CompoundWaitingAssignmentRpcRo
   }
 
   return null;
+};
+
+const syncAssignedCompoundTrailer = async (value: unknown, fallbackTrailerId?: string | null) => {
+  const row = extractAssignmentRpcRow(value);
+  const trailerId = row?.trailer_id?.trim() || fallbackTrailerId?.trim() || "";
+  if (!trailerId) {
+    return;
+  }
+
+  await syncTrailerCurrentOperationalState(supabase, trailerId, { intent: "place_on_compound" });
 };
 
 const buildAssignmentNotice = (defaultMessage: string, value: unknown) => {
@@ -429,6 +440,7 @@ export default function CompoundWaitingPage() {
         const { data: rpcData, error: rpcError } = await (supabase as any).rpc("assign_next_waiting_trailer");
 
         if (rpcError) throw rpcError;
+        await syncAssignedCompoundTrailer(rpcData);
         return buildAssignmentNotice("Next trailer assigned successfully.", rpcData);
       }
 
@@ -462,6 +474,7 @@ export default function CompoundWaitingPage() {
       });
 
       if (assignError) throw assignError;
+      await syncAssignedCompoundTrailer(assignData, oldestImplicitRow.trailer_id);
       return buildAssignmentNotice("Next trailer assigned successfully.", assignData);
     });
   };
@@ -495,6 +508,7 @@ export default function CompoundWaitingPage() {
       });
 
       if (rpcError) throw rpcError;
+      await syncAssignedCompoundTrailer(rpcData, row.trailer_id);
       return buildAssignmentNotice("Waiting trailer assigned to compound.", rpcData);
     });
   };

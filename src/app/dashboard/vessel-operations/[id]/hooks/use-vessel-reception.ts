@@ -2,6 +2,7 @@
 
 import { useCallback, useState } from "react";
 import { supabase } from "@/lib/supabase";
+import { syncTrailerCurrentOperationalState } from "@/lib/operations/trailer-current-state";
 import {
   canConfirmVesselTrailerReception,
   getFirstAvailableCompoundPosition,
@@ -334,6 +335,11 @@ export function useVesselReception({ operation, onSuccess }: UseVesselReceptionO
         logVesselSupabaseError("Failed to confirm vessel reception", receptionError);
         throw new Error(receptionError?.message || "Unable to confirm vessel reception.");
       }
+
+      const receivedTrailerId = typeof mainTrailerId === "string" ? mainTrailerId : String(mainTrailerId);
+      await syncTrailerCurrentOperationalState(supabase, receivedTrailerId, {
+        intent: destination === "compound" ? "place_on_compound" : "sync",
+      });
 
       const successMessage = formState.destination === "compound"
         ? `Trailer received and assigned to Compound position ${confirmedPosition}.`

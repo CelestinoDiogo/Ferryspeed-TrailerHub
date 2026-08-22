@@ -36,7 +36,10 @@ describe("Local Return and Stock Check UI contracts", () => {
     expect(stockCheckExpected).toContain("isTrailerPresentInCompoundInventory");
     expect(stockCheckExpected).toContain("expected_in_compound: false");
     expect(stockCheckExpected).toContain("existingByTrailerNumber");
+    expect(stockCheckExpected).not.toContain("normalizeTrailerCurrentOperationalState");
     expect(stockCheckExpected).not.toContain(".delete(");
+    expect(stockCheckPage).toContain("syncTrailerCurrentOperationalState");
+    expect(editTrailerPage).toContain("normalizeTrailerCurrentOperationalState");
   });
 
   it("uses canonical Compound presence for the explicit Compound search filter", () => {

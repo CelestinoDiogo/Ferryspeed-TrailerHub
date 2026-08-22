@@ -7,6 +7,7 @@ import { useSearchParams } from "next/navigation";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 import { logTrailerEvent, resolveAuditOperatorName } from "@/lib/trailer-audit-log";
+import { normalizeTrailerCurrentOperationalState } from "@/lib/operations/trailer-current-state";
 import { supabase } from "@/lib/supabase";
 
 const arrivalSchema = z.object({
@@ -40,6 +41,7 @@ type TrailerInsert = {
   external_company: string | null;
   external_reference: string | null;
   is_local: boolean;
+  operational_status: string | null;
 };
 
 type TrailerSource = "company" | "outsourced";
@@ -362,6 +364,15 @@ function NewArrivalPageContent() {
         }
       }
 
+      const currentState = normalizeTrailerCurrentOperationalState(
+        {
+          departure_date: null,
+          is_local: isLocal,
+          compound_position: isLocal ? null : finalPosition,
+        },
+        { intent: !isLocal && finalPosition ? "place_on_compound" : "sync" },
+      );
+
       const payload: TrailerInsert = {
         trailer_number:
           trailerSource === "company"
@@ -380,6 +391,7 @@ function NewArrivalPageContent() {
         external_company: trailerSource === "outsourced" ? values.externalCompany?.trim() || null : null,
         external_reference: trailerSource === "outsourced" ? values.externalReference?.trim() || null : null,
         is_local: isLocal,
+        operational_status: currentState.operational_status,
       };
 
       const { data, error } = await supabase.from("trailers").insert([payload]).select().single();

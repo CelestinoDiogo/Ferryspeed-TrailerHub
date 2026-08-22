@@ -17,6 +17,7 @@ import {
   shouldOfferStartStockCheck,
   syncOpenStockCheckExpectedStock,
 } from "@/lib/compound-stock-check-expected";
+import { syncTrailerCurrentOperationalState } from "@/lib/operations/trailer-current-state";
 import {
   formatDateTime,
   formatStatusLabel,
@@ -942,6 +943,10 @@ export default function CompoundStockCheckPage() {
       const rpcRow = extractChangePositionRpcRow(data);
       if (!rpcRow) {
         throw new Error("No response was returned. Please try again.");
+      }
+
+      if (rpcRow.trailer_id) {
+        await syncTrailerCurrentOperationalState(supabase, rpcRow.trailer_id, { intent: "place_on_compound" });
       }
 
       setItems((currentItems) =>

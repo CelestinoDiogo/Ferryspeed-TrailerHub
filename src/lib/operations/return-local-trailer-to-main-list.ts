@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/lib/database.types";
 import { COMPOUND_CAPACITY, normalizeCompoundPosition } from "@/lib/compound-yard";
+import { normalizeTrailerCurrentOperationalState } from "@/lib/operations/trailer-current-state";
 import { createTrailerActivity } from "@/lib/trailer-activity";
 import { logTrailerEvent } from "@/lib/trailer-audit-log";
 
@@ -27,6 +28,7 @@ export type LocalTrailerMainListRow = {
   consignee?: string | null;
   operational_status?: string | null;
   departure_date?: string | null;
+  departure_time?: string | null;
 };
 
 export type ReturnLocalTrailerToMainListResult = {
@@ -35,23 +37,9 @@ export type ReturnLocalTrailerToMainListResult = {
 };
 
 const TRAILER_SELECT =
-  "id, trailer_number, is_local, compound_position, load_status, load_description, customer, consignee, operational_status, departure_date";
+  "id, trailer_number, is_local, compound_position, load_status, load_description, customer, consignee, operational_status, departure_date, departure_time";
 
 const ASSIGNABLE_POSITION = /^P(?:0[1-9]|[1-4]\d|50)$/;
-
-const nextOperationalStatus = (trailer: LocalTrailerMainListRow, assignedPosition: string | null) => {
-  const current = (trailer.operational_status ?? "").trim();
-
-  if (assignedPosition) {
-    return "In Compound";
-  }
-
-  if (current.toLowerCase() === "local trailer") {
-    return "Awaiting Position";
-  }
-
-  return current || "Awaiting Position";
-};
 
 export const resolveReturnToMainListPosition = (value?: string | null) => {
   const trimmed = value?.trim() ?? "";
@@ -133,13 +121,25 @@ export async function returnLocalTrailerToMainList(
     }
   }
 
-  const operationalStatus = nextOperationalStatus(trailer as LocalTrailerMainListRow, requestedPosition);
+  const currentState = normalizeTrailerCurrentOperationalState(
+    {
+      departure_date: trailer.departure_date,
+      departure_time: trailer.departure_time,
+      operational_status: trailer.operational_status,
+      is_local: false,
+      compound_position: requestedPosition,
+    },
+    { intent: requestedPosition ? "place_on_compound" : "sync" },
+  );
   const { data: updated, error: updateError } = await supabase
     .from("trailers")
     .update({
       is_local: false,
       compound_position: requestedPosition,
-      operational_status: operationalStatus,
+      operational_status: currentState.operational_status,
+      ...(currentState.clearDepartureTime || currentState.patch.departure_date !== undefined
+        ? { departure_time: currentState.departure_time, departure_date: currentState.departure_date }
+        : {}),
     })
     .eq("id", trailer.id)
     .eq("is_local", true)

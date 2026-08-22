@@ -9,6 +9,7 @@ import { createTrailerActivity } from "@/lib/trailer-activity";
 import { resolveAuditOperatorName } from "@/lib/trailer-audit-log";
 import { confirmTrailerDeparture, type DepartureTransitionSnapshot } from "@/lib/operations/confirm-departure";
 import { DepartureUndoConflictError, undoDeparture } from "@/lib/operations/departure-lifecycle";
+import { syncTrailerCurrentOperationalState } from "@/lib/operations/trailer-current-state";
 import { isEligibleForDeparture, type DepartureImportPreview } from "@/lib/imports/departure-import";
 import {
   DELIVERY_BOOKING_RELEASE_STATUS_QUERY,
@@ -687,6 +688,10 @@ export default function DeparturePage() {
         trailerId: lastDepartureSnapshot.trailerId,
         expectedDepartureAt: lastDepartureSnapshot.expectedDepartureAt,
         performedBy: operatorName,
+      });
+
+      await syncTrailerCurrentOperationalState(supabase, result.trailerId, {
+        intent: result.restoredCompoundPosition ? "place_on_compound" : "sync",
       });
 
       await loadDepartureTrailers({ showLoading: false });

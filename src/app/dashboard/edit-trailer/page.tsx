@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabase";
+import { normalizeTrailerCurrentOperationalState } from "@/lib/operations/trailer-current-state";
 import { logTrailerEvent, resolveAuditOperatorName } from "@/lib/trailer-audit-log";
 
 type TrailerRecord = {
@@ -17,6 +18,8 @@ type TrailerRecord = {
   compound_position?: string | null;
   notes?: string | null;
   departure_date?: string | null;
+  departure_time?: string | null;
+  operational_status?: string | null;
   trailer_source?: "company" | "outsourced" | null;
   external_company?: string | null;
   external_reference?: string | null;
@@ -138,7 +141,7 @@ export default function EditTrailerPage() {
       try {
         const { data, error: supabaseError } = await supabase
           .from("trailers")
-          .select("id, trailer_number, trailer_type, load_status, load_description, customer, consignee, container_number, compound_position, notes, departure_date, trailer_source, external_company, external_reference, is_local")
+          .select("id, trailer_number, trailer_type, load_status, load_description, customer, consignee, container_number, compound_position, notes, departure_date, departure_time, operational_status, trailer_source, external_company, external_reference, is_local")
           .is("departure_date", null)
           .order("trailer_number", { ascending: true });
 
@@ -255,7 +258,7 @@ export default function EditTrailerPage() {
     try {
       const { data: currentTrailerSnapshot, error: currentTrailerError } = await supabase
         .from("trailers")
-        .select("id, trailer_number, trailer_type, load_status, load_description, customer, consignee, container_number, compound_position, notes, trailer_source, external_company, external_reference, is_local")
+        .select("id, trailer_number, trailer_type, load_status, load_description, customer, consignee, container_number, compound_position, notes, trailer_source, external_company, external_reference, is_local, operational_status, departure_date, departure_time")
         .eq("id", selectedTrailer.id)
         .single();
 
@@ -323,6 +326,17 @@ export default function EditTrailerPage() {
         return;
       }
 
+      const currentState = normalizeTrailerCurrentOperationalState(
+        {
+          departure_date: currentTrailerSnapshot.departure_date,
+          departure_time: currentTrailerSnapshot.departure_time,
+          operational_status: currentTrailerSnapshot.operational_status,
+          is_local: targetIsLocal,
+          compound_position: targetIsLocal ? null : finalPosition,
+        },
+        { intent: !targetIsLocal && finalPosition ? "place_on_compound" : "sync" },
+      );
+
       const updatePayload = {
         trailer_type: formValues.trailerType.trim() || null,
         load_status: formValues.loadStatus.trim() || null,
@@ -336,6 +350,8 @@ export default function EditTrailerPage() {
         external_company: formValues.trailerSource === "outsourced" ? formValues.externalCompany.trim() || null : null,
         external_reference: formValues.trailerSource === "outsourced" ? formValues.externalReference.trim() || null : null,
         is_local: targetIsLocal,
+        operational_status: currentState.operational_status,
+        ...currentState.patch,
       };
 
       const { data, error: updateError } = await supabase
