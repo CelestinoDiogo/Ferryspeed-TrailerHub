@@ -8,7 +8,7 @@ const { loadCurrentUserRoleMock, requireRbacPermissionMock } = vi.hoisted(() => 
 vi.mock("@/lib/rbac/service", () => ({ loadCurrentUserRole: loadCurrentUserRoleMock }));
 vi.mock("@/lib/rbac/route", () => ({ requireRbacPermission: requireRbacPermissionMock }));
 
-import { requireDriverMobileReadAccess } from "@/lib/driver-mobile-read-access";
+import { requireDriverMobileReadAccess, requireDriverMobileWriteAccess } from "@/lib/driver-mobile-read-access";
 
 describe("requireDriverMobileReadAccess", () => {
   beforeEach(() => {
@@ -43,5 +43,29 @@ describe("requireDriverMobileReadAccess", () => {
     requireRbacPermissionMock.mockRejectedValue(new Error("inactive"));
 
     await expect(requireDriverMobileReadAccess({} as never, "inactive-user")).rejects.toThrow("inactive");
+  });
+});
+
+describe("requireDriverMobileWriteAccess", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("allows an active driver to perform Driver Mobile writes", async () => {
+    loadCurrentUserRoleMock.mockResolvedValue({ role_key: "driver", is_active: true });
+    requireRbacPermissionMock.mockResolvedValue(undefined);
+
+    await expect(requireDriverMobileWriteAccess({} as never, "driver-user")).resolves.toMatchObject({ role_key: "driver" });
+    expect(requireRbacPermissionMock).toHaveBeenCalledWith({}, "driver-user", "driver_mobile", "view");
+  });
+
+  it.each(["administrator", "supervisor", "operator"])("rejects %s write access server-side", async (roleKey) => {
+    loadCurrentUserRoleMock.mockResolvedValue({ role_key: roleKey, is_active: true });
+
+    await expect(requireDriverMobileWriteAccess({} as never, "manager-user")).rejects.toMatchObject({
+      code: "DRIVER_ACTION_NOT_ALLOWED",
+      status: 403,
+    });
+    expect(requireRbacPermissionMock).not.toHaveBeenCalled();
   });
 });

@@ -16,7 +16,9 @@ export default function OfflinePage() {
 
         <div className="rounded-3xl border border-white/10 bg-slate-950/40 p-4 text-sm text-slate-200">
           <p>Previously loaded Master Mobile screens may still show limited local state.</p>
-          <p className="mt-2">Driver and operational status actions require an online connection and are not queued offline yet.</p>
+          <p className="mt-2">
+            Driver Mobile queues COLLECTED, DELIVERED, and instruction acknowledgements until the connection returns. Do not treat a pending action as completed until the server confirms it.
+          </p>
           <p className="mt-2 text-slate-400">Do not assume server data shown while offline is current.</p>
         </div>
 
@@ -24,13 +26,19 @@ export default function OfflinePage() {
           <button
             type="button"
             onClick={() => window.location.reload()}
-            className="inline-flex items-center justify-center rounded-2xl bg-cyan-600 px-4 py-3 text-sm font-semibold text-white"
+            className="inline-flex min-h-12 items-center justify-center rounded-2xl bg-cyan-600 px-4 py-3 text-sm font-semibold text-white"
           >
             Retry
           </button>
           <Link
+            href="/dashboard/driver"
+            className="inline-flex min-h-12 items-center justify-center rounded-2xl border border-white/15 bg-white/5 px-4 py-3 text-sm font-semibold text-slate-100"
+          >
+            Open Driver Mobile
+          </Link>
+          <Link
             href="/dashboard/mobile"
-            className="inline-flex items-center justify-center rounded-2xl border border-white/15 bg-white/5 px-4 py-3 text-sm font-semibold text-slate-100"
+            className="inline-flex min-h-12 items-center justify-center rounded-2xl border border-white/15 bg-white/5 px-4 py-3 text-sm font-semibold text-slate-100"
           >
             Open Master Mobile
           </Link>

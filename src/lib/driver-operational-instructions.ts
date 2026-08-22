@@ -160,6 +160,18 @@ const normalizeOptionalNote = (value?: string | null) => {
   return normalized;
 };
 
+export const isDuplicateDriverInstructionResponse = (
+  latest: Pick<DriverOperationalInstructionEventRow, "event_type" | "message"> | null | undefined,
+  responseType: DriverQuickResponseType,
+  message: string | null,
+) => {
+  if (!latest) {
+    return false;
+  }
+
+  return latest.event_type === responseType && (latest.message ?? null) === (message ?? null);
+};
+
 const toInstructionResponseRecord = (row: DriverOperationalInstructionEventRow): DriverInstructionResponseRecord => {
   const responseType = toQuickResponseType(row.event_type);
 
@@ -382,6 +394,27 @@ export async function createDriverOperationalInstructionResponse(
 
   if (!instruction) {
     throw new Error("Instruction not found for the authenticated driver.");
+  }
+
+  const { data: latestEvents, error: latestEventError } = await supabase
+    .from("driver_operational_instruction_events")
+    .select(instructionEventSelect)
+    .eq("instruction_id", instruction.id)
+    .eq("recipient_user_id", userId)
+    .order("created_at", { ascending: false })
+    .limit(1);
+
+  if (isMissingInstructionEventsTableError(latestEventError)) {
+    throw new Error("Driver response events are not available until migration 042 is applied.");
+  }
+
+  if (latestEventError) {
+    throw new Error(latestEventError.message || "Unable to validate existing driver response.");
+  }
+
+  const latestEvent = ((latestEvents ?? [])[0] ?? null) as DriverOperationalInstructionEventRow | null;
+  if (isDuplicateDriverInstructionResponse(latestEvent, responseType, note)) {
+    return toInstructionResponseRecord(latestEvent as DriverOperationalInstructionEventRow);
   }
 
   const payload: Database["public"]["Tables"]["driver_operational_instruction_events"]["Insert"] = {

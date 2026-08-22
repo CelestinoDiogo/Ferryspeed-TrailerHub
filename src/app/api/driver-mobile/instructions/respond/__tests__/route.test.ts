@@ -4,7 +4,7 @@ const getRouteBearerTokenMock = vi.fn();
 const createAuthenticatedRouteSupabaseClientMock = vi.fn();
 const requireAuthenticatedRouteUserMock = vi.fn();
 const bootstrapCurrentUserRoleMock = vi.fn();
-const requireRbacPermissionMock = vi.fn();
+const requireDriverMobileWriteAccessMock = vi.fn();
 const createDriverOperationalInstructionResponseMock = vi.fn();
 
 class SupabaseRouteAuthError extends Error {
@@ -25,6 +25,18 @@ class RbacPermissionError extends Error {
   }
 }
 
+class DriverMobileIdentityError extends Error {
+  status: number;
+  code: string;
+
+  constructor(message: string, code: string, status = 403) {
+    super(message);
+    this.name = "DriverMobileIdentityError";
+    this.status = status;
+    this.code = code;
+  }
+}
+
 vi.mock("@/lib/supabase-route-client", () => ({
   SupabaseRouteAuthError,
   getRouteBearerToken: getRouteBearerTokenMock,
@@ -35,7 +47,14 @@ vi.mock("@/lib/supabase-route-client", () => ({
 vi.mock("@/lib/rbac/route", () => ({
   RbacPermissionError,
   bootstrapCurrentUserRole: bootstrapCurrentUserRoleMock,
-  requireRbacPermission: requireRbacPermissionMock,
+}));
+
+vi.mock("@/lib/driver-mobile-read-access", () => ({
+  requireDriverMobileWriteAccess: requireDriverMobileWriteAccessMock,
+}));
+
+vi.mock("@/lib/driver-mobile-identity", () => ({
+  DriverMobileIdentityError,
 }));
 
 vi.mock("@/lib/driver-operational-instructions", () => ({
@@ -67,7 +86,7 @@ describe("POST /api/driver-mobile/instructions/respond", () => {
       user_metadata: { full_name: "Driver One" },
     });
     bootstrapCurrentUserRoleMock.mockResolvedValue(undefined);
-    requireRbacPermissionMock.mockResolvedValue(undefined);
+    requireDriverMobileWriteAccessMock.mockResolvedValue({ role_key: "driver", is_active: true });
     createDriverOperationalInstructionResponseMock.mockResolvedValue({
       id: "event-1",
       responseType: "ok",

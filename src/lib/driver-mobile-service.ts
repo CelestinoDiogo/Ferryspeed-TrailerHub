@@ -121,17 +121,15 @@ const toDriverLifecycleAction = (status: string): Exclude<DriverTaskAction, "ACK
 };
 
 const toDriverNextAction = (booking: DeliveryBookingRow): DriverTaskAction | null => {
-  const lifecycleAction = toDriverLifecycleAction(booking.status);
-  if (!lifecycleAction) {
-    return null;
-  }
-
-  if (!booking.driver_acknowledged_at) {
-    return "ACKNOWLEDGED";
-  }
-
-  return lifecycleAction;
+  return toDriverLifecycleAction(booking.status);
 };
+
+const isCollectedLifecycleSatisfied = (status: string) => {
+  const normalized = normalizeStatus(status);
+  return normalized === "on_delivery" || normalized === "collected" || normalized === "delivered";
+};
+
+const isDeliveredLifecycleSatisfied = (status: string) => normalizeStatus(status) === "delivered";
 
 const buildTransition = (booking: DeliveryBookingRow, action: DriverTaskAction, nowIso: string): DriverTransition => {
   const status = normalizeStatus(booking.status);
@@ -144,6 +142,7 @@ const buildTransition = (booking: DeliveryBookingRow, action: DriverTaskAction, 
         eventDescription: "Driver marked task as collected and moved to on_delivery.",
         patch: {
           status: "on_delivery",
+          collected_at: booking.collected_at ?? nowIso,
           updated_at: nowIso,
         },
       };
@@ -319,10 +318,11 @@ export async function applyDriverTaskAction(input: {
     throw new Error("Task not found or not assigned to the authenticated driver.");
   }
 
-  const row = booking as DeliveryBookingRow;
-  if (input.action === "ACKNOWLEDGED") {
-    if (row.driver_acknowledged_at) {
-      return row;
+  let row = booking as DeliveryBookingRow;
+
+  const acknowledgeOwnedBooking = async (current: DeliveryBookingRow) => {
+    if (current.driver_acknowledged_at) {
+      return current;
     }
 
     const nowIso = new Date().toISOString();
@@ -335,7 +335,7 @@ export async function applyDriverTaskAction(input: {
     const { data: acknowledgedBooking, error: acknowledgeError } = await input.supabase
       .from("delivery_bookings")
       .update(patch)
-      .eq("id", row.id)
+      .eq("id", current.id)
       .eq("driver_id", driver.id)
       .select(driverBookingSelect)
       .maybeSingle();
@@ -345,10 +345,10 @@ export async function applyDriverTaskAction(input: {
     }
 
     const operatorName = resolveOperatorName(input.user);
-    const trailerNumber = await resolveTrailerNumberForBooking(input.supabase, row);
+    const trailerNumber = await resolveTrailerNumberForBooking(input.supabase, current);
     const eventMetadata = {
-      previous_status: row.status,
-      next_status: row.status,
+      previous_status: current.status,
+      next_status: current.status,
       driver_id: driver.id,
       user_id: input.user.id,
       action: "ACKNOWLEDGED",
@@ -356,7 +356,7 @@ export async function applyDriverTaskAction(input: {
     };
 
     const { error: insertEventError } = await input.supabase.from("trailer_events").insert({
-      trailer_id: row.trailer_id,
+      trailer_id: current.trailer_id,
       trailer_number: trailerNumber,
       event_type: "driver_task_acknowledged",
       event_description: "Driver acknowledged assigned delivery task.",
@@ -371,21 +371,33 @@ export async function applyDriverTaskAction(input: {
 
     await createTrailerActivity({
       supabaseClient: input.supabase,
-      trailerId: row.trailer_id,
+      trailerId: current.trailer_id,
       trailerNumber,
       eventType: "driver_task_acknowledged",
       eventTitle: "Driver acknowledged task",
-      eventDescription: `Delivery booking ${row.booking_reference ?? row.id} acknowledged by assigned driver.`,
+      eventDescription: `Delivery booking ${current.booking_reference ?? current.id} acknowledged by assigned driver.`,
       sourceModule: "delivery",
-      sourceRecordId: row.id,
-      previousStatus: row.status,
-      newStatus: row.status,
+      sourceRecordId: current.id,
+      previousStatus: current.status,
+      newStatus: current.status,
       metadata: eventMetadata,
       performedBy: operatorName,
       createdAt: nowIso,
     });
 
     return acknowledgedBooking as DeliveryBookingRow;
+  };
+
+  if (input.action === "ACKNOWLEDGED") {
+    return acknowledgeOwnedBooking(row);
+  }
+
+  if (input.action === "COLLECTED" && isCollectedLifecycleSatisfied(row.status)) {
+    return row;
+  }
+
+  if (input.action === "DELIVERED" && isDeliveredLifecycleSatisfied(row.status)) {
+    return row;
   }
 
   if (input.action === "COLLECTED" && row.temperature_required) {
@@ -395,7 +407,7 @@ export async function applyDriverTaskAction(input: {
   }
 
   if (!row.driver_acknowledged_at) {
-    throw new Error("Task must be acknowledged before lifecycle status updates.");
+    row = await acknowledgeOwnedBooking(row);
   }
 
   const nowIso = new Date().toISOString();

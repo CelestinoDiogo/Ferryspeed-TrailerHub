@@ -1,5 +1,7 @@
 import { z } from "zod";
-import { bootstrapCurrentUserRole, RbacPermissionError, requireRbacPermission } from "@/lib/rbac/route";
+import { DriverMobileIdentityError } from "@/lib/driver-mobile-identity";
+import { requireDriverMobileWriteAccess } from "@/lib/driver-mobile-read-access";
+import { bootstrapCurrentUserRole, RbacPermissionError } from "@/lib/rbac/route";
 import {
   createAuthenticatedRouteSupabaseClient,
   getRouteBearerToken,
@@ -23,7 +25,7 @@ export async function POST(request: Request) {
     const supabase = createAuthenticatedRouteSupabaseClient(request);
     const user = await requireAuthenticatedRouteUser(supabase, accessToken);
     await bootstrapCurrentUserRole(supabase, user);
-    await requireRbacPermission(supabase, user.id, "driver_mobile", "view");
+    await requireDriverMobileWriteAccess(supabase, user.id);
 
     const payload = requestSchema.parse(await request.json().catch(() => ({})));
 
@@ -40,6 +42,10 @@ export async function POST(request: Request) {
   } catch (error) {
     if (error instanceof SupabaseRouteAuthError) {
       return Response.json({ error: error.message }, { status: error.status });
+    }
+
+    if (error instanceof DriverMobileIdentityError) {
+      return Response.json({ error: error.message, code: error.code }, { status: error.status });
     }
 
     if (error instanceof RbacPermissionError) {

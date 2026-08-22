@@ -10,8 +10,9 @@ describe("OfflinePage", () => {
     render(<OfflinePage />);
 
     expect(screen.getByRole("heading", { name: "You are offline" })).toBeInTheDocument();
-    expect(screen.getByText("Driver and operational status actions require an online connection and are not queued offline yet.")).toBeInTheDocument();
+    expect(screen.getByText("Driver Mobile queues COLLECTED, DELIVERED, and instruction acknowledgements until the connection returns. Do not treat a pending action as completed until the server confirms it.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open Driver Mobile" })).toHaveAttribute("href", "/dashboard/driver");
     expect(screen.getByRole("link", { name: "Open Master Mobile" })).toHaveAttribute("href", "/dashboard/mobile");
   });
 });

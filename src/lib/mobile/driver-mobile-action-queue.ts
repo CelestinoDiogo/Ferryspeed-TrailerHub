@@ -269,37 +269,8 @@ const applyOptimisticAction = (task: DriverMobileTask, queuedAction: DriverMobil
     };
   }
 
-  if (queuedAction.action === "COLLECTED") {
-    const normalized = normalizeStatus(task.status);
-
-    if (normalized === "waiting_collection") {
-      return {
-        ...task,
-        status: "collected",
-        group: "completed",
-        nextAction: null,
-        collectedAt: task.collectedAt ?? nowIso,
-        collectedTemperatureC: queuedAction.temperatureC ?? task.collectedTemperatureC,
-      };
-    }
-
-    return {
-      ...task,
-      status: "on_delivery",
-      group: "current",
-      nextAction: "DELIVERED",
-      collectedAt: task.collectedAt ?? nowIso,
-      collectedTemperatureC: queuedAction.temperatureC ?? task.collectedTemperatureC,
-      driverAcknowledgedAt: task.driverAcknowledgedAt ?? nowIso,
-    };
-  }
-
   return {
     ...task,
-    status: "delivered",
-    group: "completed",
-    nextAction: null,
-    deliveredAt: task.deliveredAt ?? nowIso,
     driverAcknowledgedAt: task.driverAcknowledgedAt ?? nowIso,
   };
 };

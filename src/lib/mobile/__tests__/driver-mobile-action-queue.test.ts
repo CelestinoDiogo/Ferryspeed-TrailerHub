@@ -85,7 +85,7 @@ describe("driver mobile action queue", () => {
     expect(plainItem.temperatureC).toBeNull();
   });
 
-  it("projects optimistic collected and delivered states into the visible task list", () => {
+  it("does not project pending collected or delivered actions as completed before server confirmation", () => {
     const collectedItem: DriverMobileQueuedAction = {
       ...createDriverMobileQueuedAction({ bookingId: "booking-a", action: "COLLECTED" }),
       state: "syncing",
@@ -105,11 +105,12 @@ describe("driver mobile action queue", () => {
       makeTask({ bookingId: "booking-b", nextAction: "DELIVERED", status: "on_delivery", group: "current" }),
     ], [collectedItem, deliveredItem]);
 
-    expect(tasks[0].status).toBe("on_delivery");
-    expect(tasks[0].nextAction).toBe("DELIVERED");
-    expect(tasks[1].status).toBe("delivered");
-    expect(tasks[1].group).toBe("completed");
-    expect(tasks[1].nextAction).toBeNull();
+    expect(tasks[0].status).toBe("ready");
+    expect(tasks[0].nextAction).toBe("COLLECTED");
+    expect(tasks[0].group).not.toBe("completed");
+    expect(tasks[1].status).toBe("on_delivery");
+    expect(tasks[1].group).toBe("current");
+    expect(tasks[1].nextAction).toBe("DELIVERED");
   });
 
   it("keeps acknowledgement queue explicit and does not morph it into completion", () => {

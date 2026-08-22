@@ -8,6 +8,7 @@ type RouteSupabase = SupabaseClient<Database>;
 
 export type DriverMobileIdentityCode =
   | "DRIVER_PROFILE_REQUIRED"
+  | "DRIVER_ACTION_NOT_ALLOWED"
   | "PREVIEW_DRIVER_REQUIRED"
   | "PREVIEW_DRIVER_INVALID"
   | "PREVIEW_DRIVER_INACTIVE"

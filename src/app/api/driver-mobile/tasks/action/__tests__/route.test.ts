@@ -4,7 +4,7 @@ const getRouteBearerTokenMock = vi.fn();
 const createAuthenticatedRouteSupabaseClientMock = vi.fn();
 const requireAuthenticatedRouteUserMock = vi.fn();
 const bootstrapCurrentUserRoleMock = vi.fn();
-const requireRbacPermissionMock = vi.fn();
+const requireDriverMobileWriteAccessMock = vi.fn();
 const applyDriverTaskActionMock = vi.fn();
 
 class SupabaseRouteAuthError extends Error {
@@ -25,6 +25,18 @@ class RbacPermissionError extends Error {
   }
 }
 
+class DriverMobileIdentityError extends Error {
+  status: number;
+  code: string;
+
+  constructor(message: string, code: string, status = 403) {
+    super(message);
+    this.name = "DriverMobileIdentityError";
+    this.status = status;
+    this.code = code;
+  }
+}
+
 vi.mock("@/lib/supabase-route-client", () => ({
   SupabaseRouteAuthError,
   getRouteBearerToken: getRouteBearerTokenMock,
@@ -35,7 +47,14 @@ vi.mock("@/lib/supabase-route-client", () => ({
 vi.mock("@/lib/rbac/route", () => ({
   RbacPermissionError,
   bootstrapCurrentUserRole: bootstrapCurrentUserRoleMock,
-  requireRbacPermission: requireRbacPermissionMock,
+}));
+
+vi.mock("@/lib/driver-mobile-read-access", () => ({
+  requireDriverMobileWriteAccess: requireDriverMobileWriteAccessMock,
+}));
+
+vi.mock("@/lib/driver-mobile-identity", () => ({
+  DriverMobileIdentityError,
 }));
 
 vi.mock("@/lib/driver-mobile-service", () => ({
@@ -66,7 +85,7 @@ describe("POST /api/driver-mobile/tasks/action", () => {
       user_metadata: { full_name: "Driver One" },
     });
     bootstrapCurrentUserRoleMock.mockResolvedValue(undefined);
-    requireRbacPermissionMock.mockResolvedValue(undefined);
+    requireDriverMobileWriteAccessMock.mockResolvedValue({ role_key: "driver", is_active: true });
     applyDriverTaskActionMock.mockResolvedValue({
       id: "booking-a",
       status: "delivered",
@@ -151,7 +170,31 @@ describe("POST /api/driver-mobile/tasks/action", () => {
       bookingId: "11111111-1111-4111-8111-111111111111",
       action: "COLLECTED",
       temperatureC: 2.5,
+      resultingLoadStatus: undefined,
     });
+  });
+
+  it("rejects supervisor write access server-side", async () => {
+    requireDriverMobileWriteAccessMock.mockRejectedValue(
+      new DriverMobileIdentityError(
+        "Driver actions are available only to Driver accounts.",
+        "DRIVER_ACTION_NOT_ALLOWED",
+        403,
+      ),
+    );
+
+    const { POST } = await importRoute();
+    const response = await POST(makeRequest({
+      bookingId: "11111111-1111-4111-8111-111111111111",
+      action: "COLLECTED",
+    }));
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({
+      error: "Driver actions are available only to Driver accounts.",
+      code: "DRIVER_ACTION_NOT_ALLOWED",
+    });
+    expect(applyDriverTaskActionMock).not.toHaveBeenCalled();
   });
 
   it("accepts acknowledged payload for owned booking", async () => {
@@ -174,6 +217,7 @@ describe("POST /api/driver-mobile/tasks/action", () => {
       bookingId: "11111111-1111-4111-8111-111111111111",
       action: "ACKNOWLEDGED",
       temperatureC: undefined,
+      resultingLoadStatus: undefined,
     });
   });
 });

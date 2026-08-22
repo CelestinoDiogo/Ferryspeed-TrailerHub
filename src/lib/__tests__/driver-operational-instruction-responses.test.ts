@@ -15,6 +15,12 @@ describe("driver operational instruction response contract", () => {
     expect(serviceSource).not.toContain("update(payload)");
   });
 
+  it("rejects duplicate latest response without inserting another event", () => {
+    expect(serviceSource).toContain("isDuplicateDriverInstructionResponse");
+    expect(serviceSource).toContain('.order("created_at", { ascending: false })');
+    expect(serviceSource).toContain("return toInstructionResponseRecord(latestEvent as DriverOperationalInstructionEventRow)");
+  });
+
   it("preserves ordered response history and latest response projection", () => {
     expect(serviceSource).toContain("buildResponseMap");
     expect(serviceSource).toContain("new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()");

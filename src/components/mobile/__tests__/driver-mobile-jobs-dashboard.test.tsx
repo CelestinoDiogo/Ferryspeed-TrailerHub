@@ -560,7 +560,7 @@ describe("DriverMobileJobsDashboard", () => {
           return new Response(JSON.stringify({
             driver: { id: "driver-a", display_name: "Driver One", user_id: "user-a" },
             tasks: [
-              makeTask({ bookingId: "todo", trailerId: "trailer-todo", trailerNumber: "FS-TODO", nextAction: "ACKNOWLEDGED", group: "current" }),
+              makeTask({ bookingId: "todo", trailerId: "trailer-todo", trailerNumber: "FS-TODO", nextAction: "COLLECTED", group: "current", driverAcknowledgedAt: null }),
               makeTask({ bookingId: "progress", trailerId: "trailer-progress", trailerNumber: "FS-PROGRESS", status: "on_delivery", nextAction: "DELIVERED", group: "current" }),
             ],
           }), { status: 200 });
@@ -580,24 +580,22 @@ describe("DriverMobileJobsDashboard", () => {
 
     expect(await screen.findByRole("heading", { name: "FS-TODO" })).toBeInTheDocument();
     expect((await screen.findAllByText("Collect trailer FS-TODO")).length).toBeGreaterThan(0);
-    expect(screen.getByText("Acknowledge this job to confirm the instruction.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "RECOLHIDA / COLLECTED" })).toBeInTheDocument();
     expect(screen.getByText("Operational Instructions")).toBeInTheDocument();
     expect(screen.getAllByText("To Do").length).toBeGreaterThan(0);
     expect(screen.getAllByText("In Progress").length).toBeGreaterThan(0);
   });
 
   it("single job acknowledge marks the linked instruction read and does not complete the job", async () => {
-    let taskCalls = 0;
     let instructionCalls = 0;
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       const method = init?.method ?? "GET";
 
       if (url.includes("/api/driver-mobile/tasks") && method === "GET") {
-        taskCalls += 1;
         return new Response(JSON.stringify({
           driver: { id: "driver-a", display_name: "Driver One", user_id: "user-a" },
-          tasks: [makeTask({ bookingId: "booking-a", trailerId: "trailer-a", trailerNumber: "FS1234", nextAction: taskCalls === 1 ? "ACKNOWLEDGED" : "COLLECTED", driverAcknowledgedAt: taskCalls === 1 ? null : "2026-08-13T10:00:00.000Z", driverAcknowledgedBy: taskCalls === 1 ? null : "user-a", status: taskCalls === 1 ? "scheduled" : "ready" })],
+          tasks: [makeTask({ bookingId: "booking-a", trailerId: "trailer-a", trailerNumber: "FS1234", nextAction: "COLLECTED", driverAcknowledgedAt: null, status: "scheduled" })],
         }), { status: 200 });
       }
 
@@ -625,16 +623,14 @@ describe("DriverMobileJobsDashboard", () => {
 
     expect(await screen.findByRole("heading", { name: "FS1234" })).toBeInTheDocument();
     expect((await screen.findAllByText("Collect trailer FS1234")).length).toBeGreaterThan(0);
-    fireEvent.click(screen.getByRole("button", { name: "ACKNOWLEDGE" }));
+    fireEvent.click(screen.getByRole("button", { name: "OPEN / ACKNOWLEDGE" }));
 
     await waitFor(() => {
       expect(screen.getByRole("button", { name: "RECOLHIDA / COLLECTED" })).toBeInTheDocument();
       expect(screen.getAllByText(/Acknowledged/).length).toBeGreaterThan(0);
     });
 
-    expect(screen.queryAllByText("NEW").length).toBe(0);
-
-    expect(fetchMock).toHaveBeenCalledWith(
+    expect(fetchMock).not.toHaveBeenCalledWith(
       expect.stringContaining("/api/driver-mobile/tasks/action"),
       expect.objectContaining({ method: "POST" }),
     );
@@ -996,8 +992,9 @@ describe("DriverMobileJobsDashboard", () => {
       expect(screen.getAllByText("Saved - waiting for connection").length).toBeGreaterThan(0);
     });
 
-    expect(screen.getByText("On Delivery")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "ENTREGUE / DELIVERED" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "RECOLHIDA / COLLECTED" })).toBeDisabled();
+    expect(screen.queryByText("On Delivery")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "ENTREGUE / DELIVERED" })).not.toBeInTheDocument();
     await waitFor(() => {
       expect(readQueuedActions()[0]).toMatchObject({ bookingId: "offline", action: "COLLECTED", temperatureC: 2.5, state: "pending" });
     });
@@ -1341,5 +1338,83 @@ describe("DriverMobileJobsDashboard", () => {
 
     expect(await screen.findByText("50 unread")).toBeInTheDocument();
     expect(screen.queryByRole("dialog", { name: "Operational alert overlay" })).not.toBeInTheDocument();
+  });
+
+  it("one-tap collected on an unacknowledged job posts COLLECTED without a prior acknowledge tap", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+
+      if (url.includes("/api/driver-mobile/tasks") && method === "GET") {
+        return new Response(JSON.stringify({
+          driver: { id: "driver-a", display_name: "Driver One", user_id: "user-a" },
+          tasks: [makeTask({ bookingId: "one-tap", trailerNumber: "FS-ONE", status: "ready", nextAction: "COLLECTED", driverAcknowledgedAt: null })],
+        }), { status: 200 });
+      }
+
+      if (url.includes("/api/driver-mobile/instructions") && method === "GET") {
+        return new Response(JSON.stringify(buildInstructionFeed([])), { status: 200 });
+      }
+
+      if (url.includes("/api/driver-mobile/tasks/action") && method === "POST") {
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
+
+      return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+    render(<DriverMobileJobsDashboard />);
+
+    expect(await screen.findByRole("heading", { name: "FS-ONE" })).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Operational alert overlay" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Collection reading (C)")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "RECOLHIDA / COLLECTED" }));
+
+    await waitFor(() => {
+      const actionCalls = fetchMock.mock.calls.filter(([input, init]) => String(input).includes("/api/driver-mobile/tasks/action") && (init?.method ?? "GET") === "POST");
+      expect(actionCalls).toHaveLength(1);
+      expect(JSON.parse(String(actionCalls[0]?.[1]?.body))).toMatchObject({
+        bookingId: "one-tap",
+        action: "COLLECTED",
+      });
+    });
+  });
+
+  it("shows collected empty and loaded as the one-tap collection actions", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+
+        if (url.includes("/api/driver-mobile/tasks") && method === "GET") {
+          return new Response(JSON.stringify({
+            driver: { id: "driver-a", display_name: "Driver One", user_id: "user-a" },
+            tasks: [makeTask({
+              bookingId: "collect-job",
+              trailerNumber: "FS-COLLECT",
+              taskKind: "collection",
+              status: "waiting_collection",
+              nextAction: "COLLECTED",
+              group: "current",
+            })],
+          }), { status: 200 });
+        }
+
+        if (url.includes("/api/driver-mobile/instructions") && method === "GET") {
+          return new Response(JSON.stringify(buildInstructionFeed([])), { status: 200 });
+        }
+
+        return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+      }),
+    );
+
+    render(<DriverMobileJobsDashboard />);
+
+    expect(await screen.findByRole("heading", { name: "FS-COLLECT" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Collected Empty" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Collected Loaded" })).toBeInTheDocument();
+    expect(screen.queryByLabelText("Collection reading (C)")).not.toBeInTheDocument();
   });
 });

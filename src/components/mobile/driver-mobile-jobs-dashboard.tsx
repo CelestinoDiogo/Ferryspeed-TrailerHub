@@ -73,7 +73,7 @@ type OverlayAlertCandidate = {
   kind: "instruction" | "task";
   severity: OverlayAlertSeverity;
   createdAt: string;
-  label: "NEW INSTRUCTION" | "NEW MESSAGE" | "NEW ASSIGNMENT";
+  label: "NEW INSTRUCTION" | "NEW MESSAGE";
   instruction: DriverInstructionRecord | null;
   task: DriverMobileTask | null;
 };
@@ -619,12 +619,12 @@ export function DriverMobileJobsDashboard() {
         nextRetryAt: null,
       });
 
-      if (queuedAction.action === "ACKNOWLEDGED" && queuedAction.linkedInstructionIds.length > 0) {
+      if (queuedAction.linkedInstructionIds.length > 0) {
         await markLinkedInstructionsRead(queuedAction.linkedInstructionIds);
       }
 
       setQueuedActions((current) => removeDriverMobileQueuedAction(current, queuedAction.id));
-      setSuccess(`${source === "queue" ? "Completed" : `${queuedAction.action === "ACKNOWLEDGED" ? "Acknowledged" : "Updated"}`} - ${queuedAction.bookingId.slice(0, 8)}`);
+      setSuccess(`${source === "queue" ? "Updated" : `${queuedAction.action === "ACKNOWLEDGED" ? "Acknowledged" : "Updated"}`} - ${queuedAction.bookingId.slice(0, 8)}`);
       setError(null);
       clearActionLock(queuedAction.bookingId);
       await loadTasks(false);
@@ -865,7 +865,7 @@ export function DriverMobileJobsDashboard() {
             onClick={() => {
               void sendInstructionResponse(instruction.id, responseType);
             }}
-            className="rounded-lg border border-current/30 bg-white/70 px-2 py-2 text-xs font-bold disabled:cursor-not-allowed disabled:opacity-60"
+            className="rounded-lg border border-current/30 bg-white/70 px-2 py-3 text-xs font-bold disabled:cursor-not-allowed disabled:opacity-60 min-h-12"
           >
             {responseType === "OK" ? t("ok") : responseType === "COMPLETED" ? language === "en" ? "COMPLETED" : t("completed") : responseType === "ARRIVED" ? t("arrived") : responseType === "DELAYED" ? t("delayed") : responseType === "PROBLEM" ? t("problem") : t("callMe")}
           </button>
@@ -1004,7 +1004,7 @@ export function DriverMobileJobsDashboard() {
       const linkedInstructions = linkedInstructionsByBookingId.get(task.bookingId) ?? linkedInstructionsByBookingId.get(task.trailerId) ?? [];
       const activeInstruction = linkedInstructions[0] ?? null;
       const hasUnreadInstruction = linkedInstructions.some((instruction) => !instruction.readAt);
-      const isNewJob = task.nextAction === "ACKNOWLEDGED" && !task.driverAcknowledgedAt;
+      const isNewJob = !task.driverAcknowledgedAt && task.group !== "completed";
       const isPriority = activeInstruction?.priority === "high" || activeInstruction?.priority === "critical";
       const isUrgentPriority = activeInstruction?.priority === "critical";
       const collectionAgingLevel = task.collectionAging?.level ?? null;
@@ -1072,25 +1072,6 @@ export function DriverMobileJobsDashboard() {
         task: linkedTask,
       });
     });
-
-    tasks
-      .filter((task) => task.nextAction === "ACKNOWLEDGED" && !task.driverAcknowledgedAt)
-      .forEach((task) => {
-        const hasUnreadInstruction = unreadInstructions.some((instruction) => matchesInstructionToTask(instruction, task));
-        if (hasUnreadInstruction) {
-          return;
-        }
-
-        candidates.push({
-          key: `task:${task.bookingId}`,
-          kind: "task",
-          severity: "yellow",
-          createdAt: `${task.deliveryDate}T${task.deliveryTime ?? "00:00:00"}`,
-          label: "NEW ASSIGNMENT",
-          instruction: null,
-          task,
-        });
-      });
 
     return candidates.sort((left, right) => {
       const severityRank = (value: OverlayAlertSeverity) => (value === "red" ? 0 : 1);
@@ -1168,7 +1149,7 @@ export function DriverMobileJobsDashboard() {
 
   const shellHeader = (
     <header className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
-      <div className="flex items-start justify-between gap-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.24em] text-cyan-700">{t("driverMobile")}</p>
           <h1 className="mt-2 text-2xl font-semibold text-slate-950">{t("myJobs")}</h1>
@@ -1192,7 +1173,7 @@ export function DriverMobileJobsDashboard() {
           onClick={() => {
             void handleSignOut();
           }}
-          className="inline-flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-semibold uppercase tracking-[0.12em] text-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+          className="inline-flex min-h-12 items-center gap-2 rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-semibold uppercase tracking-[0.12em] text-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
         >
           <LogOut className="h-4 w-4" />
           {isSigningOut ? t("sending") : t("signOut")}
@@ -1240,15 +1221,15 @@ export function DriverMobileJobsDashboard() {
             const activeInstruction = attentionMeta?.activeInstruction ?? linkedInstructions[0] ?? null;
 
             return (
-              <article key={task.bookingId} className="rounded-xl border border-slate-200 bg-slate-50/80 p-3">
+              <article key={task.bookingId} className="min-w-0 overflow-hidden rounded-xl border border-slate-200 bg-slate-50/80 p-3">
                 <div className="flex items-start justify-between gap-3">
-                  <div>
+                  <div className="min-w-0">
                     <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-cyan-700">{task.taskKind === "collection" ? t("collection") : t("delivery")}</p>
-                    <h3 className="text-lg font-bold text-slate-950">{task.trailerNumber}</h3>
-                    <p className="text-sm text-slate-700">{task.customer || "No customer"}</p>
-                    <p className="text-xs text-slate-500">{task.location || "No location"}</p>
+                    <h3 className="break-words text-lg font-bold text-slate-950">{task.trailerNumber}</h3>
+                    <p className="break-words text-sm text-slate-700">{task.customer || "No customer"}</p>
+                    <p className="break-words text-xs text-slate-500">{task.location || "No location"}</p>
                   </div>
-                  <div className="flex flex-col items-end gap-1">
+                  <div className="flex shrink-0 flex-col items-end gap-1">
                     <span className="rounded-full bg-white px-2 py-1 text-xs font-medium text-slate-700">{toStatusLabel(task.status)}</span>
                     {attentionMeta?.isNewJob ? (
                       <span className="rounded-full border border-cyan-300 bg-cyan-50 px-2 py-0.5 text-[10px] font-semibold tracking-[0.08em] text-cyan-800">NEW</span>
@@ -1270,7 +1251,7 @@ export function DriverMobileJobsDashboard() {
                 </div>
 
                 {activeInstruction ? (
-                  <div className={`mt-3 rounded-xl border px-3 py-3 ${toInstructionPriorityTone(activeInstruction.priority)}`}>
+                    <div className={`mt-3 rounded-xl border px-3 py-3 ${toInstructionPriorityTone(activeInstruction.priority)} ${activeInstruction.readAt ? "" : "ring-2 ring-cyan-400"}`}>
                     <div className="flex items-center justify-between gap-2">
                       <p className="text-[11px] font-semibold uppercase tracking-[0.16em]">Instruction</p>
                       {activeInstruction.priority !== "normal" ? (
@@ -1295,7 +1276,7 @@ export function DriverMobileJobsDashboard() {
                           onClick={() => {
                             void handleAcknowledgeInstruction(activeInstruction);
                           }}
-                          className="rounded-lg bg-slate-900 px-3 py-2 text-xs font-semibold text-white disabled:bg-slate-400"
+                          className="min-h-12 rounded-lg bg-slate-900 px-3 py-2 text-xs font-semibold text-white disabled:bg-slate-400"
                         >
                             {instructionActionId === activeInstruction.id ? t("sending") : language === "en" ? "ACKNOWLEDGE" : t("acknowledged")}
                         </button>
@@ -1323,7 +1304,7 @@ export function DriverMobileJobsDashboard() {
                       type="number"
                       inputMode="decimal"
                       step="0.1"
-                      className="mt-1 w-full rounded-lg border border-cyan-300 bg-white px-2 py-2 text-sm text-slate-900"
+                      className="mt-1 min-h-12 w-full rounded-lg border border-cyan-300 bg-white px-2 py-2 text-sm text-slate-900"
                       value={temperatureByBookingId[task.bookingId] ?? ""}
                       onChange={(event) => {
                         const { value } = event.target;
@@ -1341,23 +1322,23 @@ export function DriverMobileJobsDashboard() {
                   </div>
                 ) : null}
 
-                <div className="mt-3 flex justify-end gap-2">
+                <div className="mt-3 flex flex-col justify-end gap-2 sm:flex-row">
                   {queuedAction?.state === "failed" ? (
                     <button
                       type="button"
                       onClick={() => {
                         void handleRetryQueuedAction(queuedAction);
                       }}
-                      className="w-full rounded-xl bg-amber-600 px-4 py-3 text-sm font-semibold text-white"
+                      className="min-h-12 w-full rounded-xl bg-amber-600 px-4 py-3 text-sm font-semibold text-white"
                     >
                       {t("retry")}
                     </button>
                   ) : task.taskKind === "collection" && task.nextAction === "COLLECTED" ? (
                     <>
-                      <button type="button" disabled={Boolean(queuedAction)} onClick={() => void handleAction(task, "Empty")} className="w-full rounded-xl border border-slate-300 bg-white px-3 py-3 text-sm font-semibold text-slate-900 disabled:opacity-50">
+                      <button type="button" disabled={Boolean(queuedAction)} onClick={() => void handleAction(task, "Empty")} className="min-h-12 w-full rounded-xl border border-slate-300 bg-white px-3 py-3 text-sm font-semibold text-slate-900 disabled:opacity-50">
                         Collected Empty
                       </button>
-                      <button type="button" disabled={Boolean(queuedAction)} onClick={() => void handleAction(task, "Loaded")} className="w-full rounded-xl bg-slate-900 px-3 py-3 text-sm font-semibold text-white disabled:bg-slate-400">
+                      <button type="button" disabled={Boolean(queuedAction)} onClick={() => void handleAction(task, "Loaded")} className="min-h-12 w-full rounded-xl bg-slate-900 px-3 py-3 text-sm font-semibold text-white disabled:bg-slate-400">
                         Collected Loaded
                       </button>
                     </>
@@ -1368,7 +1349,7 @@ export function DriverMobileJobsDashboard() {
                       onClick={() => {
                         void handleAction(task);
                       }}
-                      className="w-full rounded-xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-400"
+                      className="min-h-12 w-full rounded-xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-400"
                     >
                       {isPending ? t("sending") : task.nextAction === "ACKNOWLEDGED" ? language === "en" ? "ACKNOWLEDGE" : t("acknowledged") : task.nextAction === "COLLECTED" ? t("collected") : t("delivered")}
                     </button>
@@ -1434,8 +1415,8 @@ export function DriverMobileJobsDashboard() {
       action="view"
       allowWhenRoleMissing={false}
       fallback={
-        <div className="min-h-screen bg-[linear-gradient(180deg,#f8fafc_0%,#eef2ff_100%)] px-3 py-4 text-slate-900 sm:px-4">
-          <div className="mx-auto w-full max-w-2xl">
+        <div className="min-h-screen overflow-x-hidden bg-[linear-gradient(180deg,#f8fafc_0%,#eef2ff_100%)] px-3 py-4 text-slate-900 sm:px-4">
+          <div className="mx-auto w-full min-w-0 max-w-2xl">
             {shellHeader}
             <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">
               You do not have permission to access Driver Mobile.
@@ -1444,8 +1425,8 @@ export function DriverMobileJobsDashboard() {
         </div>
       }
     >
-      <div className="min-h-screen bg-[linear-gradient(180deg,#f8fafc_0%,#eef2ff_100%)] px-3 py-4 text-slate-900 sm:px-4">
-        <div className="mx-auto w-full max-w-2xl">
+      <div className="min-h-screen overflow-x-hidden bg-[linear-gradient(180deg,#f8fafc_0%,#eef2ff_100%)] px-3 py-4 text-slate-900 sm:px-4">
+        <div className="mx-auto w-full min-w-0 max-w-2xl">
           {shellHeader}
 
           {error ? <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">{error}</div> : null}
@@ -1511,7 +1492,7 @@ export function DriverMobileJobsDashboard() {
                               onClick={() => {
                                 void handleAcknowledgeInstruction(instruction);
                               }}
-                              className="rounded-xl bg-slate-900 px-3 py-2 text-xs font-semibold text-white disabled:bg-slate-400"
+                              className="min-h-12 rounded-xl bg-slate-900 px-3 py-2 text-xs font-semibold text-white disabled:bg-slate-400"
                             >
                               {instructionActionId === instruction.id ? t("sending") : language === "en" ? "ACKNOWLEDGE" : t("acknowledged")}
                             </button>
@@ -1555,7 +1536,7 @@ export function DriverMobileJobsDashboard() {
                 </div>
 
                 <div className="mt-4 space-y-2 text-sm">
-                  {overlayInstruction ? <p className="text-base font-bold">{overlayInstruction.instruction}</p> : <p className="text-base font-bold">New assignment requires acknowledgement.</p>}
+                  {overlayInstruction ? <p className="text-base font-bold">{overlayInstruction.instruction}</p> : null}
                   {overlayTask ? <p><span className="font-semibold">Trailer:</span> {overlayTask.trailerNumber}</p> : null}
                   {overlayTask?.bookingReference ? <p><span className="font-semibold">Reference:</span> {overlayTask.bookingReference}</p> : null}
                   {overlayTask?.location ? <p><span className="font-semibold">Location:</span> {overlayTask.location}</p> : null}
@@ -1580,7 +1561,7 @@ export function DriverMobileJobsDashboard() {
                     void handleOverlayAcknowledge();
                   }}
                   disabled={isOverlayInstructionPending || (overlayTask ? Boolean(queuedActionByBookingId.get(overlayTask.bookingId)) : false)}
-                  className="mt-5 w-full rounded-2xl bg-slate-950 px-4 py-4 text-base font-black uppercase tracking-[0.12em] text-white disabled:cursor-not-allowed disabled:bg-slate-500"
+                  className="mt-5 min-h-12 w-full rounded-2xl bg-slate-950 px-4 py-4 text-base font-black uppercase tracking-[0.12em] text-white disabled:cursor-not-allowed disabled:bg-slate-500"
                 >
                   {isOverlayInstructionRetry ? "RETRY" : "OPEN / ACKNOWLEDGE"}
                 </button>
