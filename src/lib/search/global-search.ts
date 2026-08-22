@@ -271,7 +271,7 @@ const toTrailersResults = (rows: TrailersRow[]): GlobalSearchResultItem[] => row
   .filter((item) => Boolean(item.title));
 
 const toCompoundResults = (rows: TrailersRow[]): GlobalSearchResultItem[] => rows
-  .filter((row) => Boolean(row.compound_position?.trim()))
+  .filter((row) => row.is_local !== true && Boolean(row.compound_position?.trim()))
   .map((row) => ({
     id: `compound:${row.id}`,
     category: "compound_positions" as const,

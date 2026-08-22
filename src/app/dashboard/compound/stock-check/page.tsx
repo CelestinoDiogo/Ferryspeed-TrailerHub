@@ -13,6 +13,10 @@ import { supabase } from "@/lib/supabase";
 import { createTrailerActivity } from "@/lib/trailer-activity";
 import { logTrailerEvent } from "@/lib/trailer-audit-log";
 import {
+  isVisibleOpenStockCheckWorkingItem,
+  syncOpenStockCheckExpectedStock,
+} from "@/lib/compound-stock-check-expected";
+import {
   formatDateTime,
   formatStatusLabel,
   normalizeTrailerNumber,
@@ -420,7 +424,8 @@ export default function CompoundStockCheckPage() {
       }
 
       if (openData) {
-        await loadStockCheckItems(openData);
+        const synced = await syncOpenStockCheckExpectedStock(supabase, openData);
+        await loadStockCheckItems(synced);
         setRecentChecks([]);
         return;
       }
@@ -1041,8 +1046,10 @@ export default function CompoundStockCheckPage() {
 
   const filteredSortedItems = useMemo(() => {
     const normalizedSearch = searchTerm.trim().toUpperCase();
+    const workingItems =
+      openStockCheck?.status === "in_progress" ? items.filter(isVisibleOpenStockCheckWorkingItem) : items;
 
-    const filtered = items.filter((item) => {
+    const filtered = workingItems.filter((item) => {
       if (prefixFilter !== "all") {
         const itemPrefix = extractTrailerPrefix(item.trailer_number);
         if (itemPrefix !== prefixFilter) {
@@ -1080,7 +1087,7 @@ export default function CompoundStockCheckPage() {
         normalizeTrailerNumber(right.trailer_number ?? ""),
       );
     });
-  }, [items, prefixFilter, searchTerm]);
+  }, [items, openStockCheck?.status, prefixFilter, searchTerm]);
 
   const stats = useMemo(() => {
     const expected = openStockCheck?.expected_total ?? 0;

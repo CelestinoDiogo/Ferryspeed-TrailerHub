@@ -9,6 +9,8 @@ import { PrintHeader } from "@/components/print/print-header";
 import { PrintReportLayout } from "@/components/print/print-report-layout";
 import { PrintSummary } from "@/components/print/print-summary";
 import { PrintTable } from "@/components/print/print-table";
+import { returnLocalTrailerToMainList, LocalTrailerReturnError } from "@/lib/operations/return-local-trailer-to-main-list";
+import { resolveAuditOperatorName } from "@/lib/trailer-audit-log";
 import { supabase } from "@/lib/supabase";
 
 type LocalTrailerRecord = {
@@ -55,6 +57,9 @@ export default function LocalTrailersPage() {
   const [trailers, setTrailers] = useState<LocalTrailerRecord[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [returningTrailerId, setReturningTrailerId] = useState<string | null>(null);
+  const [positionDrafts, setPositionDrafts] = useState<Record<string, string>>({});
   const printedAt = getPrintedDateTime();
 
   useEffect(() => {
@@ -86,6 +91,51 @@ export default function LocalTrailersPage() {
     void loadLocalTrailers();
   }, []);
 
+  const handleReturnToMainList = async (trailer: LocalTrailerRecord) => {
+    if (returningTrailerId) {
+      return;
+    }
+
+    setReturningTrailerId(trailer.id);
+    setError(null);
+    setNotice(null);
+
+    try {
+      const operatorName = await resolveAuditOperatorName();
+      const requestedPosition = (positionDrafts[trailer.id] ?? "").trim();
+      const result = await returnLocalTrailerToMainList(supabase, {
+        trailerId: trailer.id,
+        operatorName,
+        compoundPosition: requestedPosition || null,
+      });
+
+      setTrailers((current) => current.filter((row) => row.id !== trailer.id));
+      setPositionDrafts((current) => {
+        const next = { ...current };
+        delete next[trailer.id];
+        return next;
+      });
+      const assigned = result.trailer.compound_position?.trim();
+      setNotice(
+        result.alreadyMain
+          ? `${trailer.trailer_number ?? "Trailer"} is already on the Main List.`
+          : assigned
+            ? `${trailer.trailer_number ?? "Trailer"} returned to the Main List at ${assigned}.`
+            : `${trailer.trailer_number ?? "Trailer"} returned to the Main List without a Compound bay.`,
+      );
+    } catch (err) {
+      const message =
+        err instanceof LocalTrailerReturnError
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : "Unable to return trailer to the Main List.";
+      setError(message);
+    } finally {
+      setReturningTrailerId(null);
+    }
+  };
+
   return (
     <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(34,211,238,0.16),_transparent_32%),linear-gradient(135deg,_#020617_0%,_#0f172a_55%,_#111827_100%)] px-4 py-6 text-slate-100 sm:px-6 lg:px-8">
       <div className="mx-auto flex max-w-7xl flex-col gap-6">
@@ -95,7 +145,7 @@ export default function LocalTrailersPage() {
               <p className="text-sm font-semibold uppercase tracking-[0.3em] text-cyan-400">Ferryspeed TrailerHub</p>
               <h1 className="mt-2 text-2xl font-semibold sm:text-3xl">Local Trailers</h1>
               <p className="mt-2 max-w-2xl text-sm text-slate-300 sm:text-base">
-                Active local trailers that are excluded from compound occupancy.
+                Active local trailers that are excluded from Compound occupancy. Return to Main List without a bay, or optionally assign an unoccupied P01–P50.
               </p>
             </div>
             <Link
@@ -107,6 +157,12 @@ export default function LocalTrailersPage() {
             <PrintButton label="Print / Export" disabled={isLoading || trailers.length === 0} />
           </div>
         </header>
+
+        {notice ? (
+          <div className="rounded-2xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">
+            {notice}
+          </div>
+        ) : null}
 
         {error ? (
           <div className="rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
@@ -217,12 +273,37 @@ export default function LocalTrailersPage() {
                     >
                       Edit Trailer
                     </Link>
-                    <Link
-                      href={`/dashboard/edit-trailer?id=${trailer.id}&action=move_to_compound`}
-                      className="rounded-2xl bg-cyan-500 px-4 py-2 text-center text-sm font-semibold text-slate-950 hover:bg-cyan-400"
+                    <label className="block">
+                      <span className="mb-1 block text-xs uppercase tracking-[0.25em] text-slate-500">
+                        Compound position (optional)
+                      </span>
+                      <input
+                        type="text"
+                        inputMode="text"
+                        autoComplete="off"
+                        placeholder="Leave blank"
+                        value={positionDrafts[trailer.id] ?? ""}
+                        disabled={returningTrailerId === trailer.id}
+                        onChange={(event) =>
+                          setPositionDrafts((current) => ({
+                            ...current,
+                            [trailer.id]: event.target.value,
+                          }))
+                        }
+                        className="w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-2 text-sm text-white placeholder:text-slate-500 focus:border-cyan-400 focus:outline-none"
+                      />
+                    </label>
+                    <p className="text-xs text-slate-400">
+                      Leave blank to return without a Compound bay. A position is not required.
+                    </p>
+                    <button
+                      type="button"
+                      disabled={returningTrailerId === trailer.id}
+                      onClick={() => void handleReturnToMainList(trailer)}
+                      className="rounded-2xl bg-cyan-500 px-4 py-2 text-center text-sm font-semibold text-slate-950 hover:bg-cyan-400 disabled:cursor-not-allowed disabled:opacity-60"
                     >
-                      Convert to Compound
-                    </Link>
+                      {returningTrailerId === trailer.id ? "Returning..." : "Return to Main List"}
+                    </button>
                   </div>
                 </div>
               </article>

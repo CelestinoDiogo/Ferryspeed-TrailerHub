@@ -21,6 +21,7 @@ import { getTrailerCurrentLocationLabel } from "@/lib/trailer-location";
 import {
   EXPORT_ACTIVE_STATUS_QUERY_VALUES,
   getExportAllocationStatusLabel,
+  isTrailerPresentInCompoundInventory,
   normalizeExportAllocationStatus,
   type ExportAllocationStatus,
 } from "@/lib/export-allocation";
@@ -745,9 +746,11 @@ function DashboardSearchPageContent() {
       let accent = "from-cyan-500 to-blue-600";
 
       if (activeFilter === "compound") {
-        filteredTrailers = trailers.filter((item) => isActiveTrailer(item));
+        filteredTrailers = trailers.filter((item) =>
+          isTrailerPresentInCompoundInventory(item, item.active_export_allocation?.status ?? null),
+        );
         groupTitle = "Active trailers in compound";
-        groupDescription = "Current trailers still on site";
+        groupDescription = "Current trailers physically present in Compound";
       } else if (activeFilter === "empty") {
         filteredTrailers = trailers.filter(
           (item) =>
@@ -824,9 +827,7 @@ function DashboardSearchPageContent() {
               toTrailerItem(
                 item,
                 activeFilter === "compound"
-                  ? isActiveTrailer(item)
-                    ? "In Compound"
-                    : "Departed"
+                  ? "In Compound"
                   : statusLabel
               )
             ),
