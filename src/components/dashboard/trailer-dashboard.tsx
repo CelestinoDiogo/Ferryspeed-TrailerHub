@@ -48,6 +48,9 @@ import {
   isDashboardSafetyAlert,
   summarizeDashboardSafetyAlerts,
 } from "@/lib/dashboard-safety-alerts";
+import {
+  buildStoppedCompoundTrailers,
+} from "@/lib/reports/stopped-compound-trailers";
 
 type DashboardStats = {
   totalTrailers: number;
@@ -73,6 +76,7 @@ type TrailerRecord = {
   external_company?: string | null;
   external_reference?: string | null;
   is_local?: boolean | null;
+  created_at?: string | null;
 };
 
 type TrailerEvent = {
@@ -260,6 +264,7 @@ export function TrailerDashboard() {
   const [waitingCollection24hCount, setWaitingCollection24hCount] = useState(0);
   const [temperatureAlertsCount, setTemperatureAlertsCount] = useState(0);
   const [damagePendingReviewCount, setDamagePendingReviewCount] = useState(0);
+  const [stoppedTrailersCount, setStoppedTrailersCount] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const activeAlertsPromiseRef = useRef<Promise<void> | null>(null);
@@ -467,7 +472,7 @@ export function TrailerDashboard() {
           { data: latestStockCheckData, error: latestStockCheckError },
         ] =
           await Promise.all([
-            supabase.from("trailers").select("id, trailer_number, load_status, operational_status, arrival_date, departure_date, compound_position, customer, load_description, trailer_source, external_company, external_reference, is_local"),
+            supabase.from("trailers").select("id, trailer_number, load_status, operational_status, arrival_date, departure_date, compound_position, customer, load_description, trailer_source, external_company, external_reference, is_local, created_at"),
             supabase
               .from("trailer_events")
               .select("id, trailer_number, event_type, event_description, created_at")
@@ -553,6 +558,10 @@ export function TrailerDashboard() {
         const compoundInventoryTrailers = compoundTrailers.filter((item) =>
           isTrailerPresentInCompoundInventory(item, activeExportStatusByTrailerId.get(item.id)),
         );
+        const stoppedTrailers = buildStoppedCompoundTrailers(compoundInventoryTrailers, {
+          exportStatusByTrailerId: activeExportStatusByTrailerId,
+        });
+        setStoppedTrailersCount(stoppedTrailers.length);
 
         const trailersWithActiveExportAllocation = new Set<string>(
           activeExportAllocations
@@ -721,6 +730,7 @@ export function TrailerDashboard() {
         setWaitingCollection24hCount(0);
         setTemperatureAlertsCount(0);
         setDamagePendingReviewCount(0);
+        setStoppedTrailersCount(0);
       } finally {
         if (shouldLogDashboardTiming) {
           const statsPhaseEnd = typeof performance !== "undefined" ? performance.now() : Date.now();
@@ -1047,6 +1057,16 @@ export function TrailerDashboard() {
               </div>
             </div>
           </section>
+
+          <Link
+            href="/dashboard/reports/stopped-trailers"
+            className="block rounded-2xl border border-amber-200 bg-amber-50 p-4 shadow-[0_12px_30px_rgba(15,23,42,0.05)] transition hover:border-amber-300"
+          >
+            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-amber-800">Stock Ageing</p>
+            <p className="mt-2 text-sm font-semibold text-slate-900">Trailers Stopped &gt;3 Days</p>
+            <p className="mt-2 text-3xl font-semibold tracking-tight text-slate-950">{isLoading ? "..." : stoppedTrailersCount}</p>
+            <p className="mt-1 text-xs text-amber-800">Physically present in Compound. Click to open the list.</p>
+          </Link>
 
           <OperationalAlertsSection
             summary={dashboardSafetySummary}

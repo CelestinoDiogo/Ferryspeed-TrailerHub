@@ -3,6 +3,8 @@
 import Link from "next/link";
 
 const reports = [
+  { title: "Operational Summary", description: "Last 7 days arrivals, departures, deliveries, collections and outsourcing totals.", href: "/dashboard/reports/operational-summary" },
+  { title: "Trailers Stopped >3 Days", description: "Daily ageing list of trailers physically stopped in Compound for more than 3 days.", href: "/dashboard/reports/stopped-trailers" },
   { title: "Export Operations Report", description: "Filter export allocations by period, customers, status, priority, and haulier.", href: "/dashboard/export-operations" },
   { title: "Arrivals Report", description: "Review confirmed vessel arrivals with ownership and vessel context.", href: "/dashboard/arrivals" },
   { title: "Departures Report", description: "Review recorded trailer departures by period and ownership.", href: "/dashboard/departures" },

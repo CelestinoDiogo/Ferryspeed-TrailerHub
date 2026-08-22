@@ -346,31 +346,51 @@ export const getLocalDateTimeInputValue = () => {
   return localDate.toISOString().slice(0, 16);
 };
 
+export const VESSEL_OPERATIONAL_TIMEZONE = "Europe/Guernsey";
+
+const vesselDateFormatter = new Intl.DateTimeFormat("en-GB", {
+  timeZone: VESSEL_OPERATIONAL_TIMEZONE,
+  day: "2-digit",
+  month: "short",
+  year: "numeric",
+});
+
+const vesselDateTimeFormatter = new Intl.DateTimeFormat("en-GB", {
+  timeZone: VESSEL_OPERATIONAL_TIMEZONE,
+  day: "2-digit",
+  month: "short",
+  year: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+});
+
+const parseVesselTimestamp = (value?: string | null) => {
+  if (!value) {
+    return null;
+  }
+
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
+
 export const formatVesselDate = (value?: string | null) => {
-  if (!value) return "—";
+  const parsed = parseVesselTimestamp(value);
+  if (!parsed) return "—";
 
   try {
-    return new Date(value).toLocaleDateString("en-GB", {
-      day: "2-digit",
-      month: "short",
-      year: "numeric",
-    });
+    return vesselDateFormatter.format(parsed);
   } catch {
     return "—";
   }
 };
 
 export const formatVesselDateTime = (value?: string | null) => {
-  if (!value) return "—";
+  const parsed = parseVesselTimestamp(value);
+  if (!parsed) return "—";
 
   try {
-    return new Date(value).toLocaleString("en-GB", {
-      day: "2-digit",
-      month: "short",
-      year: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
+    return vesselDateTimeFormatter.format(parsed);
   } catch {
     return "—";
   }

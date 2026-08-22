@@ -21,4 +21,22 @@ describe("vessel discharge timestamp write-path contract", () => {
     expect(mobileService).toContain("confirm_vessel_trailer_arrival");
     expect(mobileService).toContain("markVesselTrailerDischarged");
   });
+
+  it("uses the canonical helper on the desktop Vessel Arrivals discharge path", () => {
+    expect(desktopArrivals).toContain("markVesselTrailerDischarged({");
+    expect(desktopArrivals).toContain("vesselTrailerId: trailer.id");
+    expect(desktopArrivals).toContain("dischargedAt: nowIso");
+  });
+
+  it("uses the canonical helper on the Operations Command Centre discharge path", () => {
+    expect(commandCentre).toContain("markVesselTrailerDischarged({");
+    expect(commandCentre).toContain("vesselTrailerId: card.vesselTrailerId");
+    expect(commandCentre).toContain("dischargedAt: nowIso");
+  });
+
+  it("uses the canonical helper on the Master Mobile discharge path", () => {
+    expect(mobileService).toContain("markVesselTrailerDischarged({");
+    expect(mobileService).toContain("vesselTrailerId: trailer.id");
+    expect(mobileService).toContain("dischargedAt");
+  });
 });

@@ -75,6 +75,8 @@ describe("Sidebar", () => {
     fireEvent.click(toggle);
     expect(toggle).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByRole("link", { name: "Reports Hub" })).toHaveAttribute("href", "/dashboard/reports");
+    expect(screen.getByRole("link", { name: "Operational Summary" })).toHaveAttribute("href", "/dashboard/reports/operational-summary");
+    expect(screen.getByRole("link", { name: "Trailers Stopped >3 Days" })).toHaveAttribute("href", "/dashboard/reports/stopped-trailers");
     expect(screen.getByRole("link", { name: "Arrivals Report" })).toHaveAttribute("href", "/dashboard/arrivals");
     expect(screen.getByRole("link", { name: "Departures Report" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Deliveries Report" })).toBeInTheDocument();

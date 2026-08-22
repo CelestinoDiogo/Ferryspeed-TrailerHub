@@ -14,6 +14,10 @@ describe("dashboard urgent-fix contracts", () => {
   it("passes only damage and temperature alerts to the dashboard panel", () => {
     expect(source).toContain("isDashboardSafetyAlert");
     expect(source).toContain("activeAlerts={dashboardSafetyAlerts}");
+    expect(source).toContain("Trailers Stopped");
+    expect(source).toContain("/dashboard/reports/stopped-trailers");
+    expect(source).toContain("buildStoppedCompoundTrailers");
+    expect(source).not.toContain("activeAlerts={operationalAlerts}");
   });
 
   it("counts delivered and waiting_collection deliveries in the Collections outstanding KPI", () => {

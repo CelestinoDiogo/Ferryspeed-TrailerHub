@@ -196,6 +196,29 @@ describe("markVesselTrailerDischarged", () => {
     expect(result.dischargedAt).toBeNull();
     expect(supabase.tables.vessel_operation_trailers[0].discharged_at).toBeNull();
   });
+
+  it("does not let later Compound reception overwrite discharged_at", async () => {
+    const supabase = createSupabaseMock({
+      vessel_operation_trailers: [{ ...pendingTrailer }],
+      trailer_events: [],
+    });
+
+    await markVesselTrailerDischarged({
+      supabase: supabase as never,
+      vesselTrailerId: "vt-1",
+      operatorName: "Operator",
+      dischargedAt: "2026-08-21T10:00:00.000Z",
+    });
+
+    const row = supabase.tables.vessel_operation_trailers[0];
+    row.arrived_at = "2026-08-21T10:20:00.000Z";
+    row.arrival_confirmed_at = "2026-08-21T10:20:00.000Z";
+    row.updated_at = "2026-08-21T10:20:00.000Z";
+
+    expect(row.discharged_at).toBe("2026-08-21T10:00:00.000Z");
+    expect(row.arrived_at).toBe("2026-08-21T10:20:00.000Z");
+    expect(row.arrival_confirmed_at).toBe("2026-08-21T10:20:00.000Z");
+  });
 });
 
 describe("vessel timestamp helpers", () => {
@@ -209,5 +232,11 @@ describe("vessel timestamp helpers", () => {
     expect(getVesselTrailerDischargedAt(trailer)).toBe("2026-08-21T10:00:00.000Z");
     expect(getVesselTrailerReceptionAt(trailer)).toBe("2026-08-21T10:15:00.000Z");
     expect(getVesselTrailerDischargedAt({ discharged_at: null })).toBeNull();
+    const receptionOnly = {
+      discharged_at: null,
+      arrived_at: "2026-08-21T10:15:00.000Z",
+      arrival_confirmed_at: "2026-08-21T10:15:00.000Z",
+    };
+    expect(getVesselTrailerDischargedAt(receptionOnly)).toBeNull();
   });
 });

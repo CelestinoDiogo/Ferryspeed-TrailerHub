@@ -26,6 +26,7 @@ import {
   getVesselInspectionProgressState,
   getVesselPriorityClass,
   getVesselPriorityLabel,
+  getVesselTrailerDischargedAt,
   getVesselTrailerStatusClass,
   getVesselTrailerStatusLabel,
   sortVesselOperationTrailersForArrivals,
@@ -528,7 +529,7 @@ function VesselArrivalsPageContent() {
                 { key: "arrival", header: "Arrival", render: (trailer) => getVesselArrivalWorkflowLabel(getVesselArrivalWorkflowState(trailer)) },
                 { key: "inspection", header: "Inspection", render: (trailer) => getVesselInspectionProgressLabel(getVesselInspectionProgressState(trailer)) },
                 { key: "position", header: "Position", render: (trailer) => trailer.assigned_position ?? "-" },
-                { key: "arrived_at", header: "Arrived At", render: (trailer) => formatVesselDateTime(trailer.arrival_confirmed_at ?? trailer.arrived_at) },
+                { key: "discharged_at", header: "Discharged At", render: (trailer) => formatVesselDateTime(getVesselTrailerDischargedAt(trailer)) },
               ]}
             />
 
@@ -660,7 +661,7 @@ function VesselArrivalsPageContent() {
                       {trailer.customer?.trim() ? <p className="text-sm text-slate-300">Customer: {trailer.customer}</p> : null}
                       {trailer.booking_reference?.trim() ? <p className="text-sm text-slate-300">Booking Reference: {trailer.booking_reference}</p> : null}
                       {trailer.planning_notes?.trim() ? <p className="text-sm text-slate-300">Notes: {trailer.planning_notes}</p> : null}
-                      <p className="text-sm text-emerald-200">Arrived Time: {formatVesselDateTime(trailer.arrival_confirmed_at ?? trailer.arrived_at)}</p>
+                      <p className="text-sm text-emerald-200">Discharged At: {formatVesselDateTime(getVesselTrailerDischargedAt(trailer))}</p>
                       <p className="text-sm text-slate-300">Raw Status: {getVesselTrailerStatusLabel((trailer.status ?? "expected") as VesselOperationTrailerRecord["status"])}</p>
                     </div>
 
