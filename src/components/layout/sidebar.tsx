@@ -111,6 +111,7 @@ const groupedItems: MenuGroup[] = [
 const historyReportItems: MenuItem[] = [
   { label: "Reports Hub", href: "/dashboard/reports", icon: FileBarChart2, moduleKey: "reports" },
   { label: "Operational Summary", href: "/dashboard/reports/operational-summary", icon: FileBarChart2, moduleKey: "reports" },
+  { label: "Historical Reports", href: "/dashboard/reports/historical", icon: FileBarChart2, moduleKey: "reports" },
   { label: "Trailers Stopped >3 Days", href: "/dashboard/reports/stopped-trailers", icon: ClipboardList, moduleKey: "reports" },
   { label: "Export Operations Report", href: "/dashboard/export-operations", icon: Upload, moduleKey: "export_operations" },
   { label: "Arrivals Report", href: "/dashboard/arrivals", icon: MapPin, moduleKey: "arrivals" },

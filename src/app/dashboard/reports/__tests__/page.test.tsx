@@ -13,8 +13,9 @@ describe("Reports hub", () => {
     expect(screen.getByRole("heading", { name: "Reports" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Export Operations Report/i })).toHaveAttribute("href", "/dashboard/export-operations");
     expect(screen.getByRole("link", { name: /Operational Summary/i })).toHaveAttribute("href", "/dashboard/reports/operational-summary");
+    expect(screen.getByRole("link", { name: /Historical Reports/i })).toHaveAttribute("href", "/dashboard/reports/historical");
     expect(screen.getByRole("link", { name: /Trailers Stopped/i })).toHaveAttribute("href", "/dashboard/reports/stopped-trailers");
-    expect(screen.getByRole("link", { name: /Compound Activity/i })).toHaveAttribute("href", "/dashboard/compound/history");
+    expect(screen.getByRole("link", { name: /Recorded Compound event history/i })).toHaveAttribute("href", "/dashboard/reports/historical?type=compound_events");
     expect(screen.getAllByRole("link")).toHaveLength(9);
   });
 });
