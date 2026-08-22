@@ -7,6 +7,7 @@ import {
   isVisibleOpenStockCheckWorkingItem,
   planOpenStockCheckExpectedReconcile,
   selectStaleStockCheckExpectedItems,
+  shouldOfferStartStockCheck,
   syncOpenStockCheckExpectedStock,
 } from "@/lib/compound-stock-check-expected";
 
@@ -24,7 +25,9 @@ const trailer = (overrides: Record<string, unknown> = {}) => ({
 const item = (overrides: Record<string, unknown> = {}) => ({
   id: "item-1",
   trailer_id: "t1",
+  trailer_number: "PRO810",
   expected_in_compound: true,
+  expected_position: "P10",
   physically_present: null,
   actual_position: null,
   checked_at: null,
@@ -113,6 +116,7 @@ describe("open Stock Check expected reconcile (3 Aug stale-session)", () => {
     const stillPresent = item({
       id: "item-present",
       trailer_id: "present",
+      trailer_number: "PRO810",
       expected_in_compound: true,
     });
 
@@ -140,6 +144,81 @@ describe("open Stock Check expected reconcile (3 Aug stale-session)", () => {
     expect(plan.toInsert.map((row) => row.id)).toEqual(["new-arrival"]);
     expect(plan.unexpectIds).toEqual([]);
     expect(plan.expectedTotal).toBe(2);
+  });
+
+  it("reuses an existing historical row when the same trailer number is currently canonical", () => {
+    const historical = item({
+      id: "item-fab12",
+      trailer_id: "fa068123-departed",
+      trailer_number: "FAB12",
+      expected_in_compound: false,
+      physically_present: true,
+      actual_position: "P27",
+      checked_at: "2026-08-03T09:00:00.000Z",
+      notes: "seen on 3 Aug",
+    });
+    const plan = planOpenStockCheckExpectedReconcile(
+      [historical],
+      [trailer({ id: "0961e6ad-current", trailer_number: "FAB12", compound_position: "P27" })],
+    );
+
+    expect(plan.toInsert).toEqual([]);
+    expect(plan.unexpectIds).toEqual([]);
+    expect(plan.reuseUpdates).toEqual([
+      {
+        id: "item-fab12",
+        trailer: expect.objectContaining({ id: "0961e6ad-current", trailer_number: "FAB12" }),
+      },
+    ]);
+    expect(plan.expectedTotal).toBe(1);
+  });
+
+  it("is idempotent when current expected stock already matches canonical inventory", () => {
+    const current = item({
+      id: "item-current",
+      trailer_id: "current",
+      trailer_number: "PRO810",
+      expected_in_compound: true,
+      expected_position: "P10",
+    });
+    const stale = item({
+      id: "item-stale",
+      trailer_id: "departed",
+      trailer_number: "OLD99",
+      expected_in_compound: false,
+    });
+    const first = planOpenStockCheckExpectedReconcile(
+      [current, stale],
+      [trailer({ id: "current", trailer_number: "PRO810", compound_position: "P10" })],
+    );
+    const second = planOpenStockCheckExpectedReconcile(
+      [current, stale],
+      [trailer({ id: "current", trailer_number: "PRO810", compound_position: "P10" })],
+    );
+
+    expect(first).toEqual(second);
+    expect(first.toInsert).toEqual([]);
+    expect(first.unexpectIds).toEqual([]);
+    expect(first.reuseUpdates).toEqual([]);
+    expect(first.expectedTotal).toBe(1);
+  });
+
+  it("does not offer Start Stock Check when an in-progress session failed to reconcile", () => {
+    expect(
+      shouldOfferStartStockCheck({
+        isLoading: false,
+        openStockCheck: { id: "273206eb-2cb0-4529-8f67-e5d7d8fab4f1" },
+        pageError: 'duplicate key value violates unique constraint "compound_stock_check_items_stock_check_id_trailer_number_key"',
+      }),
+    ).toBe(false);
+    expect(
+      shouldOfferStartStockCheck({
+        isLoading: false,
+        openStockCheck: null,
+        pageError: "Unable to load stock check data.",
+      }),
+    ).toBe(false);
+    expect(shouldOfferStartStockCheck({ isLoading: false, openStockCheck: null, pageError: null })).toBe(true);
   });
 
   it("E: Local trailers stay out of current expected stock", () => {
@@ -245,6 +324,22 @@ describe("syncOpenStockCheckExpectedStock", () => {
             state.op = "insert";
             state.payload = payload;
             operations.push("insert");
+            for (const row of payload) {
+              const number = String(row.trailer_number ?? "").trim().toUpperCase();
+              if (
+                number &&
+                items.some(
+                  (existing) =>
+                    String(existing.trailer_number ?? "").trim().toUpperCase() === number,
+                )
+              ) {
+                operations.push("duplicate-key");
+                return Promise.resolve({
+                  data: null,
+                  error: { message: 'duplicate key value violates unique constraint "compound_stock_check_items_stock_check_id_trailer_number_key"' },
+                });
+              }
+            }
             items.push(...payload);
             return Promise.resolve({ data: payload, error: null });
           },
@@ -352,5 +447,43 @@ describe("syncOpenStockCheckExpectedStock", () => {
     expect(items.find((row) => row.id === "item-present")?.expected_in_compound).toBe(true);
     expect(result.expected_total).toBe(1);
     expect(stockCheck.expected_total).toBe(1);
+  });
+
+  it("reuses FAB12 by trailer number instead of inserting a duplicate-key row", async () => {
+    const openCheck = { id: "273206eb-2cb0-4529-8f67-e5d7d8fab4f1", status: "in_progress", expected_total: 33 };
+    const { supabase, items, operations } = createClient({
+      stockCheck: openCheck,
+      trailers: [trailer({ id: "0961e6ad-current", trailer_number: "FAB12", compound_position: "P27" })],
+      items: [
+        item({
+          id: "item-fab12",
+          trailer_id: "fa068123-departed",
+          trailer_number: "FAB12",
+          expected_in_compound: false,
+          physically_present: true,
+          actual_position: "P27",
+          checked_at: "2026-08-03T09:00:00.000Z",
+          notes: "seen on 3 Aug",
+        }),
+      ],
+    });
+
+    const first = await syncOpenStockCheckExpectedStock(supabase as never, openCheck);
+    const second = await syncOpenStockCheckExpectedStock(supabase as never, openCheck);
+
+    expect(operations).not.toContain("duplicate-key");
+    expect(operations.filter((operation) => operation === "insert")).toHaveLength(0);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      id: "item-fab12",
+      trailer_id: "0961e6ad-current",
+      expected_in_compound: true,
+      physically_present: true,
+      actual_position: "P27",
+      checked_at: "2026-08-03T09:00:00.000Z",
+      notes: "seen on 3 Aug",
+    });
+    expect(first.expected_total).toBe(1);
+    expect(second.expected_total).toBe(1);
   });
 });

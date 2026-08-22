@@ -14,6 +14,7 @@ import { createTrailerActivity } from "@/lib/trailer-activity";
 import { logTrailerEvent } from "@/lib/trailer-audit-log";
 import {
   isVisibleOpenStockCheckWorkingItem,
+  shouldOfferStartStockCheck,
   syncOpenStockCheckExpectedStock,
 } from "@/lib/compound-stock-check-expected";
 import {
@@ -424,9 +425,10 @@ export default function CompoundStockCheckPage() {
       }
 
       if (openData) {
+        setOpenStockCheck(openData);
+        setRecentChecks([]);
         const synced = await syncOpenStockCheckExpectedStock(supabase, openData);
         await loadStockCheckItems(synced);
-        setRecentChecks([]);
         return;
       }
 
@@ -1119,7 +1121,7 @@ export default function CompoundStockCheckPage() {
               <RotateCw className={`h-4 w-4 ${isRefreshing ? "animate-spin" : ""}`} />
               {isRefreshing ? "Refreshing..." : "Refresh"}
             </button>
-            {!openStockCheck ? (
+            {shouldOfferStartStockCheck({ isLoading, openStockCheck, pageError }) ? (
               <button
                 type="button"
                 onClick={() => void handleStartStockCheck()}
@@ -1145,7 +1147,7 @@ export default function CompoundStockCheckPage() {
 
       {isLoading ? <LoadingState label="Loading compound stock check..." /> : null}
 
-      {!isLoading && !openStockCheck ? (
+      {!isLoading && shouldOfferStartStockCheck({ isLoading, openStockCheck, pageError }) ? (
         <>
           <EmptyState
             title="No stock check is currently in progress"

@@ -25,7 +25,9 @@ export type StockCheckExpectedItemSnapshot = Pick<
   StockCheckItem,
   | "id"
   | "trailer_id"
+  | "trailer_number"
   | "expected_in_compound"
+  | "expected_position"
   | "physically_present"
   | "actual_position"
   | "checked_at"
@@ -34,13 +36,31 @@ export type StockCheckExpectedItemSnapshot = Pick<
   | "notes"
 >;
 
+export type OpenStockCheckExpectedReuseUpdate = {
+  id: string;
+  trailer: CanonicalStockCheckTrailer;
+};
+
 export type OpenStockCheckExpectedReconcilePlan = {
   unexpectIds: string[];
   preservedObservationIds: string[];
-  reexpectIds: string[];
+  reuseUpdates: OpenStockCheckExpectedReuseUpdate[];
   toInsert: CanonicalStockCheckTrailer[];
   expectedTotal: number;
 };
+
+export const normalizeStockCheckTrailerNumber = (value?: string | null) =>
+  (value ?? "").trim().toUpperCase() || null;
+
+export const shouldOfferStartStockCheck = ({
+  isLoading,
+  openStockCheck,
+  pageError,
+}: {
+  isLoading: boolean;
+  openStockCheck: Pick<StockCheck, "id"> | null;
+  pageError: string | null;
+}) => !isLoading && !openStockCheck && !pageError;
 
 export const STOCK_CHECK_EXPECTED_PREDICATE =
   "isTrailerPresentInCompoundInventory: no departure_date, is_local !== true, valid P01-P50 position, export status not off-compound. ALLOCATED remains included.";
@@ -101,26 +121,51 @@ export function planOpenStockCheckExpectedReconcile(
   existingItems: StockCheckExpectedItemSnapshot[],
   canonicalTrailers: CanonicalStockCheckTrailer[],
 ): OpenStockCheckExpectedReconcilePlan {
-  const canonicalIds = new Set(canonicalTrailers.map((trailer) => trailer.id));
-  const staleItems = selectStaleStockCheckExpectedItems(existingItems, canonicalIds);
-  const existingTrailerIds = new Set(
-    existingItems.map((item) => item.trailer_id).filter((value): value is string => Boolean(value?.trim())),
-  );
+  const existingByTrailerId = new Map<string, StockCheckExpectedItemSnapshot>();
+  const existingByTrailerNumber = new Map<string, StockCheckExpectedItemSnapshot>();
+
+  for (const item of existingItems) {
+    const trailerId = item.trailer_id?.trim();
+    if (trailerId && !existingByTrailerId.has(trailerId)) {
+      existingByTrailerId.set(trailerId, item);
+    }
+    const trailerNumber = normalizeStockCheckTrailerNumber(item.trailer_number);
+    if (trailerNumber && !existingByTrailerNumber.has(trailerNumber)) {
+      existingByTrailerNumber.set(trailerNumber, item);
+    }
+  }
+
+  const claimedItemIds = new Set<string>();
+  const reuseUpdates: OpenStockCheckExpectedReuseUpdate[] = [];
+  const toInsert: CanonicalStockCheckTrailer[] = [];
+
+  for (const trailer of canonicalTrailers) {
+    const trailerNumber = normalizeStockCheckTrailerNumber(trailer.trailer_number);
+    const existing =
+      existingByTrailerId.get(trailer.id) ?? (trailerNumber ? existingByTrailerNumber.get(trailerNumber) : undefined);
+
+    if (existing && !claimedItemIds.has(existing.id)) {
+      claimedItemIds.add(existing.id);
+      const needsReuseUpdate =
+        existing.expected_in_compound !== true ||
+        (existing.trailer_id ?? null) !== trailer.id ||
+        (existing.expected_position ?? null) !== (trailer.compound_position ?? null);
+      if (needsReuseUpdate) {
+        reuseUpdates.push({ id: existing.id, trailer });
+      }
+      continue;
+    }
+
+    toInsert.push(trailer);
+  }
+
+  const staleItems = existingItems.filter((item) => !claimedItemIds.has(item.id) && item.expected_in_compound !== false);
 
   return {
     unexpectIds: staleItems.map((item) => item.id),
     preservedObservationIds: staleItems.filter(hasPreservedStockCheckObservation).map((item) => item.id),
-    reexpectIds: existingItems.flatMap((item) => {
-      if (item.expected_in_compound !== false) {
-        return [];
-      }
-      const trailerId = item.trailer_id?.trim();
-      if (!trailerId || !canonicalIds.has(trailerId)) {
-        return [];
-      }
-      return [item.id];
-    }),
-    toInsert: canonicalTrailers.filter((trailer) => !existingTrailerIds.has(trailer.id)),
+    reuseUpdates,
+    toInsert,
     expectedTotal: canonicalTrailers.length,
   };
 }
@@ -199,7 +244,6 @@ export async function syncOpenStockCheckExpectedStock(
     ),
   ]);
 
-  const canonicalById = new Map(canonicalTrailers.map((trailer) => [trailer.id, trailer]));
   const plan = planOpenStockCheckExpectedReconcile(existingItems, canonicalTrailers);
 
   if (plan.unexpectIds.length > 0) {
@@ -213,23 +257,19 @@ export async function syncOpenStockCheckExpectedStock(
     }
   }
 
-  for (const itemId of plan.reexpectIds) {
-    const existing = existingItems.find((item) => item.id === itemId);
-    const trailer = existing?.trailer_id ? canonicalById.get(existing.trailer_id) : undefined;
+  for (const reuse of plan.reuseUpdates) {
     const { error } = await supabase
       .from("compound_stock_check_items")
       .update({
         expected_in_compound: true,
-        ...(trailer
-          ? {
-              expected_position: trailer.compound_position ?? null,
-              system_load_status: trailer.load_status ?? null,
-              system_operational_status: trailer.operational_status ?? null,
-            }
-          : {}),
+        trailer_id: reuse.trailer.id,
+        trailer_number: normalizeStockCheckTrailerNumber(reuse.trailer.trailer_number),
+        expected_position: reuse.trailer.compound_position ?? null,
+        system_load_status: reuse.trailer.load_status ?? null,
+        system_operational_status: reuse.trailer.operational_status ?? null,
       })
       .eq("stock_check_id", stockCheck.id)
-      .eq("id", itemId);
+      .eq("id", reuse.id);
     if (error) {
       throw new Error(error.message);
     }
@@ -240,7 +280,7 @@ export async function syncOpenStockCheckExpectedStock(
       plan.toInsert.map((trailer) => ({
         stock_check_id: stockCheck.id,
         trailer_id: trailer.id,
-        trailer_number: (trailer.trailer_number ?? "").trim().toUpperCase() || null,
+        trailer_number: normalizeStockCheckTrailerNumber(trailer.trailer_number),
         expected_in_compound: true,
         physically_present: null,
         expected_position: trailer.compound_position ?? null,

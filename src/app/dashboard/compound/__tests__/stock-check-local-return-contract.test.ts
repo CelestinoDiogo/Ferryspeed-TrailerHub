@@ -27,9 +27,15 @@ describe("Local Return and Stock Check UI contracts", () => {
   it("resyncs an in-progress Stock Check from canonical current Compound presence without deleting observations", () => {
     expect(stockCheckPage).toContain("syncOpenStockCheckExpectedStock");
     expect(stockCheckPage).toContain("isVisibleOpenStockCheckWorkingItem");
+    expect(stockCheckPage).toContain("shouldOfferStartStockCheck");
+    expect(stockCheckPage).toContain("setOpenStockCheck(openData)");
+    expect(stockCheckPage.indexOf("setOpenStockCheck(openData)")).toBeLessThan(
+      stockCheckPage.indexOf("syncOpenStockCheckExpectedStock(supabase, openData)"),
+    );
     expect(stockCheckPage).not.toContain(".limit(1200)");
     expect(stockCheckExpected).toContain("isTrailerPresentInCompoundInventory");
     expect(stockCheckExpected).toContain("expected_in_compound: false");
+    expect(stockCheckExpected).toContain("existingByTrailerNumber");
     expect(stockCheckExpected).not.toContain(".delete(");
   });
 
