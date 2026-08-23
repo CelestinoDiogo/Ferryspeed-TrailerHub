@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Home, Ship, Layers3, Truck, SquareStack, AlertTriangle, ThermometerSnowflake, Search, Mic, MicOff, Languages, Volume2, RotateCcw } from "lucide-react";
 import { PermissionGuard } from "@/components/auth/permission-guard";
+import { StockCheckMobileCard } from "@/components/stock-check/stock-check-mobile-card";
 import { MobileInspectionPanel, type MobileInspectionProgress, type MobileInspectionTrailer } from "@/components/mobile/mobile-inspection-panel";
 import { canAccessModule, canPerformAction } from "@/lib/auth/permissions";
 import { toRoleLabel, type RoleKey } from "@/lib/auth/roles";
@@ -1696,6 +1697,7 @@ export function SupervisorMobileDashboard() {
 
             {activeTab === "compound" ? (
               <section className="space-y-3">
+                <StockCheckMobileCard />
                 <Card title="Compound Live Access" subtitle="Search trailer and read position/status immediately.">
                   <div className="mb-2 flex items-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2">
                     <Search className="h-4 w-4 text-slate-500" />

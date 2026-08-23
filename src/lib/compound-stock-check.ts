@@ -27,8 +27,21 @@ export type StockCheckObservationClassification = {
   unexpected: boolean;
   positionMismatch: boolean;
   statusMismatch: boolean;
+  unresolvedStatusMismatch: boolean;
+  resolved: boolean;
   checkStatus: CheckStatus;
 };
+
+export type StockCheckPhysicalLoad = "empty" | "loaded";
+
+export type StockCheckFindingNotes = {
+  physicalLoad: StockCheckPhysicalLoad | null;
+  positionConflictOccupant: string | null;
+  unknownTrailer: boolean;
+  operatorNote: string | null;
+};
+
+const FINDING_NOTES_PREFIX = "SCFIND|";
 
 const STOCK_CHECK_OPERATIONAL_TIME_ZONE = "Europe/Guernsey";
 
@@ -113,9 +126,8 @@ export const classifyStockCheckObservation = (
     Boolean(actualPosition) &&
     expectedPosition !== actualPosition;
   const statusMismatch =
-    physicallyPresent !== null &&
-    (discrepancy === "wrong_status" || discrepancy === "wrong_load_status") &&
-    resolution !== "resolved";
+    physicallyPresent !== null && (discrepancy === "wrong_status" || discrepancy === "wrong_load_status");
+  const resolved = resolution === "resolved";
 
   return {
     checked,
@@ -124,8 +136,125 @@ export const classifyStockCheckObservation = (
     unexpected,
     positionMismatch,
     statusMismatch,
+    unresolvedStatusMismatch: statusMismatch && !resolved,
+    resolved,
     checkStatus: toCheckStatus(physicallyPresent),
   };
+};
+
+export const isUnexpectedStockCheckFinding = (
+  item: Pick<StockCheckItem, "expected_in_compound" | "physically_present">,
+) => item.expected_in_compound === false && item.physically_present === true;
+
+export const isResolvedStockCheckItem = (item: Pick<StockCheckItem, "resolution_status">) =>
+  normalizeText(item.resolution_status) === "resolved";
+
+export const isStockCheckDiscrepancyItem = (
+  item: Parameters<typeof classifyStockCheckObservation>[0],
+) => {
+  const classification = classifyStockCheckObservation(item);
+  return classification.unexpected || classification.missing || classification.positionMismatch || classification.statusMismatch;
+};
+
+export const recountStockCheckResolutionTotals = (
+  items: Array<Parameters<typeof classifyStockCheckObservation>[0]>,
+) => {
+  let resolved = 0;
+  let unresolved = 0;
+
+  for (const item of items) {
+    if (!isStockCheckDiscrepancyItem(item)) {
+      continue;
+    }
+    if (isResolvedStockCheckItem(item)) {
+      resolved += 1;
+    } else {
+      unresolved += 1;
+    }
+  }
+
+  return { resolved_total: resolved, unresolved_total: unresolved };
+};
+
+export const normalizeStockCheckPhysicalLoad = (value?: string | null): StockCheckPhysicalLoad | null => {
+  const normalized = normalizeText(value);
+  if (normalized === "empty" || normalized === "empty_trailer") {
+    return "empty";
+  }
+  if (normalized === "loaded" || normalized === "full" || normalized === "load") {
+    return "loaded";
+  }
+  return null;
+};
+
+export const parseStockCheckFindingNotes = (notes?: string | null): StockCheckFindingNotes => {
+  const raw = notes?.trim() ?? "";
+  if (!raw.startsWith(FINDING_NOTES_PREFIX)) {
+    return {
+      physicalLoad: null,
+      positionConflictOccupant: null,
+      unknownTrailer: false,
+      operatorNote: raw || null,
+    };
+  }
+
+  const parts = raw.slice(FINDING_NOTES_PREFIX.length).split("|");
+  const map = new Map<string, string>();
+  for (const part of parts) {
+    const index = part.indexOf("=");
+    if (index <= 0) {
+      continue;
+    }
+    map.set(part.slice(0, index), decodeURIComponent(part.slice(index + 1)));
+  }
+
+  return {
+    physicalLoad: normalizeStockCheckPhysicalLoad(map.get("load") ?? null),
+    positionConflictOccupant: map.get("conflict")?.trim().toUpperCase() || null,
+    unknownTrailer: map.get("unknown") === "1",
+    operatorNote: map.get("note")?.trim() || null,
+  };
+};
+
+export const encodeStockCheckFindingNotes = (input: StockCheckFindingNotes) => {
+  const parts = [
+    `load=${encodeURIComponent(input.physicalLoad ?? "")}`,
+    `conflict=${encodeURIComponent(input.positionConflictOccupant ?? "")}`,
+    `unknown=${input.unknownTrailer ? "1" : "0"}`,
+    `note=${encodeURIComponent(input.operatorNote ?? "")}`,
+  ];
+  return `${FINDING_NOTES_PREFIX}${parts.join("|")}`;
+};
+
+export const formatStockCheckPhysicalLoadLabel = (value?: string | null) => {
+  const normalized = normalizeStockCheckPhysicalLoad(value);
+  if (normalized === "empty") {
+    return "Empty";
+  }
+  if (normalized === "loaded") {
+    return "Loaded";
+  }
+  return "-";
+};
+
+export const describeStockCheckDiscrepancy = (
+  item: Parameters<typeof classifyStockCheckObservation>[0],
+) => {
+  const classification = classifyStockCheckObservation(item);
+  if (classification.unexpected) {
+    const finding = parseStockCheckFindingNotes("notes" in item ? (item as StockCheckItem).notes : null);
+    return finding.unknownTrailer ? "Unknown / Unexpected" : "Unexpected";
+  }
+  if (classification.missing) {
+    return "Missing";
+  }
+  if (classification.positionMismatch) {
+    return "Position Mismatch";
+  }
+  if (classification.statusMismatch) {
+    return "Status / Load Mismatch";
+  }
+  return "Matched";
 };
 
 export const recountStockCheckObservationTotals = (

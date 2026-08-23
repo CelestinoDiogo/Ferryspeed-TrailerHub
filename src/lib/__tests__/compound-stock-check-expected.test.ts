@@ -146,7 +146,7 @@ describe("open Stock Check expected reconcile (3 Aug stale-session)", () => {
     expect(plan.expectedTotal).toBe(2);
   });
 
-  it("reuses an existing historical row when the same trailer number is currently canonical", () => {
+  it("does not convert an unexpected FAB12 finding into Expected or insert a duplicate row", () => {
     const historical = item({
       id: "item-fab12",
       trailer_id: "fa068123-departed",
@@ -164,13 +164,8 @@ describe("open Stock Check expected reconcile (3 Aug stale-session)", () => {
 
     expect(plan.toInsert).toEqual([]);
     expect(plan.unexpectIds).toEqual([]);
-    expect(plan.reuseUpdates).toEqual([
-      {
-        id: "item-fab12",
-        trailer: expect.objectContaining({ id: "0961e6ad-current", trailer_number: "FAB12" }),
-      },
-    ]);
-    expect(plan.expectedTotal).toBe(1);
+    expect(plan.reuseUpdates).toEqual([]);
+    expect(plan.expectedTotal).toBe(0);
   });
 
   it("is idempotent when current expected stock already matches canonical inventory", () => {
@@ -466,7 +461,7 @@ describe("syncOpenStockCheckExpectedStock", () => {
     expect(stockCheck.expected_total).toBe(1);
   });
 
-  it("reuses FAB12 by trailer number instead of inserting a duplicate-key row", async () => {
+  it("keeps an unexpected FAB12 finding unexpected instead of inserting a duplicate-key row", async () => {
     const openCheck = { id: "273206eb-2cb0-4529-8f67-e5d7d8fab4f1", status: "in_progress", expected_total: 33 };
     const { supabase, items, operations } = createClient({
       stockCheck: openCheck,
@@ -493,14 +488,13 @@ describe("syncOpenStockCheckExpectedStock", () => {
     expect(items).toHaveLength(1);
     expect(items[0]).toMatchObject({
       id: "item-fab12",
-      trailer_id: "0961e6ad-current",
-      expected_in_compound: true,
+      expected_in_compound: false,
       physically_present: true,
       actual_position: "P27",
       checked_at: "2026-08-03T09:00:00.000Z",
       notes: "seen on 3 Aug",
     });
-    expect(first.expected_total).toBe(1);
-    expect(second.expected_total).toBe(1);
+    expect(first.expected_total).toBe(0);
+    expect(second.expected_total).toBe(0);
   });
 });

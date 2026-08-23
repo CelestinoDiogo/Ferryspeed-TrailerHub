@@ -145,7 +145,11 @@ export function planOpenStockCheckExpectedReconcile(
       existingByTrailerId.get(trailer.id) ?? (trailerNumber ? existingByTrailerNumber.get(trailerNumber) : undefined);
 
     if (existing && !claimedItemIds.has(existing.id)) {
+      const isUnexpectedFinding = existing.expected_in_compound === false && existing.physically_present === true;
       claimedItemIds.add(existing.id);
+      if (isUnexpectedFinding) {
+        continue;
+      }
       const needsReuseUpdate =
         existing.expected_in_compound !== true ||
         (existing.trailer_id ?? null) !== trailer.id ||
@@ -160,13 +164,18 @@ export function planOpenStockCheckExpectedReconcile(
   }
 
   const staleItems = existingItems.filter((item) => !claimedItemIds.has(item.id) && item.expected_in_compound !== false);
+  const expectedItemCount =
+    claimedItemIds.size -
+    existingItems.filter((item) => claimedItemIds.has(item.id) && item.expected_in_compound === false && item.physically_present === true)
+      .length +
+    toInsert.length;
 
   return {
     unexpectIds: staleItems.map((item) => item.id),
     preservedObservationIds: staleItems.filter(hasPreservedStockCheckObservation).map((item) => item.id),
     reuseUpdates,
     toInsert,
-    expectedTotal: canonicalTrailers.length,
+    expectedTotal: expectedItemCount,
   };
 }
 

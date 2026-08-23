@@ -9,10 +9,22 @@ import { LoadingState } from "@/components/layout/loading-state";
 import { PageHeader } from "@/components/layout/page-header";
 import { StatCard } from "@/components/layout/stat-card";
 import { supabase } from "@/lib/supabase";
+import { PrintButton } from "@/components/print/print-button";
+import { PrintFilters } from "@/components/print/print-filters";
+import { PrintFooter } from "@/components/print/print-footer";
+import { PrintHeader } from "@/components/print/print-header";
+import { PrintReportLayout } from "@/components/print/print-report-layout";
+import { PrintSummary } from "@/components/print/print-summary";
+import { PrintTable } from "@/components/print/print-table";
 import {
+  describeStockCheckDiscrepancy,
   formatDateTime,
   formatStatusLabel,
+  formatStockCheckPhysicalLoadLabel,
+  isStockCheckDiscrepancyItem,
   normalizeTrailerNumber,
+  parseStockCheckFindingNotes,
+  recountStockCheckResolutionTotals,
   stockCheckEndedAt,
   type StockCheck,
   type StockCheckItem,
@@ -150,6 +162,7 @@ export default function CompoundStockCheckSummaryPage() {
   }, [summaryItems]);
 
   const summaryStats = useMemo(() => {
+    const resolution = recountStockCheckResolutionTotals(summaryItems);
     return {
       expected: selectedCheck?.expected_total ?? 0,
       found: selectedCheck?.present_total ?? 0,
@@ -158,9 +171,27 @@ export default function CompoundStockCheckSummaryPage() {
       wrongPosition: selectedCheck?.wrong_position_total ?? 0,
       wrongStatus: selectedCheck?.wrong_status_total ?? 0,
       checked: selectedCheck?.checked_total ?? 0,
+      resolved: resolution.resolved_total,
+      unresolved: resolution.unresolved_total,
       actions: actionRows.length,
     };
-  }, [actionRows.length, selectedCheck]);
+  }, [actionRows.length, selectedCheck, summaryItems]);
+
+  const discrepancyRows = useMemo(() => {
+    return summaryItems.filter((item) => isStockCheckDiscrepancyItem(item)).map((item) => {
+      const finding = parseStockCheckFindingNotes(item.notes);
+      return {
+        itemId: item.id,
+        trailerNumber: normalizeTrailerNumber(item.trailer_number ?? "Unknown"),
+        discrepancy: describeStockCheckDiscrepancy(item),
+        expectedState: [item.expected_position || "No expected position", item.system_load_status || "-"].join(" · "),
+        physicalState: [item.actual_position || "-", formatStockCheckPhysicalLoadLabel(finding.physicalLoad)].join(" · "),
+        resolutionStatus: item.resolution_status ?? "unresolved",
+        resolutionAction: item.resolution_action ?? finding.operatorNote ?? "-",
+        positionConflict: finding.positionConflictOccupant,
+      };
+    });
+  }, [summaryItems]);
 
   return (
     <div className="space-y-5">
@@ -182,6 +213,11 @@ export default function CompoundStockCheckSummaryPage() {
             >
               Review Discrepancies
             </Link>
+            <PrintButton
+              label="Print / Export"
+              disabled={!selectedCheck}
+              className="border-slate-200 bg-white text-slate-800 hover:bg-slate-50"
+            />
           </div>
         }
       />
@@ -264,8 +300,47 @@ export default function CompoundStockCheckSummaryPage() {
             <StatCard label="Unexpected" value={String(summaryStats.unexpected)} />
             <StatCard label="Position Mismatch" value={String(summaryStats.wrongPosition)} />
             <StatCard label="Status Mismatch" value={String(summaryStats.wrongStatus)} />
+            <StatCard label="Resolved" value={String(summaryStats.resolved)} />
+            <StatCard label="Unresolved" value={String(summaryStats.unresolved)} />
             <StatCard label="Actions Performed" value={String(summaryStats.actions)} />
           </section>
+
+          <AppCard>
+            <div className="p-5 md:p-6">
+              <h2 className="text-lg font-semibold text-slate-950">Discrepancies</h2>
+              <p className="mt-1 text-sm text-slate-500">Original findings stay visible after operational resolution.</p>
+              {discrepancyRows.length === 0 ? (
+                <p className="mt-4 text-sm text-slate-500">No discrepancies recorded for this session.</p>
+              ) : (
+                <div className="mt-4 overflow-x-auto">
+                  <table className="min-w-full text-left text-sm text-slate-700">
+                    <thead>
+                      <tr className="border-b border-slate-200 text-xs uppercase tracking-[0.2em] text-slate-500">
+                        <th className="px-2 py-3 font-semibold">Trailer</th>
+                        <th className="px-2 py-3 font-semibold">Type</th>
+                        <th className="px-2 py-3 font-semibold">Expected</th>
+                        <th className="px-2 py-3 font-semibold">Physical</th>
+                        <th className="px-2 py-3 font-semibold">Resolution</th>
+                        <th className="px-2 py-3 font-semibold">Action / Note</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {discrepancyRows.map((row) => (
+                        <tr key={row.itemId} className="border-b border-slate-100 align-top last:border-b-0">
+                          <td className="px-2 py-3 font-semibold text-slate-900">{row.trailerNumber}</td>
+                          <td className="px-2 py-3">{row.discrepancy}{row.positionConflict ? ` · Occupant ${row.positionConflict}` : ""}</td>
+                          <td className="px-2 py-3">{row.expectedState}</td>
+                          <td className="px-2 py-3">{row.physicalState}</td>
+                          <td className="px-2 py-3">{formatStatusLabel(row.resolutionStatus)}</td>
+                          <td className="px-2 py-3">{row.resolutionAction}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </AppCard>
 
           <AppCard>
             <div className="p-5 md:p-6">
@@ -311,6 +386,50 @@ export default function CompoundStockCheckSummaryPage() {
             </div>
           </AppCard>
         </>
+      ) : null}
+
+      {selectedCheck ? (
+        <PrintReportLayout>
+          <PrintHeader
+            title="Stock Check Summary"
+            subtitle={`${formatStatusLabel(selectedCheck.status)} · ${formatDateTime(selectedCheck.started_at)}`}
+            printedAt={formatDateTime(new Date().toISOString())}
+            totalRecords={discrepancyRows.length}
+          >
+            <PrintFilters
+              items={[
+                { label: "Session", value: selectedCheck.id },
+                { label: "Operator", value: selectedCheck.started_by ?? "-" },
+                { label: "Status", value: formatStatusLabel(selectedCheck.status) },
+              ]}
+            />
+          </PrintHeader>
+          <PrintSummary
+            items={[
+              { label: "Expected", value: summaryStats.expected },
+              { label: "Checked", value: summaryStats.checked },
+              { label: "Found", value: summaryStats.found },
+              { label: "Missing", value: summaryStats.missing },
+              { label: "Unexpected", value: summaryStats.unexpected },
+              { label: "Position Mismatch", value: summaryStats.wrongPosition },
+              { label: "Status Mismatch", value: summaryStats.wrongStatus },
+              { label: "Resolved", value: summaryStats.resolved },
+              { label: "Unresolved", value: summaryStats.unresolved },
+            ]}
+          />
+          <PrintTable
+            rows={discrepancyRows}
+            columns={[
+              { key: "trailer", header: "Trailer", render: (row) => row.trailerNumber },
+              { key: "type", header: "Discrepancy", render: (row) => row.discrepancy },
+              { key: "expected", header: "Expected", render: (row) => row.expectedState },
+              { key: "physical", header: "Physical", render: (row) => row.physicalState },
+              { key: "resolution", header: "Resolution", render: (row) => formatStatusLabel(row.resolutionStatus) },
+              { key: "action", header: "Action / Note", render: (row) => row.resolutionAction },
+            ]}
+          />
+          <PrintFooter />
+        </PrintReportLayout>
       ) : null}
     </div>
   );

@@ -819,9 +819,13 @@ export default function CompoundReviewDiscrepanciesPage() {
 
                                 {row.category === "unexpected" ? (
                                   <>
-                                    <button type="button" disabled className="rounded-lg border border-slate-200 bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-500">Create Arrival · Coming Soon</button>
-                                    <button type="button" disabled className="rounded-lg border border-slate-200 bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-500">Link Existing Trailer · Coming Soon</button>
-                                    <button type="button" disabled className="rounded-lg border border-slate-200 bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-500">Ignore · Coming Soon</button>
+                                    <Link
+                                      href="/dashboard/compound/stock-check"
+                                      className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold text-slate-700"
+                                    >
+                                      Resolve on Stock Check
+                                    </Link>
+                                    <p className="text-[11px] text-slate-500">Unknown trailer creation stays on desktop. Simple position/load corrections can be done in Stock Check.</p>
                                   </>
                                 ) : null}
 

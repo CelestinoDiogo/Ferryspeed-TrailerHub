@@ -9,6 +9,7 @@ import { EmptyState } from "@/components/layout/empty-state";
 import { LoadingState } from "@/components/layout/loading-state";
 import { PageHeader } from "@/components/layout/page-header";
 import { StatCard } from "@/components/layout/stat-card";
+import { StockCheckUnexpectedDialog } from "@/components/stock-check/stock-check-unexpected-dialog";
 import { supabase } from "@/lib/supabase";
 import { createTrailerActivity } from "@/lib/trailer-activity";
 import { logTrailerEvent } from "@/lib/trailer-audit-log";
@@ -18,21 +19,22 @@ import {
   shouldOfferStartStockCheck,
   syncOpenStockCheckExpectedStock,
 } from "@/lib/compound-stock-check-expected";
-import { CLOSE_STOCK_CHECK_CONFIRMATION } from "@/lib/compound-stock-check-session";
+import { CLOSE_STOCK_CHECK_CONFIRMATION, COMPLETE_STOCK_CHECK_CONFIRMATION } from "@/lib/compound-stock-check-session";
 import { syncTrailerCurrentOperationalState } from "@/lib/operations/trailer-current-state";
 import {
   formatDateTime,
   formatStatusLabel,
   isOpenStockCheckStatus,
   isStockCheckFromPriorOperationalDay,
+  isStockCheckDiscrepancyItem,
   normalizeTrailerNumber,
+  recountStockCheckResolutionTotals,
   shouldPromptResumeOrCloseOpenSession,
   stockCheckEndedAt,
   toCheckStatus,
   type StockCheck,
   type StockCheckItem,
 } from "@/lib/compound-stock-check";
-
 const OPEN_STATUS = "in_progress";
 
 type ScanNoticeTone = "success" | "warning" | "error" | "info";
@@ -381,6 +383,9 @@ export default function CompoundStockCheckPage() {
   const [searchTerm, setSearchTerm] = useState("");
   const [prefixFilter, setPrefixFilter] = useState<string>("all");
   const [isCancelling, setIsCancelling] = useState(false);
+  const [isCompleting, setIsCompleting] = useState(false);
+  const [unexpectedDialogOpen, setUnexpectedDialogOpen] = useState(false);
+  const [resolveItem, setResolveItem] = useState<StockCheckItem | null>(null);
   const [isWorkingOpenSession, setIsWorkingOpenSession] = useState(false);
   const scanInputRef = useRef<HTMLInputElement | null>(null);
   const tableRowRefs = useRef<Record<string, HTMLTableRowElement | null>>({});
@@ -635,6 +640,41 @@ export default function CompoundStockCheckPage() {
       setPageError(message);
     } finally {
       setIsCancelling(false);
+    }
+  };
+
+  const handleCompleteStockCheck = async (stockCheck: StockCheck) => {
+    if (isCompleting || isCancelling || isRefreshing || isLoading) {
+      return;
+    }
+    if (!window.confirm(COMPLETE_STOCK_CHECK_CONFIRMATION)) {
+      return;
+    }
+
+    setIsCompleting(true);
+    setPageError(null);
+    try {
+      const token = await getSessionToken();
+      const response = await fetch("/api/stock-check/complete", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ stockCheckId: stockCheck.id }),
+      });
+      const payload = (await response.json().catch(() => ({}))) as { error?: string };
+      if (!response.ok) {
+        throw new Error(payload.error || "Unable to complete stock check.");
+      }
+      workingOpenSessionRef.current = false;
+      setIsWorkingOpenSession(false);
+      await loadStockCheckData(true);
+      setActionNotice("Physical Stock Check completed. Unresolved discrepancies remain visible in history.");
+    } catch (error) {
+      setPageError(error instanceof Error ? error.message : "Unable to complete stock check.");
+    } finally {
+      setIsCompleting(false);
     }
   };
 
@@ -1134,7 +1174,7 @@ export default function CompoundStockCheckPage() {
   };
 
   const reviewDiscrepancyItems = useMemo(
-    () => items.filter((item) => Boolean(item.resolution_action?.trim())),
+    () => items.filter((item) => isStockCheckDiscrepancyItem(item) || Boolean(item.resolution_action?.trim())),
     [items],
   );
 
@@ -1210,8 +1250,20 @@ export default function CompoundStockCheckPage() {
     const wrongPosition = openStockCheck?.wrong_position_total ?? 0;
     const wrongStatus = openStockCheck?.wrong_status_total ?? 0;
 
-    return { expected, checked, found, remaining, missing, unexpected, wrongPosition, wrongStatus };
-  }, [openStockCheck, remainingTotal]);
+    const resolution = recountStockCheckResolutionTotals(items);
+    return {
+      expected,
+      checked,
+      found,
+      remaining,
+      missing,
+      unexpected,
+      wrongPosition,
+      wrongStatus,
+      resolved: resolution.resolved_total,
+      unresolved: resolution.unresolved_total,
+    };
+  }, [items, openStockCheck, remainingTotal]);
 
   const showResumeClosePrompt = shouldPromptResumeOrCloseOpenSession({
     openStockCheck,
@@ -1428,6 +1480,8 @@ export default function CompoundStockCheckPage() {
             <StatCard label="Unexpected" value={String(stats.unexpected)} />
             <StatCard label="Position Mismatch" value={String(stats.wrongPosition)} />
             <StatCard label="Status Mismatch" value={String(stats.wrongStatus)} />
+            <StatCard label="Resolved" value={String(stats.resolved)} />
+            <StatCard label="Unresolved" value={String(stats.unresolved)} />
           </section>
 
           <AppCard>
@@ -1456,14 +1510,24 @@ export default function CompoundStockCheckPage() {
                     {formatStatusLabel(openStockCheck.status).toUpperCase()}
                   </span>
                   {canMutateOpenCheck ? (
-                    <button
-                      type="button"
-                      onClick={() => void handleCloseStockCheck(openStockCheck)}
-                      disabled={isCancelling}
-                      className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs font-semibold text-rose-800 hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-60"
-                    >
-                      {isCancelling ? "Closing..." : "Close Stock Check"}
-                    </button>
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => void handleCloseStockCheck(openStockCheck)}
+                        disabled={isCancelling}
+                        className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs font-semibold text-rose-800 hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {isCancelling ? "Closing..." : "Close Stock Check"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleCompleteStockCheck(openStockCheck)}
+                        disabled={isCompleting || isCancelling}
+                        className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-800 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {isCompleting ? "Completing..." : "Complete Stock Check"}
+                      </button>
+                    </>
                   ) : null}
                   <Link
                     href={`/dashboard/compound/stock-check/summary?stockCheckId=${openStockCheck.id}`}
@@ -1482,6 +1546,16 @@ export default function CompoundStockCheckPage() {
             <div className="p-5 md:p-6">
               <h2 className="text-base font-semibold text-slate-950">Quick Trailer Check</h2>
               <p className="mt-1 text-sm text-slate-500">Search trailer numbers continuously using barcode scanner input or keyboard.</p>
+              <button
+                type="button"
+                onClick={() => {
+                  setResolveItem(null);
+                  setUnexpectedDialogOpen(true);
+                }}
+                className="mt-3 rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white"
+              >
+                + Unexpected Trailer
+              </button>
 
               <form onSubmit={handleScanSubmit} className="mt-4">
                 <input
@@ -1686,6 +1760,7 @@ export default function CompoundStockCheckPage() {
                         <th className="px-2 py-3 font-semibold">Resolution</th>
                         <th className="px-2 py-3 font-semibold">Resolved At</th>
                         <th className="px-2 py-3 font-semibold">Resolved By</th>
+                        <th className="px-2 py-3 font-semibold">Action</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1708,6 +1783,22 @@ export default function CompoundStockCheckPage() {
                           </td>
                           <td className="px-2 py-3">{formatDateTime(item.resolved_at)}</td>
                           <td className="px-2 py-3">{item.resolved_by ?? "-"}</td>
+                          <td className="px-2 py-3">
+                            {canMutateOpenCheck ? (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setResolveItem(item);
+                                  setUnexpectedDialogOpen(true);
+                                }}
+                                className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold"
+                              >
+                                Resolve
+                              </button>
+                            ) : (
+                              "-"
+                            )}
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -1832,6 +1923,23 @@ export default function CompoundStockCheckPage() {
             </div>
           </AppCard>
         </div>
+      ) : null}
+
+      {openStockCheck ? (
+        <StockCheckUnexpectedDialog
+          key={`${unexpectedDialogOpen ? "open" : "closed"}-${resolveItem?.id ?? "create"}`}
+          open={unexpectedDialogOpen}
+          stockCheckId={openStockCheck.id}
+          surface="desktop"
+          resolveItem={resolveItem}
+          onClose={() => {
+            setUnexpectedDialogOpen(false);
+            setResolveItem(null);
+          }}
+          onCompleted={() => {
+            void loadStockCheckData(true);
+          }}
+        />
       ) : null}
     </div>
   );

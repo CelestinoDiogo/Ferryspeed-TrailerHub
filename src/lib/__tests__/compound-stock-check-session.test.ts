@@ -10,7 +10,7 @@ import {
   STOCK_CHECK_STATUSES,
 } from "@/lib/compound-stock-check";
 import { shouldOfferStartStockCheck } from "@/lib/compound-stock-check-expected";
-import { cancelCompoundStockCheck, StockCheckSessionError } from "@/lib/compound-stock-check-session";
+import { cancelCompoundStockCheck, completeCompoundStockCheck, StockCheckSessionError } from "@/lib/compound-stock-check-session";
 import { isTrailerPresentInCompoundInventory } from "@/lib/export-allocation";
 
 const session = (overrides: Record<string, unknown> = {}) => ({
@@ -301,13 +301,13 @@ describe("stock check session lifecycle", () => {
     expect(totals.wrong_position_total).toBe(1);
   });
 
-  it("counts Status Mismatch from unresolved wrong load/status observations", () => {
+  it("keeps Status Mismatch recorded after resolution", () => {
     const totals = recountStockCheckObservationTotals([
       item({ physically_present: true, discrepancy_type: "wrong_load_status", resolution_status: "unresolved" }),
       item({ physically_present: true, discrepancy_type: "wrong_status", resolution_status: "resolved" }),
       item({ physically_present: null, discrepancy_type: "wrong_status" }),
     ]);
-    expect(totals.wrong_status_total).toBe(1);
+    expect(totals.wrong_status_total).toBe(2);
   });
 
   it("allows only one active session and prompts Resume + Close for a stale open check", () => {
@@ -368,5 +368,32 @@ describe("stock check session lifecycle", () => {
         "allocated",
       ),
     ).toBe(true);
+  });
+
+  it("completes an in-progress Stock Check even when discrepancies remain unresolved", async () => {
+    const { supabase, stockCheck, items } = createClient({
+      stockCheck: session(),
+      items: [
+        item({ id: "missing", physically_present: false, expected_in_compound: true }),
+        item({
+          id: "unexpected",
+          expected_in_compound: false,
+          physically_present: true,
+          discrepancy_type: "unexpected",
+          resolution_status: "unresolved",
+        }),
+      ],
+    });
+
+    const result = await completeCompoundStockCheck(supabase as never, {
+      stockCheckId: stockCheck.id,
+      completedBy: "Operator One",
+    });
+
+    expect(result.alreadyCompleted).toBe(false);
+    expect(result.stockCheck.status).toBe("completed");
+    expect(result.unresolvedCount).toBeGreaterThan(0);
+    expect(items).toHaveLength(2);
+    expect(stockCheck.completed_by).toBe("Operator One");
   });
 });
