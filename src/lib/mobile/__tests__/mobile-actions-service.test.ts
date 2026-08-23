@@ -220,7 +220,8 @@ describe("executeMobileAction", () => {
     });
 
     expect(result.status).toBe("success");
-    expect(result.message).toContain("already marked as arrived");
+    expect(result.message).toContain("already received");
+    expect(markVesselTrailerDischargedMock).not.toHaveBeenCalled();
   });
 
   it("returns failed when trailer is no longer visible in vessel operations", async () => {
@@ -356,31 +357,30 @@ describe("executeMobileAction", () => {
     expect(result.message).toContain("Front temperature is required");
   });
 
-  it("returns retryable failed result when arrival RPC errors", async () => {
-    const supabase = createSupabaseMock(
-      {
-        vessel_operation_trailers: [
-          {
-            id: "vt-1",
-            vessel_operation_id: "op-1",
-            trailer_id: "trailer-1",
-            trailer_number: "FS1001",
-            arrival_status: "expected",
-            arrival_record_id: null,
-            status: "expected",
-            inspection_started_at: null,
-            inspection_completed_at: null,
-            expected_front_temperature: null,
-            expected_rear_temperature: null,
-            expected_temperature_unit: "C",
-            temperature_required: null,
-            has_damage: false,
-            has_temperature_alert: false,
-          },
-        ],
-      },
-      { error: { message: "Temporary network error" } },
-    );
+  it("returns retryable failed result when discharge recording errors", async () => {
+    markVesselTrailerDischargedMock.mockRejectedValueOnce(new Error("Temporary network error"));
+    const supabase = createSupabaseMock({
+      vessel_operation_trailers: [
+        {
+          id: "vt-1",
+          vessel_operation_id: "op-1",
+          trailer_id: "trailer-1",
+          trailer_number: "FS1001",
+          arrival_status: "expected",
+          arrival_record_id: null,
+          discharged_at: null,
+          status: "expected",
+          inspection_started_at: null,
+          inspection_completed_at: null,
+          expected_front_temperature: null,
+          expected_rear_temperature: null,
+          expected_temperature_unit: "C",
+          temperature_required: null,
+          has_damage: false,
+          has_temperature_alert: false,
+        },
+      ],
+    });
 
     const result = await executeMobileAction(supabase, user, {
       actionType: "MARK_ARRIVED",
@@ -556,23 +556,9 @@ describe("executeMobileAction", () => {
         dischargedAt: "2026-08-21T10:00:00.000Z",
       }),
     );
-    expect(rpc).toHaveBeenCalledWith(
-      "confirm_vessel_trailer_arrival",
-      expect.objectContaining({
-        p_vessel_operation_trailer_id: "vt-1",
-        p_received_at: "2026-08-21T10:00:00.000Z",
-      }),
-    );
-    expect(rpc.mock.calls[0][1]).not.toHaveProperty("discharged_at");
-    expect(createTrailerActivityMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        eventType: "arrived",
-        eventTitle: "Vessel trailer received",
-        metadata: expect.objectContaining({
-          discharged_at: "2026-08-21T10:00:00.000Z",
-          arrival_confirmed_at: "2026-08-21T10:00:00.000Z",
-        }),
-      }),
-    );
+    expect(rpc).not.toHaveBeenCalled();
+    expect(createTrailerActivityMock).not.toHaveBeenCalled();
+    expect(result.message).toMatch(/discharged/i);
+    expect(result.message).toMatch(/reception/i);
   });
 });

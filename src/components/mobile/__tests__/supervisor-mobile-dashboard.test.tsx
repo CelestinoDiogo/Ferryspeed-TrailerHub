@@ -88,6 +88,11 @@ class QueryMock {
     return this;
   }
 
+  maybeSingle() {
+    const rows = tableData[this.table] ?? [];
+    return Promise.resolve({ data: rows[0] ?? null, error: null });
+  }
+
   in() {
     return this;
   }
@@ -662,11 +667,11 @@ describe("SupervisorMobileDashboard", () => {
 
     resolveFetch({
       ok: true,
-      json: async () => ({ status: "success", message: "Arrival confirmed." }),
+      json: async () => ({ status: "success", message: "FS1001 discharged. Confirm reception separately to place the trailer." }),
     });
 
     await waitFor(() => {
-      expect(screen.getByText("Arrival confirmed.")).toBeInTheDocument();
+      expect(screen.getByText("Trailer discharged. Confirm reception on desktop to place it.")).toBeInTheDocument();
     });
   });
 

@@ -80,7 +80,7 @@ export function MandatoryCollectionsWorkboard() {
         ...row,
         trailer_number: row.trailers?.trailer_number ?? row.trailer_number ?? null,
       }));
-      const completedDeliveryIds = deliveryRows.filter((row) => row.collected_at).map((row) => row.id);
+      const completedDeliveryIds = deliveryRows.filter((row) => row.status === "collected").map((row) => row.id);
       const resultByDeliveryId = new Map<string, "Empty" | "Loaded">();
 
       if (completedDeliveryIds.length > 0) {

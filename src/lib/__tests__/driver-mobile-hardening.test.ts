@@ -22,7 +22,13 @@ describe("driver mobile operational communication hardening", () => {
     expect(serviceSource).not.toContain("operational_alerts");
   });
 
-  it("sets collected_at for driver delivery collect to satisfy the existing lifecycle guard", () => {
+  it("does not write collected_at on driver yard pickup and still stamps final customer collection", () => {
+    const pickupBlock = serviceSource.slice(
+      serviceSource.indexOf('status === "scheduled"'),
+      serviceSource.indexOf('status === "waiting_collection"'),
+    );
+    expect(pickupBlock).toContain('status: "on_delivery"');
+    expect(pickupBlock).not.toContain("collected_at");
     expect(serviceSource).toContain("collected_at: booking.collected_at ?? nowIso");
     expect(serviceSource).toContain("delivered_at: booking.delivered_at ?? nowIso");
     expect(serviceSource).not.toMatch(/patch:\s*\{[^}]*waiting_collection_since/);

@@ -849,8 +849,8 @@ export function SupervisorMobileDashboard() {
         trailerNumber: row.trailer_number ?? undefined,
         operationId: row.vessel_operation_id,
       },
-      fallbackError: "Unable to confirm arrival.",
-      successMessage: "Arrival confirmed.",
+      fallbackError: "Unable to record discharge.",
+      successMessage: "Trailer discharged. Confirm reception on desktop to place it.",
     });
   }, [executeMobileAction, hasAction]);
 

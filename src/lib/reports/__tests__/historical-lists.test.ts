@@ -123,8 +123,20 @@ describe("deliveries and collections history", () => {
     const delivery = mapCollectionHistoryRecord(mapDeliveryCollectionEvent({
       id: "c-del",
       trailer_number: "FS1",
+      status: "collected",
       collected_at: "2026-08-22T09:00:00.000Z",
     }));
+    expect(mapDeliveryCollectionEvent({
+      id: "pickup",
+      trailer_number: "PFC49",
+      status: "on_delivery",
+      collected_at: "2026-08-22T08:00:00.000Z",
+    })).toBeNull();
+    expect(mapDeliveryCollectionEvent({
+      id: "waiting",
+      status: "waiting_collection",
+      collected_at: "2026-08-22T08:00:00.000Z",
+    })).toBeNull();
     const exported = mapCollectionHistoryRecord(mapExportCollectionEvent({
       id: "c-exp",
       trailer_number: "FS1",

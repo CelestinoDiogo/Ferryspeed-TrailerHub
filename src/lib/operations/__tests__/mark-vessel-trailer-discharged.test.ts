@@ -137,6 +137,7 @@ describe("markVesselTrailerDischarged", () => {
     expect(supabase.tables.vessel_operation_trailers[0]).toMatchObject({
       arrival_status: "arrived",
       discharged_at: "2026-08-21T10:00:00.000Z",
+      arrival_record_id: null,
       inspection_started_at: null,
       inspection_completed_at: null,
     });

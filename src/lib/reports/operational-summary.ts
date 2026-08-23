@@ -289,7 +289,7 @@ export const mapDeliveryCollectionEvent = (row: {
   external_company?: string | null;
   is_local?: boolean | null;
 }): OperationalSummaryEvent | null => {
-  if (isCancelledOperationalStatus(row.status)) {
+  if (isCancelledOperationalStatus(row.status) || (row.status ?? "").trim().toLowerCase() !== "collected") {
     return null;
   }
 

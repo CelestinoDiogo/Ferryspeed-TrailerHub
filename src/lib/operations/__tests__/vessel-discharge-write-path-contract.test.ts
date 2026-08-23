@@ -18,7 +18,7 @@ describe("vessel discharge timestamp write-path contract", () => {
   it("keeps Compound reception on the existing arrival RPC without writing discharged_at", () => {
     expect(receptionHook).toContain("confirm_vessel_trailer_arrival");
     expect(receptionHook).not.toContain("discharged_at");
-    expect(mobileService).toContain("confirm_vessel_trailer_arrival");
+    expect(mobileService).not.toContain("confirm_vessel_trailer_arrival");
     expect(mobileService).toContain("markVesselTrailerDischarged");
   });
 

@@ -5,15 +5,29 @@ const delivery = { id: "delivery-a", trailer_id: "trailer-a", trailer_number: "F
 const exportAllocation = { id: "export-a", trailer_id: "trailer-b", trailer_number: "FS200", customer: "Customer B", collection_address: "Export Customer Yard", booking_reference: "EXP-1", collection_date: "2026-08-13", expected_return_at: "2026-08-14T10:00:00.000Z", delivered_empty_at: "2026-08-13T07:00:00.000Z", waiting_loading_at: null, collected_loaded_at: null, completed_at: null, cancelled_at: null, status: "delivered_empty" };
 
 describe("mandatory collections", () => {
-  it("does not treat a stale collected timestamp on a delivered booking as completed collection", () => {
-    expect(projectDeliveryCollection({
+  it("keeps delivered and waiting_collection outstanding even when a stale collected_at exists", () => {
+    const delivered = projectDeliveryCollection({
       id: "delivery-stale",
       trailer_id: "trailer-stale",
       status: "delivered",
       delivery_date: "2026-08-15",
       delivered_at: "2026-08-15T09:00:00.000Z",
       collected_at: "2026-08-15T08:00:00.000Z",
-    }, "2026-08-17T09:00:00.000Z")).toBeNull();
+    }, "2026-08-17T09:00:00.000Z");
+    expect(delivered).toMatchObject({ isOutstanding: true, pendingSince: "2026-08-15T09:00:00.000Z" });
+  });
+
+  it("keeps a PFC49-style waiting_collection job visible despite a yard-pickup collected_at", () => {
+    const projected = projectDeliveryCollection({
+      ...delivery,
+      id: "pfc49",
+      trailer_number: "PFC49",
+      customer: "NORMAN PIETTE",
+      collected_at: "2026-08-21T14:10:12.957Z",
+    }, "2026-08-23T12:00:00.000Z");
+    expect(projected?.isOutstanding).toBe(true);
+    expect(projected?.pendingSince).toBe(delivery.waiting_collection_since);
+    expect(projected?.ageStartedAt).toBe(delivery.waiting_collection_since);
   });
   it.each([[0, "green"], [23 + 59 / 60, "green"], [24, "green"], [24 + 1 / 60, "orange"], [47 + 59 / 60, "orange"], [48, "orange"], [48 + 1 / 60, "red"]] as const)("classifies %s elapsed hours as %s", (hours, expected) => {
     const referenceAt = new Date(Date.parse("2026-08-14T00:00:00.000Z") + hours * 3_600_000);
@@ -64,7 +78,11 @@ describe("mandatory collections", () => {
   it("does not infer an obligation from an ambiguous Delivery status", () => {
     expect(projectDeliveryCollection({ ...delivery, status: "scheduled", waiting_collection_since: null })).toBeNull();
     expect(projectDeliveryCollection({ ...delivery, status: "on_delivery", waiting_collection_since: null })).toBeNull();
-    expect(projectDeliveryCollection({ ...delivery, status: "collected", collected_at: null })).toBeNull();
+    expect(projectDeliveryCollection({ ...delivery, status: "collected", collected_at: null })?.isOutstanding).toBe(false);
+    expect(deriveMandatoryCollections({
+      deliveries: [{ ...delivery, status: "collected", collected_at: null }],
+      exports: [],
+    })).toHaveLength(0);
     expect(projectDeliveryCollection({ ...delivery, status: "cancelled", collected_at: "2026-08-15T12:00:00.000Z" })).toBeNull();
   });
 

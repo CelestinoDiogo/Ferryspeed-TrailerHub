@@ -212,6 +212,7 @@ const loadDeliveriesAndCollections = async (
       supabase
         .from("delivery_bookings")
         .select("id, trailer_id, customer, booking_reference, status, collected_at, notes, driver:drivers(display_name), trailers(trailer_number, trailer_source, external_company, is_local, source_vessel_operation_trailer_id)")
+        .eq("status", "collected")
         .not("collected_at", "is", null)
         .gte("collected_at", fromIso)
         .lte("collected_at", toIso)

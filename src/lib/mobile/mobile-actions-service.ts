@@ -92,11 +92,6 @@ const buildConflict = (input: {
   };
 };
 
-const isAlreadyArrivedMessage = (message: string) => {
-  const lower = message.toLowerCase();
-  return lower.includes("already confirmed") || lower.includes("already linked") || lower.includes("already exists");
-};
-
 const asVesselTrailerState = (row: VesselOperationTrailerRecord) => {
   return {
     vesselTrailerId: row.id,
@@ -688,17 +683,17 @@ const runMarkArrived = async (
     return {
       ok: true,
       status: "success",
-      message: `${trailer.trailer_number ?? "Trailer"} is already marked as arrived.`,
+      message: `${trailer.trailer_number ?? "Trailer"} is already received. Confirm reception is not part of Arrived.`,
       retryable: false,
       updatedVesselTrailer: asVesselTrailerState(trailer),
     };
   }
 
-  if (trailer.arrival_status === "arrived") {
+  if (trailer.discharged_at || trailer.arrival_status === "arrived") {
     return {
       ok: true,
       status: "success",
-      message: `${trailer.trailer_number ?? "Trailer"} is already marked as arrived.`,
+      message: `${trailer.trailer_number ?? "Trailer"} is already discharged.`,
       retryable: false,
       updatedVesselTrailer: asVesselTrailerState(trailer),
     };
@@ -715,71 +710,20 @@ const runMarkArrived = async (
       eventDescription: "Trailer discharged from vessel from Master Mobile.",
     });
 
-    const receivedAt = payload.receivedAt ?? new Date().toISOString();
-
-    const { data: trailerId, error: confirmError } = await supabase.rpc("confirm_vessel_trailer_arrival", {
-      p_vessel_operation_trailer_id: trailer.id,
-      p_received_at: receivedAt,
-      p_confirmed_by: operatorName,
-    });
-
-    if (confirmError) {
-      if (isAlreadyArrivedMessage(confirmError.message ?? "")) {
-        return {
-          ok: true,
-          status: "success",
-          message: `${trailer.trailer_number ?? "Trailer"} was already marked as arrived.`,
-          retryable: false,
-        };
-      }
-
-      throw confirmError;
-    }
-
-    const latestTrailer = await getVesselTrailer(supabase, trailer.id);
-    const arrivalRecordId = typeof trailerId === "string" ? trailerId : latestTrailer?.arrival_record_id ?? null;
-    const arrivalTrailer = arrivalRecordId ? await getTrailerById(supabase, arrivalRecordId) : null;
-
-    await createTrailerActivity({
-      supabaseClient: supabase,
-      trailerId: arrivalTrailer?.id ?? trailer.trailer_id ?? null,
-      trailerNumber: trailer.trailer_number ?? "UNKNOWN",
-      eventType: "arrived",
-      eventTitle: "Vessel trailer received",
-      eventDescription: "Reception confirmed from Master Mobile.",
-      sourceModule: "vessel",
-      sourceRecordId: trailer.id,
-      previousStatus: trailer.arrival_status ?? trailer.status,
-      newStatus: "arrived",
-      metadata: {
-        vessel_trailer_id: trailer.id,
-        vessel_operation_id: trailer.vessel_operation_id,
-        discharged_at: discharge.dischargedAt,
-        arrival_confirmed_at: receivedAt,
-      },
-      performedBy: operatorName,
-      createdAt: receivedAt,
-    });
+    const latestTrailer = discharge.trailer ?? await getVesselTrailer(supabase, trailer.id);
 
     return {
       ok: true,
       status: "success",
-      message: `${trailer.trailer_number ?? "Trailer"} marked as arrived.`,
+      message: discharge.alreadyDischarged
+        ? `${trailer.trailer_number ?? "Trailer"} is already discharged.`
+        : `${trailer.trailer_number ?? "Trailer"} discharged. Confirm reception separately to place the trailer.`,
       retryable: false,
-      updatedTrailer: arrivalTrailer
-        ? {
-            trailerId: arrivalTrailer.id,
-            trailerNumber: arrivalTrailer.trailer_number,
-            loadStatus: arrivalTrailer.load_status,
-            compoundPosition: arrivalTrailer.compound_position,
-            operationalStatus: arrivalTrailer.operational_status,
-          }
-        : null,
-      updatedVesselTrailer: latestTrailer ? asVesselTrailerState(latestTrailer) : null,
+      updatedVesselTrailer: latestTrailer ? asVesselTrailerState(latestTrailer) : asVesselTrailerState(trailer),
     };
   } catch (error) {
     const supabaseError = (error && typeof error === "object" ? error : null) as SupabaseErrorLike | null;
-    const message = buildVesselSupabaseErrorMessage(supabaseError, "Unable to confirm arrival.");
+    const message = buildVesselSupabaseErrorMessage(supabaseError, "Unable to record discharge.");
     return {
       ok: false,
       status: "failed",

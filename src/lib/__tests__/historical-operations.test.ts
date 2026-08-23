@@ -33,10 +33,12 @@ describe("historical operations filters", () => {
 
   it("keeps old pending collections visible in current-pending mode and preserves aging bands", () => {
     const pending = collectionRecord({ id: "pending", trailer_number: "PFC300", delivery_date: "2026-08-01", waiting_collection_since: "2026-08-12T00:00:00.000Z", customer: "Customer C" });
-    const collected = collectionRecord({ id: "collected", trailer_number: "PRO400", delivery_date: "2026-08-14", collected_at: "2026-08-14T10:00:00.000Z", customer: "Customer D" });
+    const collected = collectionRecord({ id: "collected", trailer_number: "PRO400", delivery_date: "2026-08-14", status: "collected", collected_at: "2026-08-14T10:00:00.000Z", customer: "Customer D" });
+    const pickupOnly = collectionRecord({ id: "pickup", trailer_number: "PFC49", delivery_date: "2026-08-14", status: "on_delivery", collected_at: "2026-08-14T09:00:00.000Z", customer: "NORMAN PIETTE" });
     expect(filterHistoricalOperations([pending, collected], { range: createHistoryDateRange("today", "2026-08-14"), ownership: "all", search: "", collectionState: "pending", aging: "all", currentPending: true })).toEqual([pending]);
     expect(["orange", "red"]).toContain(pending.agingLevel);
     expect(collected.collectionState).toBe("collected");
+    expect(pickupOnly.collectionState).toBe("pending");
   });
 
   it("uses source ownership for collection history and otherwise remains unknown", () => {

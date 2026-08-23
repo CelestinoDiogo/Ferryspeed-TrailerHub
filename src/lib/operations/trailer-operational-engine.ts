@@ -599,7 +599,7 @@ const buildDerivedEvents = (input: {
       });
     }
 
-    if (row.collected_at) {
+    if ((row.status ?? "").trim().toLowerCase() === "collected" && row.collected_at) {
       events.push({
         id: `derived-collected-${row.id}`,
         trailerNumber: input.trailerNumber,

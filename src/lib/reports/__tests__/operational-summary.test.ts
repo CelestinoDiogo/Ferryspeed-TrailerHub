@@ -178,6 +178,16 @@ describe("operational summary canonical timestamps", () => {
     expect(exportCollection?.occurredAt).toBe("2026-08-21T17:00:00.000Z");
     expect(exportCollection?.collectionSource).toBe("export");
     expect(exportCollection?.haulier).toBe("Haulier A");
+    expect(mapDeliveryCollectionEvent({
+      id: "pickup",
+      collected_at: "2026-08-21T16:00:00.000Z",
+      status: "on_delivery",
+    })).toBeNull();
+    expect(mapDeliveryCollectionEvent({
+      id: "waiting",
+      collected_at: "2026-08-21T16:00:00.000Z",
+      status: "waiting_collection",
+    })).toBeNull();
   });
 
   it("classifies outsourcing from canonical ownership fields and not trailer-number prefixes", () => {

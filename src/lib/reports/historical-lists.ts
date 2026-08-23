@@ -40,7 +40,7 @@ export const HISTORICAL_TIMESTAMP_SEMANTICS = {
   departures: "trailers.departure_date (date key) plus optional departure_time. Cancelled operational_status excluded.",
   deliveries: "delivery_bookings.delivered_at. Never delivered / cancelled rows excluded. Collection is a separate event.",
   collections:
-    "Delivery collections use collected_at. Export collections use collected_loaded_at. Distinct IDs prevent double-count. Pending/cancelled excluded.",
+    "Delivery collections require status = collected AND collected_at. Export collections use collected_loaded_at. Distinct IDs prevent double-count. Driver pickup / on_delivery is not a collection.",
   compound_events: "trailer_activity_log.created_at for recorded Compound events. Not reconstructed from current stock.",
   compound_snapshot: "Current Compound inventory snapshot. Not a historical date reconstruction.",
 } as const;

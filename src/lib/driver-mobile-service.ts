@@ -142,7 +142,6 @@ const buildTransition = (booking: DeliveryBookingRow, action: DriverTaskAction, 
         eventDescription: "Driver marked task as collected and moved to on_delivery.",
         patch: {
           status: "on_delivery",
-          collected_at: booking.collected_at ?? nowIso,
           updated_at: nowIso,
         },
       };
