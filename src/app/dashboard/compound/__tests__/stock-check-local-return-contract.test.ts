@@ -39,6 +39,9 @@ describe("Local Return and Stock Check UI contracts", () => {
     expect(stockCheckExpected).not.toContain("normalizeTrailerCurrentOperationalState");
     expect(stockCheckExpected).not.toContain(".delete(");
     expect(stockCheckPage).toContain("syncTrailerCurrentOperationalState");
+    expect(stockCheckPage).toContain("Close Stock Check");
+    expect(stockCheckPage).toContain("Resume");
+    expect(stockCheckPage).toContain("/api/stock-check/cancel");
     expect(editTrailerPage).toContain("normalizeTrailerCurrentOperationalState");
   });
 

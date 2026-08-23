@@ -2,7 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, Json } from "@/lib/database.types";
 import { supabase } from "@/lib/supabase";
 import { normalizeExportAllocationRecord, type ExportAllocationRecord, type ExportAllocationStatus } from "@/lib/export-allocation";
-import { normalizeTrailerNumber } from "@/lib/compound-stock-check";
+import { isCancelledStockCheckStatus, normalizeTrailerNumber } from "@/lib/compound-stock-check";
 
 export type OperationalAlertRow = Database["public"]["Tables"]["operational_alerts"]["Row"];
 export type OperationalAlertSettingsRow = Database["public"]["Tables"]["operational_alert_settings"]["Row"];
@@ -1635,6 +1635,7 @@ const loadOperationalAlertSourceData = async (client: SupabaseClient<Database>) 
     vesselTrailersResult,
     temperaturesResult,
     photosResult,
+    stockChecksResult,
     stockCheckItemsResult,
     exportAllocationsResult,
   ] = await Promise.all([
@@ -1660,6 +1661,7 @@ const loadOperationalAlertSourceData = async (client: SupabaseClient<Database>) 
       .from("vessel_inspection_photos")
       .select("id, vessel_trailer_id, vessel_operation_id, uploaded_at")
       .order("uploaded_at", { ascending: false }),
+    client.from("compound_stock_checks").select("id, status"),
     client
       .from("compound_stock_check_items")
       .select("id, stock_check_id, trailer_id, trailer_number, discrepancy_type, resolution_status, system_load_status, system_operational_status, actual_position, expected_position, created_at, updated_at")
@@ -1676,11 +1678,18 @@ const loadOperationalAlertSourceData = async (client: SupabaseClient<Database>) 
     ?? vesselTrailersResult.error
     ?? temperaturesResult.error
     ?? photosResult.error
+    ?? stockChecksResult.error
     ?? stockCheckItemsResult.error
     ?? exportAllocationsResult.error;
   if (firstError) {
     throw new Error(firstError.message || "Unable to load operational alert source data.");
   }
+
+  const liveStockCheckIds = new Set(
+    ((stockChecksResult.data ?? []) as Array<{ id: string; status: string | null }>)
+      .filter((row) => !isCancelledStockCheckStatus(row.status))
+      .map((row) => row.id),
+  );
 
   return {
     trailers: (trailersResult.data ?? []) as TrailerRow[],
@@ -1688,7 +1697,9 @@ const loadOperationalAlertSourceData = async (client: SupabaseClient<Database>) 
     vesselTrailers: (vesselTrailersResult.data ?? []) as VesselTrailerRow[],
     temperatures: (temperaturesResult.data ?? []) as TemperatureRow[],
     photos: (photosResult.data ?? []) as PhotoRow[],
-    stockCheckItems: (stockCheckItemsResult.data ?? []) as StockCheckItemRow[],
+    stockCheckItems: ((stockCheckItemsResult.data ?? []) as StockCheckItemRow[]).filter((item) =>
+      liveStockCheckIds.has(item.stock_check_id),
+    ),
     exportAllocations: (exportAllocationsResult.data ?? []) as ExportAllocationRow[],
   };
 };

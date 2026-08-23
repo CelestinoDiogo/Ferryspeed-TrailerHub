@@ -259,6 +259,23 @@ describe("open Stock Check expected reconcile (3 Aug stale-session)", () => {
     expect(canonical.map((row) => row.id)).toEqual(["compound"]);
   });
 
+  it("a new Stock Check expected_total equals the current canonical Compound count", () => {
+    const canonical = filterCanonicalStockCheckExpectedTrailers(
+      [
+        trailer({ id: "one", compound_position: "P01" }),
+        trailer({ id: "two", trailer_number: "PRO811", compound_position: "P02" }),
+        trailer({ id: "local", is_local: true, compound_position: "P03" }),
+        trailer({ id: "departed", departure_date: "2026-08-21", compound_position: "P04" }),
+      ],
+      new Map(),
+    );
+    const plan = planOpenStockCheckExpectedReconcile([], canonical);
+
+    expect(canonical).toHaveLength(2);
+    expect(plan.expectedTotal).toBe(2);
+    expect(plan.toInsert).toHaveLength(2);
+  });
+
   it("M: a stale compound_position cannot resurrect a departed trailer", () => {
     expect(
       isTrailerPresentInCompoundInventory(

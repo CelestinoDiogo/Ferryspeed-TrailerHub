@@ -12,16 +12,22 @@ import { StatCard } from "@/components/layout/stat-card";
 import { supabase } from "@/lib/supabase";
 import { createTrailerActivity } from "@/lib/trailer-activity";
 import { logTrailerEvent } from "@/lib/trailer-audit-log";
+import { getSessionToken } from "@/lib/voice/session";
 import {
   isVisibleOpenStockCheckWorkingItem,
   shouldOfferStartStockCheck,
   syncOpenStockCheckExpectedStock,
 } from "@/lib/compound-stock-check-expected";
+import { CLOSE_STOCK_CHECK_CONFIRMATION } from "@/lib/compound-stock-check-session";
 import { syncTrailerCurrentOperationalState } from "@/lib/operations/trailer-current-state";
 import {
   formatDateTime,
   formatStatusLabel,
+  isOpenStockCheckStatus,
+  isStockCheckFromPriorOperationalDay,
   normalizeTrailerNumber,
+  shouldPromptResumeOrCloseOpenSession,
+  stockCheckEndedAt,
   toCheckStatus,
   type StockCheck,
   type StockCheckItem,
@@ -374,8 +380,11 @@ export default function CompoundStockCheckPage() {
   const [pendingPositionChange, setPendingPositionChange] = useState<PendingPositionChange | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
   const [prefixFilter, setPrefixFilter] = useState<string>("all");
+  const [isCancelling, setIsCancelling] = useState(false);
+  const [isWorkingOpenSession, setIsWorkingOpenSession] = useState(false);
   const scanInputRef = useRef<HTMLInputElement | null>(null);
   const tableRowRefs = useRef<Record<string, HTMLTableRowElement | null>>({});
+  const workingOpenSessionRef = useRef(false);
 
   const showScanNotice = useCallback((message: string, tone: ScanNoticeTone) => {
     setScanNotice(message);
@@ -399,6 +408,22 @@ export default function CompoundStockCheckPage() {
     setOpenStockCheck(stockCheck);
     setItems(itemData ?? []);
     setRemainingTotal(Math.max((stockCheck.expected_total ?? 0) - (stockCheck.checked_total ?? 0), 0));
+  }, []);
+
+  const loadRecentStockChecks = useCallback(async () => {
+    const { data: recentData, error: recentError } = await supabase
+      .from("compound_stock_checks")
+      .select(
+        "id, status, started_at, completed_at, cancelled_at, started_by, completed_by, expected_total, checked_total, present_total, missing_total, unexpected_total, wrong_position_total, wrong_status_total, notes, created_at, updated_at",
+      )
+      .order("started_at", { ascending: false })
+      .limit(10);
+
+    if (recentError) {
+      throw recentError;
+    }
+
+    setRecentChecks(recentData ?? []);
   }, []);
 
   const loadStockCheckData = useCallback(async (refreshOnly = false) => {
@@ -425,29 +450,25 @@ export default function CompoundStockCheckPage() {
         throw openError;
       }
 
+      await loadRecentStockChecks();
+
       if (openData) {
         setOpenStockCheck(openData);
-        setRecentChecks([]);
-        const synced = await syncOpenStockCheckExpectedStock(supabase, openData);
-        await loadStockCheckItems(synced);
+        if (workingOpenSessionRef.current) {
+          const synced = await syncOpenStockCheckExpectedStock(supabase, openData);
+          await loadStockCheckItems(synced);
+          return;
+        }
+
+        setItems([]);
+        setRemainingTotal(Math.max((openData.expected_total ?? 0) - (openData.checked_total ?? 0), 0));
         return;
       }
 
-      const { data: recentData, error: recentError } = await supabase
-        .from("compound_stock_checks")
-        .select(
-          "id, status, started_at, completed_at, cancelled_at, started_by, completed_by, expected_total, checked_total, present_total, missing_total, unexpected_total, wrong_position_total, wrong_status_total, notes, created_at, updated_at",
-        )
-        .order("started_at", { ascending: false })
-        .limit(10);
-
-      if (recentError) {
-        throw recentError;
-      }
-
+      workingOpenSessionRef.current = false;
+      setIsWorkingOpenSession(false);
       setOpenStockCheck(null);
       setItems([]);
-      setRecentChecks(recentData ?? []);
       setRemainingTotal(null);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to load stock check data.";
@@ -456,7 +477,7 @@ export default function CompoundStockCheckPage() {
       setIsLoading(false);
       setIsRefreshing(false);
     }
-  }, [loadStockCheckItems]);
+  }, [loadRecentStockChecks, loadStockCheckItems]);
 
   useEffect(() => {
     const timeoutId = window.setTimeout(() => {
@@ -467,10 +488,10 @@ export default function CompoundStockCheckPage() {
   }, [loadStockCheckData]);
 
   useEffect(() => {
-    if (openStockCheck && scanInputRef.current) {
+    if (openStockCheck && workingOpenSessionRef.current && scanInputRef.current) {
       scanInputRef.current.focus();
     }
-  }, [openStockCheck]);
+  }, [openStockCheck, isWorkingOpenSession]);
 
   useEffect(() => {
     if (!scanNotice) {
@@ -533,6 +554,8 @@ export default function CompoundStockCheckPage() {
         performedBy: operatorName,
       });
 
+      workingOpenSessionRef.current = true;
+      setIsWorkingOpenSession(true);
       await loadStockCheckData(true);
       setActionNotice("Stock check started successfully.");
     } catch (error) {
@@ -543,8 +566,80 @@ export default function CompoundStockCheckPage() {
     }
   };
 
+  const handleResumeOpenStockCheck = async () => {
+    if (!openStockCheck || isRefreshing || isLoading || isStarting || isCancelling) {
+      return;
+    }
+
+    workingOpenSessionRef.current = true;
+    setIsWorkingOpenSession(true);
+    await loadStockCheckData(true);
+  };
+
+  const handleCloseStockCheck = async (stockCheck: StockCheck) => {
+    if (isCancelling || isRefreshing || isLoading || isStarting || isMarking) {
+      return;
+    }
+
+    if (!window.confirm(CLOSE_STOCK_CHECK_CONFIRMATION)) {
+      return;
+    }
+
+    setIsCancelling(true);
+    setPageError(null);
+    setActionNotice(null);
+
+    try {
+      const operatorName = await resolveOperatorName();
+      const token = await getSessionToken();
+      const response = await fetch("/api/stock-check/cancel", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ stockCheckId: stockCheck.id }),
+      });
+      const payload = (await response.json().catch(() => ({}))) as { error?: string; alreadyCancelled?: boolean };
+
+      if (!response.ok) {
+        throw new Error(payload.error || "Unable to close stock check.");
+      }
+
+      await logTrailerEvent({
+        trailerId: null,
+        trailerNumber: null,
+        eventType: "stock_check_cancelled",
+        description: "Compound stock check closed without completing a full physical verification.",
+        previousValue: {
+          id: stockCheck.id,
+          status: stockCheck.status,
+          started_at: stockCheck.started_at,
+        },
+        newValue: {
+          id: stockCheck.id,
+          status: "cancelled",
+          cancelled_by: operatorName,
+          already_cancelled: payload.alreadyCancelled === true,
+        },
+        sourceModule: "stock_check",
+        performedBy: operatorName,
+      });
+
+      workingOpenSessionRef.current = false;
+      setIsWorkingOpenSession(false);
+      await loadStockCheckData(true);
+      setActionNotice("Stock check closed. A new stock check can now be started.");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to close stock check.";
+      setPageError(message);
+    } finally {
+      setIsCancelling(false);
+    }
+  };
+
   const handleRefresh = async () => {
-    if (isRefreshing || isLoading || isStarting || isMarking || isChangingLoadStatus || isChangingPosition) {
+    if (isRefreshing || isLoading || isStarting || isMarking || isChangingLoadStatus || isChangingPosition || isCancelling) {
       return;
     }
 
@@ -557,16 +652,25 @@ export default function CompoundStockCheckPage() {
       return;
     }
 
-    if (stockCheck.status !== "in_progress" && stockCheck.status !== "completed") {
-      showScanNotice("Only in-progress or completed stock checks can be reviewed.", "warning");
+    if (stockCheck.status !== "in_progress" && stockCheck.status !== "completed" && stockCheck.status !== "cancelled") {
+      showScanNotice("Only in-progress, completed, or cancelled stock checks can be reviewed.", "warning");
       return;
     }
+
+    workingOpenSessionRef.current = stockCheck.status === "in_progress";
+    setIsWorkingOpenSession(stockCheck.status === "in_progress");
 
     setIsRefreshing(true);
     setPageError(null);
     setActionNotice(null);
 
     try {
+      if (stockCheck.status === "in_progress") {
+        await loadStockCheckData(true);
+        setActionNotice("Resumed in-progress stock check.");
+        return;
+      }
+
       await loadStockCheckItems(stockCheck);
       setActionNotice(`Reviewing ${formatStatusLabel(stockCheck.status)} stock check.`);
     } catch (error) {
@@ -579,7 +683,7 @@ export default function CompoundStockCheckPage() {
 
   const markTrailerPresent = useCallback(
     async (trailerNumber: string, source: "scan" | "button") => {
-      if (!openStockCheck?.id) {
+      if (!openStockCheck?.id || !isOpenStockCheckStatus(openStockCheck.status) || !workingOpenSessionRef.current) {
         showScanNotice("No active stock check found. Refresh the page and try again.", "error");
         return;
       }
@@ -1109,6 +1213,19 @@ export default function CompoundStockCheckPage() {
     return { expected, checked, found, remaining, missing, unexpected, wrongPosition, wrongStatus };
   }, [openStockCheck, remainingTotal]);
 
+  const showResumeClosePrompt = shouldPromptResumeOrCloseOpenSession({
+    openStockCheck,
+    isWorkingOpenSession,
+  });
+  const canMutateOpenCheck = Boolean(
+    openStockCheck && isOpenStockCheckStatus(openStockCheck.status) && isWorkingOpenSession,
+  );
+  const showWorkingSurface = Boolean(openStockCheck) && !showResumeClosePrompt;
+  const showIdleStart = shouldOfferStartStockCheck({ isLoading, openStockCheck, pageError });
+  const isStaleOpenSession = Boolean(
+    openStockCheck && isStockCheckFromPriorOperationalDay(openStockCheck.started_at),
+  );
+
   return (
     <div className="space-y-5">
       <PageHeader
@@ -1126,7 +1243,7 @@ export default function CompoundStockCheckPage() {
               <RotateCw className={`h-4 w-4 ${isRefreshing ? "animate-spin" : ""}`} />
               {isRefreshing ? "Refreshing..." : "Refresh"}
             </button>
-            {shouldOfferStartStockCheck({ isLoading, openStockCheck, pageError }) ? (
+            {showIdleStart ? (
               <button
                 type="button"
                 onClick={() => void handleStartStockCheck()}
@@ -1134,6 +1251,16 @@ export default function CompoundStockCheckPage() {
                 className="rounded-2xl bg-emerald-500 px-4 py-2 text-sm font-semibold text-white transition hover:bg-emerald-600 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {isStarting ? "Starting..." : "Start Stock Check"}
+              </button>
+            ) : null}
+            {openStockCheck && isOpenStockCheckStatus(openStockCheck.status) ? (
+              <button
+                type="button"
+                onClick={() => void handleCloseStockCheck(openStockCheck)}
+                disabled={isCancelling || isLoading || isStarting}
+                className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-2 text-sm font-semibold text-rose-800 transition hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {isCancelling ? "Closing..." : "Close Stock Check"}
               </button>
             ) : null}
           </div>
@@ -1152,8 +1279,9 @@ export default function CompoundStockCheckPage() {
 
       {isLoading ? <LoadingState label="Loading compound stock check..." /> : null}
 
-      {!isLoading && shouldOfferStartStockCheck({ isLoading, openStockCheck, pageError }) ? (
+      {!isLoading && !showWorkingSurface ? (
         <>
+          {showIdleStart ? (
           <EmptyState
             title="No stock check is currently in progress"
             description="Start a stock check to capture the current expected trailers in compound and begin scanning trailer numbers."
@@ -1168,6 +1296,49 @@ export default function CompoundStockCheckPage() {
               </button>
             }
           />
+          ) : null}
+
+          {showResumeClosePrompt && openStockCheck ? (
+            <AppCard className={isStaleOpenSession ? "border border-amber-200 bg-amber-50/60" : undefined}>
+              <div className="p-5 md:p-6">
+                <div className="flex flex-wrap items-start justify-between gap-4">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Open session</p>
+                    <h2 className="mt-1 text-xl font-semibold text-slate-950">
+                      Stock Check started {formatDateTime(openStockCheck.started_at)}
+                    </h2>
+                    <p className="mt-2 text-sm text-slate-600">
+                      {isStaleOpenSession
+                        ? "This Stock Check started on a previous operational day. Resume it to continue, or close it to start a new check from current Compound inventory."
+                        : "An in-progress Stock Check is already open. Resume it to continue scanning, or close it to start a new check."}
+                    </p>
+                    <p className="mt-2 font-mono text-xs text-slate-500">{openStockCheck.id}</p>
+                  </div>
+                  <span className={`inline-flex rounded-full border px-3 py-1.5 text-xs font-semibold ${getStatusBadgeClassName(openStockCheck.status)}`}>
+                    {formatStatusLabel(openStockCheck.status).toUpperCase()}
+                  </span>
+                </div>
+                <div className="mt-5 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void handleResumeOpenStockCheck()}
+                    disabled={isRefreshing || isCancelling}
+                    className="rounded-2xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {isRefreshing ? "Opening..." : "Resume"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleCloseStockCheck(openStockCheck)}
+                    disabled={isCancelling || isRefreshing}
+                    className="rounded-2xl border border-rose-200 bg-white px-4 py-2 text-sm font-semibold text-rose-800 transition hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {isCancelling ? "Closing..." : "Close Stock Check"}
+                  </button>
+                </div>
+              </div>
+            </AppCard>
+          ) : null}
 
           <AppCard>
             <div className="p-5 md:p-6">
@@ -1187,10 +1358,12 @@ export default function CompoundStockCheckPage() {
                         <th className="px-2 py-3 font-semibold">Started By</th>
                         <th className="px-2 py-3 font-semibold">Ended At</th>
                         <th className="px-2 py-3 font-semibold">Expected</th>
+                        <th className="px-2 py-3 font-semibold">Checked</th>
                         <th className="px-2 py-3 font-semibold">Found</th>
                         <th className="px-2 py-3 font-semibold">Missing</th>
                         <th className="px-2 py-3 font-semibold">Unexpected</th>
                         <th className="px-2 py-3 font-semibold">Position</th>
+                        <th className="px-2 py-3 font-semibold">Status Mismatch</th>
                         <th className="px-2 py-3 font-semibold">Status</th>
                         <th className="px-2 py-3 font-semibold">Action</th>
                       </tr>
@@ -1200,12 +1373,14 @@ export default function CompoundStockCheckPage() {
                         <tr key={row.id} className="border-b border-slate-100 align-top last:border-b-0">
                           <td className="px-2 py-3">{formatDateTime(row.started_at)}</td>
                           <td className="px-2 py-3">{row.started_by ?? "-"}</td>
-                          <td className="px-2 py-3">{formatDateTime(row.completed_at)}</td>
+                          <td className="px-2 py-3">{formatDateTime(stockCheckEndedAt(row))}</td>
                           <td className="px-2 py-3">{row.expected_total ?? 0}</td>
+                          <td className="px-2 py-3">{row.checked_total ?? 0}</td>
                           <td className="px-2 py-3">{row.present_total ?? 0}</td>
                           <td className="px-2 py-3">{row.missing_total ?? 0}</td>
                           <td className="px-2 py-3">{row.unexpected_total ?? 0}</td>
                           <td className="px-2 py-3">{row.wrong_position_total ?? 0}</td>
+                          <td className="px-2 py-3">{row.wrong_status_total ?? 0}</td>
                           <td className="px-2 py-3">
                             <span className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold ${getStatusBadgeClassName(row.status)}`}>
                               {formatStatusLabel(row.status)}
@@ -1213,7 +1388,7 @@ export default function CompoundStockCheckPage() {
                           </td>
                           <td className="px-2 py-3">
                             <div className="flex flex-wrap gap-1.5">
-                              {(row.status === "in_progress" || row.status === "completed") ? (
+                              {(row.status === "in_progress" || row.status === "completed" || row.status === "cancelled") ? (
                                 <button
                                   type="button"
                                   onClick={() => void handleReviewStockCheck(row)}
@@ -1242,7 +1417,7 @@ export default function CompoundStockCheckPage() {
         </>
       ) : null}
 
-      {!isLoading && openStockCheck ? (
+      {!isLoading && showWorkingSurface && openStockCheck ? (
         <>
           <section className="grid grid-cols-2 gap-3 lg:grid-cols-4">
             <StatCard label="Expected" value={String(stats.expected)} />
@@ -1273,13 +1448,23 @@ export default function CompoundStockCheckPage() {
                   </div>
                   <div>
                     <dt className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Ended At</dt>
-                    <dd className="mt-1 text-slate-900">{formatDateTime(openStockCheck.completed_at)}</dd>
+                    <dd className="mt-1 text-slate-900">{formatDateTime(stockCheckEndedAt(openStockCheck))}</dd>
                   </div>
                 </dl>
                 <div className="flex flex-col items-end gap-2">
                   <span className={`inline-flex rounded-full border px-3 py-1.5 text-xs font-semibold ${getStatusBadgeClassName(openStockCheck.status)}`}>
                     {formatStatusLabel(openStockCheck.status).toUpperCase()}
                   </span>
+                  {canMutateOpenCheck ? (
+                    <button
+                      type="button"
+                      onClick={() => void handleCloseStockCheck(openStockCheck)}
+                      disabled={isCancelling}
+                      className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs font-semibold text-rose-800 hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {isCancelling ? "Closing..." : "Close Stock Check"}
+                    </button>
+                  ) : null}
                   <Link
                     href={`/dashboard/compound/stock-check/summary?stockCheckId=${openStockCheck.id}`}
                     className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
@@ -1292,6 +1477,7 @@ export default function CompoundStockCheckPage() {
             </div>
           </AppCard>
 
+          {canMutateOpenCheck ? (
           <AppCard>
             <div className="p-5 md:p-6">
               <h2 className="text-base font-semibold text-slate-950">Quick Trailer Check</h2>
@@ -1327,6 +1513,11 @@ export default function CompoundStockCheckPage() {
               ) : null}
             </div>
           </AppCard>
+          ) : (
+            <AppCard>
+              <div className="px-4 py-3 text-sm text-slate-600">This historical Stock Check is read-only.</div>
+            </AppCard>
+          )}
 
           <AppCard>
             <div className="p-5 md:p-6">
@@ -1414,7 +1605,7 @@ export default function CompoundStockCheckPage() {
                                 <button
                                   type="button"
                                   onClick={() => openPositionChange(item)}
-                                  disabled={isChangingPosition || isChangingLoadStatus || isMarking}
+                                  disabled={isChangingPosition || isChangingLoadStatus || isMarking || !canMutateOpenCheck}
                                   aria-label={`Change position for trailer ${item.trailer_number ?? "unknown"}`}
                                   className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
                                 >
@@ -1432,7 +1623,7 @@ export default function CompoundStockCheckPage() {
                                 <button
                                   type="button"
                                   onClick={() => openLoadStatusChange(item)}
-                                  disabled={isChangingLoadStatus || isMarking || isChangingPosition}
+                                  disabled={isChangingLoadStatus || isMarking || isChangingPosition || !canMutateOpenCheck}
                                   aria-label={`Change load status for trailer ${item.trailer_number ?? "unknown"}`}
                                   className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
                                 >
@@ -1460,7 +1651,7 @@ export default function CompoundStockCheckPage() {
                               <button
                                 type="button"
                                 onClick={() => void handleMarkPresentClick(item)}
-                                disabled={isMarking || isChangingPosition}
+                                disabled={isMarking || isChangingPosition || !canMutateOpenCheck}
                                 aria-label={`Mark trailer ${item.trailer_number ?? "unknown"} as present`}
                                 className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
                               >

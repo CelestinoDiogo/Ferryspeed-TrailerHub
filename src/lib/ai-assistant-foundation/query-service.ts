@@ -1061,6 +1061,7 @@ const queryStockCheckDiscrepancies = async (context: AssistantContext, gate: Per
   const { data: stockCheckData, error: stockCheckError } = await context.supabase
     .from("compound_stock_checks")
     .select("id, started_at")
+    .in("status", ["in_progress", "completed"])
     .order("started_at", { ascending: false })
     .limit(1)
     .maybeSingle();

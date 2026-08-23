@@ -13,6 +13,7 @@ import {
   formatDateTime,
   formatStatusLabel,
   normalizeTrailerNumber,
+  stockCheckEndedAt,
   type StockCheck,
   type StockCheckItem,
 } from "@/lib/compound-stock-check";
@@ -112,16 +113,19 @@ export default function CompoundStockCheckSummaryPage() {
   }, []);
 
   useEffect(() => {
-    void loadChecks();
+    const timeoutId = window.setTimeout(() => {
+      void loadChecks();
+    }, 0);
+
+    return () => window.clearTimeout(timeoutId);
   }, [loadChecks]);
 
   useEffect(() => {
-    if (!selectedStockCheckId) {
-      setSummaryItems([]);
-      return;
-    }
+    const timeoutId = window.setTimeout(() => {
+      void loadItems(selectedStockCheckId);
+    }, 0);
 
-    void loadItems(selectedStockCheckId);
+    return () => window.clearTimeout(timeoutId);
   }, [loadItems, selectedStockCheckId]);
 
   const selectedCheck = useMemo(
@@ -241,7 +245,7 @@ export default function CompoundStockCheckSummaryPage() {
                   </div>
                   <div>
                     <dt className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Ended</dt>
-                    <dd className="mt-1">{formatDateTime(selectedCheck.completed_at)}</dd>
+                    <dd className="mt-1">{formatDateTime(stockCheckEndedAt(selectedCheck))}</dd>
                   </div>
                   <div>
                     <dt className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Updated</dt>

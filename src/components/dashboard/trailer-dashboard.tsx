@@ -505,6 +505,7 @@ export function TrailerDashboard() {
             supabase
               .from("compound_stock_checks")
               .select("id, started_at, status")
+              .eq("status", "in_progress")
               .order("started_at", { ascending: false })
               .limit(1),
           ]);
