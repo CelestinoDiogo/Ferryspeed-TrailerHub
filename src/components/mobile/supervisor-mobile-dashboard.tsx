@@ -41,6 +41,8 @@ import {
   compareTrailerNumber,
   isArrivedVesselArrivalStatus,
   isPendingVesselArrivalStatus,
+  isVesselQueueInspectionPending,
+  isVesselQueuePendingDischarge,
 } from "@/lib/vessel-operations";
 import {
   buildQuayTrailerVoiceSummary,
@@ -109,6 +111,7 @@ type VesselTrailerRow = Pick<
   | "has_temperature_alert"
   | "has_damage"
   | "discharged_at"
+  | "arrival_record_id"
 >;
 
 type OperationalAlertRow = Pick<
@@ -369,7 +372,7 @@ export function SupervisorMobileDashboard() {
           .limit(30),
         supabase
           .from("vessel_operation_trailers")
-          .select("id, vessel_operation_id, trailer_id, trailer_number, customer, arrival_status, priority_level, temperature_required, expected_front_temperature, expected_rear_temperature, expected_temperature_unit, inspection_started_at, inspection_completed_at, has_temperature_alert, has_damage, discharged_at")
+          .select("id, vessel_operation_id, trailer_id, trailer_number, customer, arrival_status, priority_level, temperature_required, expected_front_temperature, expected_rear_temperature, expected_temperature_unit, inspection_started_at, inspection_completed_at, has_temperature_alert, has_damage, discharged_at, arrival_record_id")
           .limit(800),
         supabase
           .from("operational_alerts")
@@ -529,7 +532,7 @@ export function SupervisorMobileDashboard() {
   const vesselQuickCounts = useMemo<VesselQuickCounts>(() => {
     const total = selectedVesselRows.length;
     const arrived = selectedVesselRows.filter((row) => isArrivedState(row.arrival_status)).length;
-    const inspectionPending = selectedVesselRows.filter((row) => isArrivedState(row.arrival_status) && !row.inspection_completed_at).length;
+    const inspectionPending = selectedVesselRows.filter((row) => isVesselQueueInspectionPending(row)).length;
     const priority = selectedVesselRows.filter((row) => normalizeText(row.priority_level) === "priority").length;
 
     return {
@@ -546,11 +549,11 @@ export function SupervisorMobileDashboard() {
 
     const quickFiltered = selectedVesselRows.filter((row) => {
       if (vesselQuickFilter === "pending_arrival") {
-        return isPendingArrivalState(row.arrival_status);
+        return isVesselQueuePendingDischarge(row);
       }
 
       if (vesselQuickFilter === "inspection_pending") {
-        return isArrivedState(row.arrival_status) && !row.inspection_completed_at;
+        return isVesselQueueInspectionPending(row);
       }
 
       if (vesselQuickFilter === "priority") {

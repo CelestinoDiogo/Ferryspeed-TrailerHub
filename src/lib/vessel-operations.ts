@@ -533,6 +533,171 @@ export const getFirstAvailableCompoundPosition = (occupiedPositions: Set<string>
 export const hasCompletedBoatCheck = (trailer: Pick<VesselOperationTrailerRecord, "status" | "inspection_completed_at">) =>
   trailer.status === "inspected" || Boolean(trailer.inspection_completed_at);
 
+export type VesselOperationalQueueStage =
+  | "pending_discharge"
+  | "reception_pending"
+  | "inspection_pending"
+  | "inspection_complete"
+  | "terminal";
+
+export type VesselOperationalQueueInput = {
+  arrival_status?: string | null;
+  status?: string | null;
+  discharged_at?: string | null;
+  arrival_record_id?: string | null;
+  inspection_started_at?: string | null;
+  inspection_completed_at?: string | null;
+};
+
+export type VesselOperationalListFilter =
+  | "all"
+  | "expected"
+  | "arrived"
+  | "inspection_pending"
+  | "inspection_in_progress"
+  | "completed"
+  | "inspected"
+  | "received"
+  | "priority"
+  | "cancelled"
+  | "no_show"
+  | "not_discharged";
+
+const normalizeQueueStatus = (value?: string | null) => (value ?? "").trim().toLowerCase();
+
+export const isVesselQueueTerminal = (trailer: VesselOperationalQueueInput) => {
+  const arrivalStatus = normalizeQueueStatus(trailer.arrival_status);
+  const status = normalizeQueueStatus(trailer.status);
+  return (
+    arrivalStatus === "cancelled" ||
+    status === "cancelled" ||
+    arrivalStatus === "no_show" ||
+    status === "no_show" ||
+    arrivalStatus === "not_discharged" ||
+    status === "not_discharged"
+  );
+};
+
+export const isVesselTrailerDischarged = (trailer: VesselOperationalQueueInput) =>
+  normalizeQueueStatus(trailer.arrival_status) === "arrived" || Boolean(trailer.discharged_at);
+
+export const isVesselTrailerReceptionConfirmed = (trailer: VesselOperationalQueueInput) =>
+  Boolean(trailer.arrival_record_id);
+
+export const isVesselTrailerInspectionComplete = (trailer: VesselOperationalQueueInput) =>
+  normalizeQueueStatus(trailer.status) === "inspected" ||
+  normalizeQueueStatus(trailer.status) === "positioned" ||
+  Boolean(trailer.inspection_completed_at);
+
+export const getVesselOperationalQueueStage = (trailer: VesselOperationalQueueInput): VesselOperationalQueueStage => {
+  if (isVesselQueueTerminal(trailer)) {
+    return "terminal";
+  }
+
+  if (!isVesselTrailerDischarged(trailer)) {
+    return "pending_discharge";
+  }
+
+  if (!isVesselTrailerReceptionConfirmed(trailer)) {
+    return "reception_pending";
+  }
+
+  if (!isVesselTrailerInspectionComplete(trailer)) {
+    return "inspection_pending";
+  }
+
+  return "inspection_complete";
+};
+
+export const isVesselQueuePendingDischarge = (trailer: VesselOperationalQueueInput) =>
+  getVesselOperationalQueueStage(trailer) === "pending_discharge";
+
+export const isVesselQueueReceptionPending = (trailer: VesselOperationalQueueInput) =>
+  getVesselOperationalQueueStage(trailer) === "reception_pending";
+
+export const isVesselQueueInspectionPending = (trailer: VesselOperationalQueueInput) =>
+  getVesselOperationalQueueStage(trailer) === "inspection_pending";
+
+export const isVesselQueueInspectionComplete = (trailer: VesselOperationalQueueInput) =>
+  getVesselOperationalQueueStage(trailer) === "inspection_complete";
+
+export const getVesselOperationalQueueLabel = (stage: VesselOperationalQueueStage) => {
+  switch (stage) {
+    case "pending_discharge":
+      return "Pending Discharge";
+    case "reception_pending":
+      return "Reception Pending";
+    case "inspection_pending":
+      return "Inspection Pending";
+    case "inspection_complete":
+      return "Inspection Complete";
+    case "terminal":
+      return "Cancelled";
+    default:
+      return "Pending Discharge";
+  }
+};
+
+export const matchesVesselOperationalListFilter = (
+  trailer: VesselOperationalQueueInput & { priority_level?: string | null },
+  filter: VesselOperationalListFilter,
+  options?: { allMode?: "everything" | "active_work" | "arrival_work" },
+) => {
+  const stage = getVesselOperationalQueueStage(trailer);
+  const arrivalStatus = normalizeQueueStatus(trailer.arrival_status);
+  const allMode = options?.allMode ?? "everything";
+
+  if (filter === "priority") {
+    return normalizeQueueStatus(trailer.priority_level) === "priority";
+  }
+
+  if (filter === "cancelled") {
+    return arrivalStatus === "cancelled" || normalizeQueueStatus(trailer.status) === "cancelled";
+  }
+
+  if (filter === "no_show") {
+    return arrivalStatus === "no_show" || normalizeQueueStatus(trailer.status) === "no_show";
+  }
+
+  if (filter === "not_discharged") {
+    return arrivalStatus === "not_discharged" || normalizeQueueStatus(trailer.status) === "not_discharged";
+  }
+
+  if (filter === "expected") {
+    return stage === "pending_discharge";
+  }
+
+  if (filter === "arrived") {
+    return stage === "reception_pending";
+  }
+
+  if (filter === "inspection_pending") {
+    return stage === "inspection_pending" && !trailer.inspection_started_at;
+  }
+
+  if (filter === "inspection_in_progress") {
+    return stage === "inspection_pending" && Boolean(trailer.inspection_started_at);
+  }
+
+  if (filter === "completed" || filter === "inspected" || filter === "received") {
+    return stage === "inspection_complete";
+  }
+
+  if (filter === "all") {
+    if (allMode === "arrival_work") {
+      return stage === "pending_discharge" || stage === "reception_pending";
+    }
+
+    if (allMode === "active_work") {
+      return stage === "pending_discharge" || stage === "reception_pending" || stage === "inspection_pending" || stage === "terminal";
+    }
+
+    return true;
+  }
+
+  return true;
+};
+
 type VesselCancellationEligibilityRow = Pick<
   VesselOperationTrailerRecord,
   "arrival_status" | "arrival_record_id" | "inspection_started_at" | "inspection_completed_at" | "status"
@@ -593,28 +758,23 @@ export const getVesselArrivalWorkflowState = (
   trailer: Pick<
     VesselOperationTrailerRecord,
     "arrival_status" | "arrival_record_id" | "status" | "inspection_started_at" | "inspection_completed_at" | "has_damage" | "has_temperature_alert"
-  >,
+  > &
+    VesselOperationalQueueInput,
 ): VesselArrivalWorkflowState => {
-  if (
-    trailer.arrival_status === "cancelled" ||
-    trailer.status === "cancelled" ||
-    trailer.arrival_status === "no_show" ||
-    trailer.status === "no_show" ||
-    trailer.arrival_status === "not_discharged" ||
-    trailer.status === "not_discharged"
-  ) {
-    return "cancelled";
+  switch (getVesselOperationalQueueStage(trailer)) {
+    case "terminal":
+      return "cancelled";
+    case "pending_discharge":
+      return "expected";
+    case "reception_pending":
+      return "arrived";
+    case "inspection_pending":
+      return "inspection_pending";
+    case "inspection_complete":
+      return "inspected";
+    default:
+      return "expected";
   }
-
-  if (trailer.arrival_record_id) {
-    return "received";
-  }
-
-  if (trailer.arrival_status !== "arrived") {
-    return "expected";
-  }
-
-  return hasCompletedBoatCheck(trailer) ? "inspected" : "inspection_pending";
 };
 
 export const getVesselArrivalWorkflowLabel = (state: VesselArrivalWorkflowState) => {
@@ -746,7 +906,10 @@ export const sortVesselOperationTrailersForArrivals = <T extends { trailer_numbe
   [...items].sort((left, right) => compareTrailerNumber(left.trailer_number, right.trailer_number));
 
 export const computeVesselOperationSummary = (
-  trailers: Array<Pick<VesselOperationTrailerRecord, "priority_level" | "status" | "has_damage" | "has_temperature_alert" | "arrival_status">>,
+  trailers: Array<
+    Pick<VesselOperationTrailerRecord, "priority_level" | "status" | "has_damage" | "has_temperature_alert" | "arrival_status"> &
+      VesselOperationalQueueInput
+  >,
 ): VesselOperationSummary => {
   const isCancelledOrNoShow = (item: Pick<VesselOperationTrailerRecord, "status" | "arrival_status">) =>
     item.status === "cancelled" ||
@@ -773,7 +936,7 @@ export const computeVesselOperationSummary = (
   const notArrived = activeTrailers.filter((item) => isNotArrived(item)).length;
   const notDischarged = activeTrailers.filter((item) => item.status === "not_discharged" || item.arrival_status === "not_discharged").length;
   const remaining = Math.max(expected - arrived - notArrived - notDischarged, 0);
-  const inspectionPending = Math.max(arrived - inspected, 0);
+  const inspectionPending = activeTrailers.filter((item) => isVesselQueueInspectionPending(item)).length;
   const availableForArrival = remaining;
   const pending = remaining;
   const priority = trailers.filter((item) => item.priority_level === "priority").length;

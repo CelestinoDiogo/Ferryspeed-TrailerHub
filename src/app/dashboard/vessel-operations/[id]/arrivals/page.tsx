@@ -24,11 +24,14 @@ import {
   getVesselArrivalWorkflowState,
   getVesselInspectionProgressLabel,
   getVesselInspectionProgressState,
+  getVesselOperationalQueueLabel,
+  getVesselOperationalQueueStage,
   getVesselPriorityClass,
   getVesselPriorityLabel,
   getVesselTrailerDischargedAt,
   getVesselTrailerStatusClass,
   getVesselTrailerStatusLabel,
+  matchesVesselOperationalListFilter,
   sortVesselOperationTrailersForArrivals,
   type VesselOperationRecord,
   type VesselOperationTrailerRecord,
@@ -48,8 +51,8 @@ type ArrivalKpi = {
 
 const statusFilters: Array<{ key: StatusFilter; label: string }> = [
   { key: "all", label: "All" },
-  { key: "expected", label: "Expected" },
-  { key: "arrived", label: "Arrived" },
+  { key: "expected", label: "Pending" },
+  { key: "arrived", label: "Reception" },
   { key: "inspection_pending", label: "Inspection Pending" },
   { key: "inspected", label: "Inspected" },
   { key: "received", label: "Received" },
@@ -97,21 +100,18 @@ const buildArrivalKpis = (trailers: VesselOperationTrailerRecord[]): ArrivalKpi 
   };
 
   for (const trailer of trailers) {
-    const workflowState = getVesselArrivalWorkflowState(trailer);
+    const queueStage = getVesselOperationalQueueStage(trailer);
 
-    if (workflowState === "expected") {
+    if (queueStage === "pending_discharge") {
       kpis.expected += 1;
-    } else if (workflowState === "inspection_pending" || workflowState === "inspected") {
+    } else if (queueStage === "reception_pending") {
       kpis.arrived += 1;
-      if (workflowState === "inspection_pending") {
-        kpis.inspectionPending += 1;
-      }
-      if (workflowState === "inspected") {
-        kpis.inspected += 1;
-      }
-    } else if (workflowState === "received") {
+    } else if (queueStage === "inspection_pending") {
+      kpis.inspectionPending += 1;
+    } else if (queueStage === "inspection_complete") {
+      kpis.inspected += 1;
       kpis.received += 1;
-    } else if (workflowState === "cancelled") {
+    } else if (queueStage === "terminal") {
       kpis.cancelled += 1;
     }
   }
@@ -210,10 +210,6 @@ function VesselArrivalsPageContent() {
     const search = searchText.trim().toLowerCase();
 
     return trailers.filter((item) => {
-      const workflowState = getVesselArrivalWorkflowState(item);
-      const inspectionState = getVesselInspectionProgressState(item);
-      const inspectionPending = workflowState === "inspection_pending" || (workflowState === "received" && inspectionState !== "completed" && inspectionState !== "issues_found");
-      const inspected = workflowState === "inspected" || inspectionState === "completed" || inspectionState === "issues_found";
       const searchHaystack = [
         item.trailer_number,
         item.booking_reference,
@@ -224,30 +220,8 @@ function VesselArrivalsPageContent() {
         .join(" ")
         .toLowerCase();
 
-      if (statusFilter !== "all") {
-        if (statusFilter === "arrived" && !(workflowState === "inspection_pending" || workflowState === "inspected")) {
-          return false;
-        }
-
-        if (statusFilter === "inspection_pending" && !inspectionPending) {
-          return false;
-        }
-
-        if (statusFilter === "inspected" && !inspected) {
-          return false;
-        }
-
-        if (statusFilter === "expected" && workflowState !== "expected") {
-          return false;
-        }
-
-        if (statusFilter === "received" && workflowState !== "received") {
-          return false;
-        }
-
-        if (statusFilter === "cancelled" && workflowState !== "cancelled") {
-          return false;
-        }
+      if (!matchesVesselOperationalListFilter(item, statusFilter, { allMode: "arrival_work" })) {
+        return false;
       }
 
       if (priorityFilter !== "all" && (item.priority_level ?? "normal") !== priorityFilter) {
@@ -622,16 +596,16 @@ function VesselArrivalsPageContent() {
             <div className="rounded-3xl border border-white/10 bg-slate-900/70 p-6 text-sm text-slate-300">No trailers match the current filter.</div>
           ) : (
             visibleTrailers.map((trailer) => {
-              const workflowState = getVesselArrivalWorkflowState(trailer);
-              const workflowLabel = getVesselArrivalWorkflowLabel(workflowState);
+              const queueStage = getVesselOperationalQueueStage(trailer);
+              const workflowLabel = getVesselOperationalQueueLabel(queueStage);
               const inspectionState = getVesselInspectionProgressState(trailer);
-              const inspectionLabel = inspectionState === "completed" || inspectionState === "issues_found" ? "Inspected" : "Inspection Pending";
-              const isInspected = inspectionState === "completed" || inspectionState === "issues_found";
-              const arrivalLabel = trailer.arrival_status === "arrived" ? "Arrived" : getVesselArrivalWorkflowLabel(workflowState);
-              const canMarkArrived = (operation.list_status ?? "draft") === "confirmed" && (trailer.arrival_status === "available_for_arrival" || trailer.arrival_status === "expected") && !trailer.arrival_record_id;
-              const canUndo = trailer.arrival_status === "arrived" && !trailer.arrival_record_id && !trailer.inspection_started_at && !trailer.inspection_completed_at;
+              const inspectionLabel = queueStage === "inspection_complete" ? "Inspected" : queueStage === "inspection_pending" ? "Inspection Pending" : getVesselInspectionProgressLabel(inspectionState);
+              const isInspected = queueStage === "inspection_complete";
+              const arrivalLabel = workflowLabel;
+              const canMarkArrived = (operation.list_status ?? "draft") === "confirmed" && queueStage === "pending_discharge";
+              const canUndo = queueStage === "reception_pending";
               const canConfirmReception = canConfirmVesselTrailerReception(trailer, operation);
-              const canOpenInspection = trailer.arrival_status === "arrived" && !trailer.arrival_record_id;
+              const canOpenInspection = queueStage === "inspection_pending" || queueStage === "inspection_complete";
 
               return (
                 <article key={trailer.id} className="rounded-3xl border border-white/10 bg-slate-900/70 p-4 shadow-lg shadow-black/20 backdrop-blur sm:p-5">

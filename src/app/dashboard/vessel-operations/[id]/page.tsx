@@ -1,8 +1,10 @@
 "use client";
 
 import { useParams } from "next/navigation";
+import { useState } from "react";
 import { AddVesselTrailerForm } from "./components/add-vessel-trailer-form";
 import { BulkAddVesselTrailers } from "./components/bulk-add-vessel-trailers";
+import { ConfirmReceptionModal } from "./components/confirm-reception-modal";
 import { VesselListControl } from "./components/vessel-list-control";
 import { VesselOperationDetails } from "./components/vessel-operation-details";
 import { VesselOperationHeader } from "./components/vessel-operation-header";
@@ -10,6 +12,7 @@ import { VesselOperationSummary } from "./components/vessel-operation-summary";
 import { VesselTrailerList } from "./components/vessel-trailer-list";
 import { SuccessToast } from "@/components/common/success-toast";
 import { useVesselOperation } from "./hooks/use-vessel-operation";
+import { useVesselReception } from "./hooks/use-vessel-reception";
 
 function VesselOperationDetailsPageContent() {
   const params = useParams();
@@ -48,7 +51,17 @@ function VesselOperationDetailsPageContent() {
     handleUndoCancelled,
     handleUndoNoShow,
     handleCompleteOperation,
+    reloadOperation,
   } = useVesselOperation(operationId);
+
+  const [receptionNotice, setReceptionNotice] = useState<string | null>(null);
+  const reception = useVesselReception({
+    operation,
+    onSuccess: async (message) => {
+      setReceptionNotice(message);
+      await reloadOperation();
+    },
+  });
 
   if (isLoading) {
     return (
@@ -73,6 +86,7 @@ function VesselOperationDetailsPageContent() {
 
         {error ? <div className="rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">{error}</div> : null}
         {success ? <SuccessToast message={success} onClose={dismissSuccess} /> : null}
+        {receptionNotice ? <SuccessToast message={receptionNotice} onClose={() => setReceptionNotice(null)} /> : null}
 
         <VesselOperationSummary operation={operation} summary={summary} completionSummary={completionSummary} operationStatus={operationStatus} />
 
@@ -148,8 +162,22 @@ function VesselOperationDetailsPageContent() {
           onMarkNoShow={handleMarkNoShow}
           onUndoCancelled={handleUndoCancelled}
           onUndoNoShow={handleUndoNoShow}
+          onConfirmReception={(trailer) => void reception.openReception(trailer)}
         />
       </div>
+
+      <ConfirmReceptionModal
+        error={reception.error}
+        formState={reception.formState}
+        isLoadingOptions={reception.isLoadingOptions}
+        isOpen={reception.isOpen}
+        isSubmitting={reception.isSubmitting}
+        nextAvailablePosition={reception.nextAvailablePosition}
+        onClose={reception.closeReception}
+        onConfirm={reception.submitReception}
+        onFieldChange={reception.updateField}
+        trailer={reception.selectedTrailer}
+      />
     </main>
   );
 }

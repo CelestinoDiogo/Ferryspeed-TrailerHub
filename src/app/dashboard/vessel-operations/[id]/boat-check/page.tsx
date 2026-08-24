@@ -9,12 +9,12 @@ import { ConfirmReceptionModal } from "../components/confirm-reception-modal";
 import { useVesselReception } from "../hooks/use-vessel-reception";
 import { supabase } from "@/lib/supabase";
 import {
-  canConfirmVesselTrailerReception,
   formatTemperatureReading,
   formatVesselDateTime,
   getTrailerTemperaturePair,
   getVesselInspectionProgressLabel,
   getVesselInspectionProgressState,
+  getVesselOperationalQueueStage,
   getVesselPriorityClass,
   getVesselPriorityLabel,
   getVesselTrailerStatusClass,
@@ -51,7 +51,7 @@ function VesselBoatCheckPageContent() {
 
   const [operation, setOperation] = useState<VesselOperationRecord | null>(null);
   const [trailers, setTrailers] = useState<ViewTrailer[]>([]);
-  const [actioningTrailerId, setActioningTrailerId] = useState<string | null>(null);
+  const [actioningTrailerId] = useState<string | null>(null);
   const [historyTrailer, setHistoryTrailer] = useState<{ trailerId: string | null; trailerNumber: string | null } | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -162,19 +162,13 @@ function VesselBoatCheckPageContent() {
   }, [success]);
 
   const visibleTrailers = useMemo(() => {
-    return trailers.filter(
-      (item) =>
-        item.arrival_status !== "cancelled" &&
-        item.arrival_status !== "no_show" &&
-        item.arrival_status !== "not_discharged",
-    );
+    return trailers.filter((item) => getVesselOperationalQueueStage(item) === "inspection_pending");
   }, [trailers]);
 
   const summary = useMemo<BoatCheckSummary>(() => {
-    const arrived = trailers.filter((item) => item.arrival_status === "arrived").length;
-    const inspected = trailers.filter((item) => item.status === "inspected" || Boolean(item.inspection_completed_at)).length;
-    const inspectedArrived = trailers.filter((item) => item.arrival_status === "arrived" && (item.status === "inspected" || Boolean(item.inspection_completed_at))).length;
-    const pendingInspection = Math.max(arrived - inspectedArrived, 0);
+    const arrived = trailers.filter((item) => getVesselOperationalQueueStage(item) === "reception_pending" || getVesselOperationalQueueStage(item) === "inspection_pending" || getVesselOperationalQueueStage(item) === "inspection_complete").length;
+    const inspected = trailers.filter((item) => getVesselOperationalQueueStage(item) === "inspection_complete").length;
+    const pendingInspection = trailers.filter((item) => getVesselOperationalQueueStage(item) === "inspection_pending").length;
     const damages = trailers.filter((item) => item.has_damage).length;
     const temperatureAlerts = trailers.filter((item) => item.has_temperature_alert).length;
 
@@ -289,15 +283,15 @@ function VesselBoatCheckPageContent() {
 
         <section className="grid gap-4">
           {visibleTrailers.length === 0 ? (
-            <div className="rounded-3xl border border-white/10 bg-slate-900/70 p-6 text-sm text-slate-300">No arrived trailers available for boat check.</div>
+            <div className="rounded-3xl border border-white/10 bg-slate-900/70 p-6 text-sm text-slate-300">No trailers are waiting for inspection. Confirm reception first.</div>
           ) : (
             visibleTrailers.map((trailer) => {
               const isInspected = trailer.status === "inspected";
               const inspectionState = getVesselInspectionProgressState(trailer);
               const inspectionLabel = getVesselInspectionProgressLabel(inspectionState);
               const isReadOnly = operation.status === "completed" || operation.status === "cancelled";
-              const canStartInspection = !isReadOnly && trailer.arrival_status !== "cancelled" && trailer.arrival_status !== "not_discharged";
-              const canConfirmReception = canConfirmVesselTrailerReception(trailer, operation);
+              const canStartInspection = !isReadOnly && getVesselOperationalQueueStage(trailer) === "inspection_pending";
+              const canConfirmReception = false;
               const inspectionActionLabel = trailer.inspection_started_at ? "Complete Inspection" : "Start Inspection";
 
               return (

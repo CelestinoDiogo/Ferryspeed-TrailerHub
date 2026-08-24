@@ -280,6 +280,7 @@ const buildBaseData = () => ({
       arrival_status: "arrived",
       status: "arrived",
       priority_level: "priority",
+      arrival_record_id: "arrival-fs1002",
       inspection_started_at: null,
       inspection_completed_at: null,
       expected_front_temperature: 2,
@@ -747,7 +748,7 @@ describe("SupervisorMobileDashboard", () => {
     expect(screen.getByRole("button", { name: "Pending Arrival" })).toBeInTheDocument();
   });
 
-  it("moves a trailer from pending arrival to inspection pending after Arrived", async () => {
+  it("removes a trailer from pending arrival after Arrived without placing it in inspection pending", async () => {
     render(<SupervisorMobileDashboard />);
     const user = await openVesselWorkspace();
 
@@ -764,9 +765,8 @@ describe("SupervisorMobileDashboard", () => {
     expect(screen.queryByText("FS1001")).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Inspection Pending" }));
-    expect(screen.getByText("FS1001")).toBeInTheDocument();
+    expect(screen.queryByText("FS1001")).not.toBeInTheDocument();
     expect(screen.getByText("FS1002")).toBeInTheDocument();
-    expect(screen.getAllByText("FS1001")).toHaveLength(1);
   });
 
   it("keeps inspected trailers out of inspection pending", async () => {

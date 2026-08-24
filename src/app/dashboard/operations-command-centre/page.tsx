@@ -369,7 +369,7 @@ export default function OperationsCommandCentrePage() {
 
         const arrivalStatus = normalizeText(row.arrival_status);
         const arrived = arrivalStatus === "arrived" || normalizeText(row.status) === "arrived";
-        return arrived && !row.inspection_started_at && !row.inspection_completed_at;
+        return arrived && Boolean(row.arrival_record_id) && !row.inspection_started_at && !row.inspection_completed_at;
       })
       .map((row) => {
         const trailer = row.trailer_id ? trailerById.get(row.trailer_id) ?? null : trailerByNumber.get(normalizeNumber(row.trailer_number)) ?? null;
@@ -405,7 +405,7 @@ export default function OperationsCommandCentrePage() {
           return false;
         }
 
-        return Boolean(row.inspection_started_at) && !row.inspection_completed_at;
+        return Boolean(row.arrival_record_id) && Boolean(row.inspection_started_at) && !row.inspection_completed_at;
       })
       .map((row) => {
         const trailer = row.trailer_id ? trailerById.get(row.trailer_id) ?? null : trailerByNumber.get(normalizeNumber(row.trailer_number)) ?? null;

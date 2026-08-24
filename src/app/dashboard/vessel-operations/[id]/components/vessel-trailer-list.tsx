@@ -1,5 +1,6 @@
 import {
   canCancelVesselTrailer,
+  canConfirmVesselTrailerReception,
   canUndoVesselTrailerCancellation,
   compareTrailerNumber,
   formatVesselDateTime,
@@ -7,8 +8,10 @@ import {
   getVesselPriorityLabel,
   getVesselInspectionProgressLabel,
   getVesselInspectionProgressState,
+  getVesselOperationalQueueStage,
   getVesselTrailerStatusClass,
   getVesselTrailerStatusLabel,
+  matchesVesselOperationalListFilter,
   normalizeExpectedTemperatureUnit,
   resolveExpectedFrontTemperature,
   resolveExpectedRearTemperature,
@@ -48,6 +51,7 @@ type VesselTrailerListProps = {
   onMarkNoShow: (trailer: VesselOperationTrailerRecord) => Promise<void>;
   onUndoCancelled: (trailer: VesselOperationTrailerRecord) => Promise<void>;
   onUndoNoShow: (trailer: VesselOperationTrailerRecord) => Promise<void>;
+  onConfirmReception?: (trailer: VesselOperationTrailerRecord) => void;
 };
 
 export function VesselTrailerList({
@@ -63,6 +67,7 @@ export function VesselTrailerList({
   onMarkNoShow,
   onUndoCancelled,
   onUndoNoShow,
+  onConfirmReception,
 }: VesselTrailerListProps) {
   const router = useRouter();
   const pathname = usePathname();
@@ -167,9 +172,6 @@ export function VesselTrailerList({
 
     const list = sortedTrailers.filter((trailer) => {
       const trailerNumber = trailer.trailer_number?.trim().toUpperCase() ?? "";
-      const arrivalStatus = trailer.arrival_status ?? "expected";
-      const inspectionState = getVesselInspectionProgressState(trailer);
-      const isPriority = trailer.priority_level === "priority";
       const trailerPrefix = extractTrailerPrefix(trailer.trailer_number);
 
       if (normalizedSearch && !trailerNumber.includes(normalizedSearch)) {
@@ -180,43 +182,7 @@ export function VesselTrailerList({
         return false;
       }
 
-      if (activeFilter === "priority") {
-        return isPriority;
-      }
-
-      if (activeFilter === "expected") {
-        return arrivalStatus === "expected" || arrivalStatus === "available_for_arrival";
-      }
-
-      if (activeFilter === "arrived") {
-        return arrivalStatus === "arrived";
-      }
-
-      if (activeFilter === "inspection_pending") {
-        return arrivalStatus === "arrived" && !trailer.inspection_started_at && !trailer.inspection_completed_at;
-      }
-
-      if (activeFilter === "inspection_in_progress") {
-        return arrivalStatus === "arrived" && Boolean(trailer.inspection_started_at) && !trailer.inspection_completed_at;
-      }
-
-      if (activeFilter === "completed") {
-        return inspectionState === "completed" || inspectionState === "issues_found" || trailer.status === "inspected";
-      }
-
-      if (activeFilter === "cancelled") {
-        return arrivalStatus === "cancelled";
-      }
-
-      if (activeFilter === "no_show") {
-        return arrivalStatus === "no_show";
-      }
-
-      if (activeFilter === "not_discharged") {
-        return arrivalStatus === "not_discharged";
-      }
-
-      return true;
+      return matchesVesselOperationalListFilter(trailer, activeFilter, { allMode: "active_work" });
     });
 
     return [...list].sort((left, right) => {
@@ -227,8 +193,8 @@ export function VesselTrailerList({
 
   const filterButtons: Array<{ key: TrailerFilter; label: string }> = [
     { key: "all", label: "All" },
-    { key: "expected", label: "Expected" },
-    { key: "arrived", label: "Arrived" },
+    { key: "expected", label: "Pending" },
+    { key: "arrived", label: "Reception" },
     { key: "inspection_pending", label: "Inspection Pending" },
     { key: "inspection_in_progress", label: "Inspection In Progress" },
     { key: "completed", label: "Completed" },
@@ -355,29 +321,29 @@ export function VesselTrailerList({
           const expectedFront = resolveExpectedFrontTemperature(trailer);
           const expectedRear = resolveExpectedRearTemperature(trailer);
           const expectedUnit = normalizeExpectedTemperatureUnit(trailer.expected_temperature_unit);
-          const canMarkArrived = operationStatus === "confirmed" && (trailer.status === "expected" || trailer.arrival_status === "available_for_arrival");
+          const queueStage = getVesselOperationalQueueStage(trailer);
+          const canMarkArrived = operationStatus === "confirmed" && queueStage === "pending_discharge";
           const canMarkCancelled = operationStatus === "confirmed" && !isReadOnly && canCancelVesselTrailer(trailer);
-          const canMarkNoShow = operationStatus === "confirmed" && (trailer.arrival_status === "expected" || trailer.arrival_status === "available_for_arrival");
+          const canMarkNoShow = operationStatus === "confirmed" && queueStage === "pending_discharge";
           const canUndoCancelled = operationStatus === "confirmed" && !isReadOnly && canUndoVesselTrailerCancellation(trailer);
           const canUndoNoShow = operationStatus === "confirmed" && trailer.arrival_status === "no_show";
-          const canOpenInspection =
-            operationStatus !== "draft" &&
-            trailer.arrival_status !== "cancelled" &&
-            trailer.arrival_status !== "no_show" &&
-            trailer.arrival_status !== "not_discharged";
+          const canConfirmReception = Boolean(onConfirmReception) && !isReadOnly && canConfirmVesselTrailerReception(trailer);
+          const canOpenInspection = operationStatus !== "draft" && queueStage === "inspection_pending";
           const inspectionState = getVesselInspectionProgressState(trailer);
           const inspectionLabel = getVesselInspectionProgressLabel(inspectionState);
           const isInspectionStarted = Boolean(trailer.inspection_started_at);
-          const isInspectionCompleted = trailer.status === "inspected" || Boolean(trailer.inspection_completed_at) || inspectionState === "completed" || inspectionState === "issues_found";
+          const isInspectionCompleted = queueStage === "inspection_complete";
 
-          let primaryAction: "arrived" | "start_inspection" | "continue_inspection" | "view_inspection" | null = null;
+          let primaryAction: "arrived" | "confirm_reception" | "start_inspection" | "continue_inspection" | "view_inspection" | null = null;
           if (canMarkArrived) {
             primaryAction = "arrived";
-          } else if (canOpenInspection && trailer.arrival_status === "arrived" && !isInspectionStarted && !isInspectionCompleted) {
+          } else if (canConfirmReception) {
+            primaryAction = "confirm_reception";
+          } else if (canOpenInspection && !isInspectionStarted && !isInspectionCompleted) {
             primaryAction = "start_inspection";
-          } else if (canOpenInspection && trailer.arrival_status === "arrived" && isInspectionStarted && !isInspectionCompleted) {
+          } else if (canOpenInspection && isInspectionStarted && !isInspectionCompleted) {
             primaryAction = "continue_inspection";
-          } else if (canOpenInspection && isInspectionCompleted) {
+          } else if (isInspectionCompleted) {
             primaryAction = "view_inspection";
           }
 
@@ -455,6 +421,17 @@ export function VesselTrailerList({
                         className="rounded-2xl bg-cyan-500 px-4 py-3 text-sm font-semibold text-slate-950 hover:bg-cyan-400 disabled:opacity-60"
                       >
                         Arrived
+                      </button>
+                    ) : null}
+
+                    {primaryAction === "confirm_reception" ? (
+                      <button
+                        type="button"
+                        onClick={() => onConfirmReception?.(trailer)}
+                        disabled={actioningTrailerId === trailer.id}
+                        className="rounded-2xl bg-emerald-500 px-4 py-3 text-sm font-semibold text-emerald-950 hover:bg-emerald-400 disabled:opacity-60"
+                      >
+                        Confirm Reception
                       </button>
                     ) : null}
 

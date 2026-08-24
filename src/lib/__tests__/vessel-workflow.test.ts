@@ -91,7 +91,7 @@ describe("vessel workflow regression", () => {
       arrived: 1,
       remaining: 1,
       pending: 1,
-      inspectionPending: 1,
+      inspectionPending: 0,
       cancelled: 1,
       noShow: 1,
       notDischarged: 1,
@@ -325,32 +325,45 @@ describe("planning ownership controls", () => {
     expect(sorted.filter((row) => row.priority_level === "priority").map((row) => row.trailer_number)).toEqual(["FS59", "PRO812"]);
   });
 
-  it("moves arrived trailers out of pending arrival into inspection pending without duplicating stages", () => {
+  it("moves discharged trailers into reception pending, then inspection pending after confirm reception", () => {
     const pending = makeTrailer({ id: "pending", arrival_status: "expected", status: "expected" });
-    const arrived = makeTrailer({
-      id: "arrived",
+    const discharged = makeTrailer({
+      id: "discharged",
       arrival_status: "arrived",
       status: "arrived",
       arrived_at: "2026-08-21T10:00:00.000Z",
+      discharged_at: "2026-08-21T10:00:00.000Z",
+    });
+    const received = makeTrailer({
+      id: "received",
+      arrival_status: "arrived",
+      status: "arrived",
+      arrival_record_id: "arrival-1",
+      arrived_at: "2026-08-21T10:00:00.000Z",
+      discharged_at: "2026-08-21T10:00:00.000Z",
     });
     const inspected = makeTrailer({
       id: "inspected",
       arrival_status: "arrived",
       status: "inspected",
+      arrival_record_id: "arrival-2",
       inspection_completed_at: "2026-08-21T10:30:00.000Z",
     });
 
     expect(getVesselArrivalWorkflowState(pending)).toBe("expected");
-    expect(getVesselArrivalWorkflowState(arrived)).toBe("inspection_pending");
+    expect(getVesselArrivalWorkflowState(discharged)).toBe("arrived");
+    expect(getVesselArrivalWorkflowState(received)).toBe("inspection_pending");
     expect(getVesselArrivalWorkflowState(inspected)).toBe("inspected");
 
-    const pendingList = [pending, arrived, inspected].filter((row) => getVesselArrivalWorkflowState(row) === "expected");
-    const nextStep = [pending, arrived, inspected].filter((row) => getVesselArrivalWorkflowState(row) === "inspection_pending");
-    const completed = [pending, arrived, inspected].filter((row) => getVesselArrivalWorkflowState(row) === "inspected");
+    const pendingList = [pending, discharged, received, inspected].filter((row) => getVesselArrivalWorkflowState(row) === "expected");
+    const receptionList = [pending, discharged, received, inspected].filter((row) => getVesselArrivalWorkflowState(row) === "arrived");
+    const inspectionList = [pending, discharged, received, inspected].filter((row) => getVesselArrivalWorkflowState(row) === "inspection_pending");
+    const completed = [pending, discharged, received, inspected].filter((row) => getVesselArrivalWorkflowState(row) === "inspected");
 
     expect(pendingList.map((row) => row.id)).toEqual(["pending"]);
-    expect(nextStep.map((row) => row.id)).toEqual(["arrived"]);
+    expect(receptionList.map((row) => row.id)).toEqual(["discharged"]);
+    expect(inspectionList.map((row) => row.id)).toEqual(["received"]);
     expect(completed.map((row) => row.id)).toEqual(["inspected"]);
-    expect(new Set([...pendingList, ...nextStep, ...completed]).size).toBe(3);
+    expect(new Set([...pendingList, ...receptionList, ...inspectionList, ...completed]).size).toBe(4);
   });
 });
