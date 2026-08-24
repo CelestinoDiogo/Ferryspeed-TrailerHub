@@ -16,7 +16,13 @@ import {
   getTrailerIdsReservedByActiveDeliveryBookings,
 } from "@/lib/delivery-booking-availability";
 import { EXPORT_ACTIVE_STATUS_QUERY_VALUES } from "@/lib/export-allocation";
-import { getActiveExportStatusByTrailerId, withTrailerJobCommitments } from "@/lib/trailer-job-eligibility";
+import {
+  describeLinkedExportForDeparture,
+  getActiveExportCustomerByTrailerId,
+  getActiveExportStatusByTrailerId,
+  withTrailerJobCommitments,
+} from "@/lib/trailer-job-eligibility";
+import { describeExportDepartureReconciliation } from "@/lib/operations/complete-export-allocation-from-departure";
 import { supabase } from "@/lib/supabase";
 import { getSessionToken } from "@/lib/voice/session";
 
@@ -37,6 +43,7 @@ type TrailerRecord = {
   is_local?: boolean | null;
   hasActiveDelivery?: boolean | null;
   activeExportStatus?: string | null;
+  activeExportCustomer?: string | null;
 };
 
 type DepartureStatusFilter = string;
@@ -148,7 +155,7 @@ export default function DeparturePage() {
           .not("status", "in", DELIVERY_BOOKING_RELEASE_STATUS_QUERY),
         supabase
           .from("export_allocations")
-          .select("trailer_id, status")
+          .select("id, trailer_id, customer, status")
           .in("status", [...EXPORT_ACTIVE_STATUS_QUERY_VALUES]),
       ]);
 
@@ -167,6 +174,7 @@ export default function DeparturePage() {
       const loadedRaw = withTrailerJobCommitments((data ?? []) as TrailerRecord[], {
         reservedByDelivery: getTrailerIdsReservedByActiveDeliveryBookings(activeDeliveries ?? []),
         exportStatusByTrailerId: getActiveExportStatusByTrailerId(activeExports ?? []),
+        exportCustomerByTrailerId: getActiveExportCustomerByTrailerId(activeExports ?? []),
       });
       const deduped = new Map<string, TrailerRecord>();
       for (const trailer of loadedRaw) {
@@ -508,6 +516,7 @@ export default function DeparturePage() {
     return {
       snapshot: result.snapshot,
       trailerNumber: result.trailerNumber,
+      exportReconciliation: result.exportReconciliation,
     };
   };
 
@@ -546,7 +555,8 @@ export default function DeparturePage() {
       removeTrailersFromList([targetTrailerId]);
       await loadDepartureTrailers({ showLoading: false });
       setLastDepartureSnapshot(result.snapshot);
-      setSuccess(`${result.trailerNumber ?? "Trailer"} departed.`);
+      const exportNote = describeExportDepartureReconciliation(result.exportReconciliation);
+      setSuccess(`${result.trailerNumber ?? "Trailer"} departed.${exportNote ? ` ${exportNote}` : ""}`);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unable to confirm departure.";
       setError(message);
@@ -768,14 +778,18 @@ export default function DeparturePage() {
                 <div>
                   <p className="text-xs uppercase tracking-[0.16em] text-slate-500">Accepted</p>
                   <ul className="mt-1 max-h-40 overflow-auto text-slate-200">
-                    {importPreview.accepted.map((row) => (
+                    {importPreview.accepted.map((row) => {
+                      const exportLink = describeLinkedExportForDeparture(row.trailer);
+                      return (
                       <li key={row.trailer.id}>
                         {row.trailer_number}{row.list_section === "additional" ? " (ADDITIONAL)" : ""}
                         {row.customer ? ` · ${row.customer}` : ""}
                         {row.destination ? ` · ${row.destination}` : ""}
                         {row.haz ? ` · Haz ${row.haz}` : ""}
+                        {exportLink ? ` · ${exportLink.badge} · ${exportLink.summary} · ${exportLink.statusLabel}` : ""}
                       </li>
-                    ))}
+                      );
+                    })}
                   </ul>
                 </div>
               ) : null}
@@ -912,6 +926,7 @@ export default function DeparturePage() {
                 filteredTrailers.map((trailer) => {
                   const isEligible = isEligibleForDeparture(trailer);
                   const statusLabel = formatOperationalStatus(trailer.operational_status);
+                  const exportLink = describeLinkedExportForDeparture(trailer);
 
                   return (
                     <article
@@ -932,6 +947,11 @@ export default function DeparturePage() {
                             <p className="text-sm font-semibold text-white">{trailer.trailer_number ?? "Unnamed trailer"}</p>
                           </button>
                           <p className="mt-1 text-sm text-slate-400">{trailer.customer ?? "No customer"}</p>
+                          {exportLink ? (
+                            <p className="mt-1 text-xs text-cyan-200">
+                              {exportLink.badge} · {exportLink.summary} · Status: {exportLink.statusLabel}
+                            </p>
+                          ) : null}
                         </div>
                         <span className="rounded-full border border-cyan-400/30 bg-cyan-500/10 px-3 py-1 text-xs font-medium text-cyan-200">
                           {trailer.load_status ?? "Unknown"}
@@ -1000,6 +1020,11 @@ export default function DeparturePage() {
                 <div>
                   <p className="text-xs uppercase tracking-[0.25em] text-slate-500">Trailer</p>
                   <p className="mt-1 text-lg font-semibold text-white">{selectedTrailer.trailer_number}</p>
+                  {describeLinkedExportForDeparture(selectedTrailer) ? (
+                    <p className="mt-1 text-xs text-cyan-200">
+                      {describeLinkedExportForDeparture(selectedTrailer)?.badge} · {describeLinkedExportForDeparture(selectedTrailer)?.summary} · Status: {describeLinkedExportForDeparture(selectedTrailer)?.statusLabel}
+                    </p>
+                  ) : null}
                 </div>
                 <div className="grid gap-3 sm:grid-cols-2">
                   <div>

@@ -42,5 +42,8 @@ describe("Departure page lifecycle contract", () => {
     expect(pageSource).toContain("withTrailerJobCommitments");
     expect(pageSource).toContain("confirmTrailerDeparture");
     expect(pageSource).toContain("isEligibleForDeparture");
+    expect(pageSource).toContain("describeLinkedExportForDeparture");
+    expect(pageSource).toContain("EXPORT");
+    expect(pageSource).not.toContain("advanceExportAllocationStatus");
   });
 });

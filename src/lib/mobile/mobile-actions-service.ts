@@ -12,6 +12,7 @@ import {
 } from "@/lib/vessel-operations";
 import { moveCompoundTrailer } from "@/lib/compound-yard";
 import { confirmTrailerDeparture } from "@/lib/operations/confirm-departure";
+import { describeExportDepartureReconciliation } from "@/lib/operations/complete-export-allocation-from-departure";
 import { markVesselTrailerDischarged } from "@/lib/operations/mark-vessel-trailer-discharged";
 import { createTrailerActivity } from "@/lib/trailer-activity";
 import { getTemperatureToleranceSettingsFromStorage, isTemperatureOutOfRange } from "@/lib/temperature-tolerance";
@@ -1324,11 +1325,13 @@ const runConfirmDeparture = async (
     });
 
     const trailerNumber = result.trailerNumber ?? payload.trailerNumber ?? "Trailer";
+    const exportNote = describeExportDepartureReconciliation(result.exportReconciliation);
+    const baseMessage = result.alreadyDeparted ? `${trailerNumber} is already departed.` : `${trailerNumber} departed.`;
 
     return {
       ok: true,
       status: "success",
-      message: result.alreadyDeparted ? `${trailerNumber} is already departed.` : `${trailerNumber} departed.`,
+      message: exportNote ? `${baseMessage} ${exportNote}` : baseMessage,
       retryable: false,
       updatedTrailer: {
         trailerId: result.trailerId,

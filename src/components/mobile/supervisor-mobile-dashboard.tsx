@@ -32,6 +32,8 @@ import { useOperationalRealtime } from "@/lib/realtime/operational-realtime";
 import { supabase } from "@/lib/supabase";
 import { getTrailerActivity, type TrailerActivityRow } from "@/lib/trailer-activity";
 import {
+  describeLinkedExportForDeparture,
+  getActiveExportCustomerByTrailerId,
   getActiveExportStatusByTrailerId,
   getTrailerJobReservationLabel,
   withTrailerJobCommitments,
@@ -589,6 +591,7 @@ export function SupervisorMobileDashboard() {
     return withTrailerJobCommitments(trailers, {
       reservedByDelivery: reservedDeliveryTrailerIds,
       exportStatusByTrailerId: getActiveExportStatusByTrailerId(exports),
+      exportCustomerByTrailerId: getActiveExportCustomerByTrailerId(exports),
     });
   }, [exports, reservedDeliveryTrailerIds, trailers]);
 
@@ -1742,7 +1745,7 @@ export function SupervisorMobileDashboard() {
 
             {activeTab === "departures" ? (
               <section className="space-y-3">
-                <Card title="Departures Mobile Access" subtitle="Confirm eligible trailers here. Reserved jobs stay visible but cannot depart.">
+                <Card title="Departures Mobile Access" subtitle="Confirm eligible trailers here. Linked Export allocations complete when departure is confirmed. Active Delivery stays blocked.">
                   <div className="mb-2 flex items-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2">
                     <Search className="h-4 w-4 text-slate-500" />
                     <input
@@ -1763,6 +1766,7 @@ export function SupervisorMobileDashboard() {
                       const status = assignment ? instructionStatusByBookingId[assignment.id] : null;
                       const eligible = isEligibleForDeparture(row);
                       const reservationLabel = getTrailerJobReservationLabel(row);
+                      const exportLink = describeLinkedExportForDeparture(row);
                       const pendingDeparture = hasAction("CONFIRM_DEPARTURE", row.id);
 
                       return (
@@ -1773,9 +1777,16 @@ export function SupervisorMobileDashboard() {
                             <InfoPill label="Position" value={row.compound_position ?? "-"} />
                             <InfoPill label="Load" value={row.load_status ?? "-"} />
                           </div>
-                          {reservationLabel ? (
+                          {row.hasActiveDelivery ? (
                             <div className="mt-2">
-                              <Badge tone="warn" text={reservationLabel} />
+                              <Badge tone="warn" text="Reserved - Delivery" />
+                            </div>
+                          ) : null}
+                          {exportLink ? (
+                            <div className="mt-2 space-y-1">
+                              <Badge tone="info" text="EXPORT" />
+                              <p className="text-xs text-slate-600">{exportLink.summary}</p>
+                              <p className="text-xs text-slate-500">Status: {exportLink.statusLabel}</p>
                             </div>
                           ) : null}
                           <button

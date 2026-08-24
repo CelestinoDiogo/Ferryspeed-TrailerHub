@@ -25,7 +25,7 @@ describe("departure import preview", () => {
     expect(preview.invalid.some((item) => item.trailerNumber === "UNKNOWN99")).toBe(true);
   });
 
-  it("does not accept a trailer reserved by an active delivery or export job", () => {
+  it("does not accept a trailer reserved by an active delivery booking", () => {
     const reserved = [
       ...trailers,
       { id: "d", trailer_number: "PRO811", customer: "Delta", departure_date: null, operational_status: "In Compound", is_local: false, hasActiveDelivery: true },
@@ -33,7 +33,8 @@ describe("departure import preview", () => {
     ];
 
     const preview = previewDepartureImport(["PRO811", "PFC103"].join("\n"), reserved);
-    expect(preview.accepted).toHaveLength(0);
-    expect(preview.ineligible.map((item) => item.trailerNumber).sort()).toEqual(["PFC103", "PRO811"]);
+    expect(preview.accepted.map((row) => row.trailer_number)).toEqual(["PFC103"]);
+    expect(preview.ineligible.map((item) => item.trailerNumber)).toEqual(["PRO811"]);
+    expect((reserved.find((row) => "activeExportStatus" in row && row.trailer_number === "PFC103") as { activeExportStatus?: string } | undefined)?.activeExportStatus).toBe("delivered_empty");
   });
 });

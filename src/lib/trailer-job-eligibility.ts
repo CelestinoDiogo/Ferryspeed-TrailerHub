@@ -1,4 +1,5 @@
 import {
+  getExportAllocationStatusLabel,
   isExportAllocationActive,
   normalizeExportAllocationStatus,
 } from "@/lib/export-allocation";
@@ -33,6 +34,7 @@ export class TrailerJobConflictError extends Error {
 export type TrailerJobCommitmentFields = {
   hasActiveDelivery?: boolean | null;
   activeExportStatus?: string | null;
+  activeExportCustomer?: string | null;
 };
 
 export function hasActiveExportReservation(status?: string | null) {
@@ -75,19 +77,65 @@ export function getActiveExportStatusByTrailerId(
   return exportStatusByTrailerId;
 }
 
+export function getActiveExportCustomerByTrailerId(
+  allocations: Array<{ trailer_id?: string | null; status?: string | null; customer?: string | null }>,
+) {
+  const exportCustomerByTrailerId = new Map<string, string | null>();
+
+  for (const allocation of allocations) {
+    if (!allocation.trailer_id || !hasActiveExportReservation(allocation.status)) {
+      continue;
+    }
+
+    exportCustomerByTrailerId.set(allocation.trailer_id, allocation.customer?.trim() || null);
+  }
+
+  return exportCustomerByTrailerId;
+}
+
+export type LinkedExportForDeparture = {
+  badge: "EXPORT";
+  customer: string | null;
+  statusLabel: string;
+  summary: string;
+};
+
+export function describeLinkedExportForDeparture(
+  commitment: TrailerJobCommitmentFields = {},
+): LinkedExportForDeparture | null {
+  if (!hasActiveExportReservation(commitment.activeExportStatus)) {
+    return null;
+  }
+
+  const statusLabel = getExportAllocationStatusLabel(
+    normalizeExportAllocationStatus(commitment.activeExportStatus),
+  );
+  const customer = commitment.activeExportCustomer?.trim() || null;
+
+  return {
+    badge: "EXPORT",
+    customer,
+    statusLabel,
+    summary: customer ? `Export: ${customer}` : "Export linked",
+  };
+}
+
 export function withTrailerJobCommitments<T extends { id: string }>(
   trailers: T[],
   input: {
     reservedByDelivery: Iterable<string>;
     exportStatusByTrailerId: Map<string, string>;
+    exportCustomerByTrailerId?: Map<string, string | null>;
   },
 ): Array<T & Required<TrailerJobCommitmentFields>> {
   const reservedByDelivery = new Set(input.reservedByDelivery);
+  const exportCustomerByTrailerId = input.exportCustomerByTrailerId ?? new Map<string, string | null>();
 
   return trailers.map((trailer) => ({
     ...trailer,
     hasActiveDelivery: reservedByDelivery.has(trailer.id),
     activeExportStatus: input.exportStatusByTrailerId.get(trailer.id) ?? null,
+    activeExportCustomer: exportCustomerByTrailerId.get(trailer.id) ?? null,
   }));
 }
 
@@ -100,11 +148,7 @@ export function isTrailerEligibleForNewExportJob(commitment: TrailerJobCommitmen
 }
 
 export function isTrailerEligibleForCompoundDeparture(commitment: TrailerJobCommitmentFields = {}) {
-  if (commitment.hasActiveDelivery) {
-    return false;
-  }
-
-  return !hasActiveExportReservation(commitment.activeExportStatus);
+  return commitment.hasActiveDelivery !== true;
 }
 
 export function getTrailerJobReservationLabel(commitment: TrailerJobCommitmentFields = {}) {

@@ -8,7 +8,7 @@ import {
   getTrailerIdsReservedByActiveDeliveryBookings,
 } from "@/lib/delivery-booking-availability";
 import { EXPORT_ACTIVE_STATUS_QUERY_VALUES } from "@/lib/export-allocation";
-import { getActiveExportStatusByTrailerId, withTrailerJobCommitments } from "@/lib/trailer-job-eligibility";
+import { getActiveExportCustomerByTrailerId, getActiveExportStatusByTrailerId, withTrailerJobCommitments } from "@/lib/trailer-job-eligibility";
 import { bootstrapCurrentUserRole, RbacPermissionError, requireRbacPermission } from "@/lib/rbac/route";
 import {
   createAuthenticatedRouteSupabaseClient,
@@ -83,7 +83,7 @@ export async function POST(request: Request) {
         .not("status", "in", DELIVERY_BOOKING_RELEASE_STATUS_QUERY),
       supabase
         .from("export_allocations")
-        .select("trailer_id, status")
+        .select("id, trailer_id, customer, status")
         .in("status", [...EXPORT_ACTIVE_STATUS_QUERY_VALUES]),
     ]);
 
@@ -98,6 +98,7 @@ export async function POST(request: Request) {
     const candidates = withTrailerJobCommitments((data ?? []) as DepartureImportCandidate[], {
       reservedByDelivery: getTrailerIdsReservedByActiveDeliveryBookings(activeDeliveries ?? []),
       exportStatusByTrailerId: getActiveExportStatusByTrailerId(activeExports ?? []),
+      exportCustomerByTrailerId: getActiveExportCustomerByTrailerId(activeExports ?? []),
     });
 
     return Response.json({

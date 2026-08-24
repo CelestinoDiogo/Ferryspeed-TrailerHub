@@ -1041,7 +1041,7 @@ describe("SupervisorMobileDashboard", () => {
     expect(within(exportCard).getByText("Reserved - Export")).toBeInTheDocument();
   });
 
-  it("blocks Confirm Departure for reserved trailers and keeps eligible confirm in the list", async () => {
+  it("blocks Confirm Departure for delivery-reserved trailers and keeps export-linked trailers eligible", async () => {
     tableData = {
       ...buildBaseData(),
       delivery_bookings: [
@@ -1074,7 +1074,8 @@ describe("SupervisorMobileDashboard", () => {
     await screen.findByText("Departures Mobile Access");
 
     expect(within(getTrailerCard("FS1001")).getByRole("button", { name: "Reserved - Delivery" })).toBeDisabled();
-    expect(within(getTrailerCard("FS1002")).getByRole("button", { name: "Reserved - Export" })).toBeDisabled();
+    expect(within(getTrailerCard("FS1002")).getByText("EXPORT")).toBeInTheDocument();
+    expect(within(getTrailerCard("FS1002")).getByRole("button", { name: "Confirm Departure" })).toBeEnabled();
     expect(within(getTrailerCard("FS1004")).getByRole("button", { name: "Confirm Departure" })).toBeEnabled();
   });
 

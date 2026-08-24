@@ -3,6 +3,7 @@ import { isTrailerEligibleForCompoundViews } from "@/lib/export-allocation";
 import {
   getTrailerIdsReservedByActiveExportAllocations,
   getTrailerJobReservationLabel,
+  describeLinkedExportForDeparture,
   isTrailerEligibleForCompoundDeparture,
   isTrailerEligibleForNewDeliveryJob,
   isTrailerEligibleForNewExportJob,
@@ -52,10 +53,10 @@ describe("canonical trailer job eligibility", () => {
 
     expect(isTrailerEligibleForCompoundViews(compoundTrailer, "allocated")).toBe(true);
     expect(isTrailerEligibleForNewDeliveryJob({ activeExportStatus: "allocated" })).toBe(false);
-    expect(isTrailerEligibleForCompoundDeparture({ activeExportStatus: "allocated" })).toBe(false);
+    expect(isTrailerEligibleForCompoundDeparture({ activeExportStatus: "allocated" })).toBe(true);
   });
 
-  it("keeps DELIVERED EMPTY trailers out of Compound and out of departure", () => {
+  it("keeps DELIVERED EMPTY trailers out of Compound while allowing confirmed departure", () => {
     const compoundTrailer = {
       id: "export-trailer",
       trailer_number: "FS9001",
@@ -65,7 +66,7 @@ describe("canonical trailer job eligibility", () => {
     };
 
     expect(isTrailerEligibleForCompoundViews(compoundTrailer, "delivered_empty")).toBe(false);
-    expect(isTrailerEligibleForCompoundDeparture({ activeExportStatus: "delivered_empty" })).toBe(false);
+    expect(isTrailerEligibleForCompoundDeparture({ activeExportStatus: "delivered_empty" })).toBe(true);
   });
 
   it("blocks departure of a trailer with an active delivery booking", () => {
@@ -75,11 +76,24 @@ describe("canonical trailer job eligibility", () => {
     })).toBe(false);
   });
 
-  it("allows departure after delivery is released and export is not active", () => {
+  it("allows departure after delivery is released even if export is still active", () => {
     expect(isTrailerEligibleForCompoundDeparture({
       hasActiveDelivery: false,
-      activeExportStatus: "completed",
+      activeExportStatus: "allocated",
     })).toBe(true);
+  });
+
+  it("describes a linked export for departure without treating it as a departure block", () => {
+    expect(describeLinkedExportForDeparture({
+      hasActiveDelivery: false,
+      activeExportStatus: "allocated",
+      activeExportCustomer: "ABC CUSTOMER",
+    })).toEqual({
+      badge: "EXPORT",
+      customer: "ABC CUSTOMER",
+      statusLabel: "Allocated",
+      summary: "Export: ABC CUSTOMER",
+    });
   });
 
   it("labels active Delivery and Export reservations for mobile visibility", () => {

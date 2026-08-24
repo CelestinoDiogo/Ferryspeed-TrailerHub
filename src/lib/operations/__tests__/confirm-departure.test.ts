@@ -2,9 +2,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { confirmTrailerDeparture } from "@/lib/operations/confirm-departure";
 import { TRAILER_NOT_AVAILABLE_FOR_DEPARTURE_CODE, TrailerJobConflictError } from "@/lib/trailer-job-eligibility";
 
-const { createTrailerActivityMock, logTrailerEventMock } = vi.hoisted(() => ({
+const { createTrailerActivityMock, logTrailerEventMock, completeExportFromDepartureMock } = vi.hoisted(() => ({
   createTrailerActivityMock: vi.fn(),
   logTrailerEventMock: vi.fn(),
+  completeExportFromDepartureMock: vi.fn(),
 }));
 
 vi.mock("@/lib/trailer-activity", () => ({
@@ -13,6 +14,10 @@ vi.mock("@/lib/trailer-activity", () => ({
 
 vi.mock("@/lib/trailer-audit-log", () => ({
   logTrailerEvent: logTrailerEventMock,
+}));
+
+vi.mock("@/lib/operations/complete-export-allocation-from-departure", () => ({
+  completeExportAllocationFromConfirmedDeparture: completeExportFromDepartureMock,
 }));
 
 type QueryRow = Record<string, unknown>;
@@ -108,6 +113,7 @@ describe("confirmTrailerDeparture", () => {
     vi.clearAllMocks();
     createTrailerActivityMock.mockResolvedValue({});
     logTrailerEventMock.mockResolvedValue({ ok: true });
+    completeExportFromDepartureMock.mockResolvedValue({ outcome: "none" });
   });
 
   it("rejects a trailer reserved by an active delivery booking", async () => {
@@ -133,14 +139,20 @@ describe("confirmTrailerDeparture", () => {
         operatorName: "Supervisor One",
       }),
     ).rejects.toMatchObject({
-      name: "TrailerJobConflictError",
       code: TRAILER_NOT_AVAILABLE_FOR_DEPARTURE_CODE,
     });
 
     expect(createTrailerActivityMock).not.toHaveBeenCalled();
   });
 
-  it("rejects a trailer reserved by an active export allocation", async () => {
+  it("confirms a trailer with an active export allocation and reconciles that allocation", async () => {
+    completeExportFromDepartureMock.mockResolvedValue({
+      outcome: "completed",
+      allocationId: "export-1",
+      previousStatus: "allocated",
+      customer: "ABC CUSTOMER",
+    });
+
     const supabase = createSupabaseMock({
       trailers: [
         {
@@ -154,15 +166,31 @@ describe("confirmTrailerDeparture", () => {
         },
       ],
       delivery_bookings: [],
-      export_allocations: [{ trailer_id: "trailer-1", status: "allocated" }],
+      export_allocations: [{ id: "export-1", trailer_id: "trailer-1", status: "allocated" }],
+      trailer_events: [],
     });
 
-    await expect(
-      confirmTrailerDeparture(supabase as never, {
+    const result = await confirmTrailerDeparture(supabase as never, {
+      trailerId: "trailer-1",
+      operatorName: "Supervisor One",
+      now: new Date("2026-08-20T12:00:00.000Z"),
+    });
+
+    expect(result.alreadyDeparted).toBe(false);
+    expect(result.exportReconciliation).toMatchObject({
+      outcome: "completed",
+      allocationId: "export-1",
+      previousStatus: "allocated",
+    });
+    expect(completeExportFromDepartureMock).toHaveBeenCalledWith(
+      supabase,
+      expect.objectContaining({
         trailerId: "trailer-1",
-        operatorName: "Supervisor One",
+        trailerNumber: "FS1001",
+        departedAt: "2026-08-20T12:00:00.000Z",
+        performedBy: "Supervisor One",
       }),
-    ).rejects.toBeInstanceOf(TrailerJobConflictError);
+    );
   });
 
   it("returns alreadyDeparted without rewriting history", async () => {
@@ -187,6 +215,7 @@ describe("confirmTrailerDeparture", () => {
 
     expect(result.alreadyDeparted).toBe(true);
     expect(createTrailerActivityMock).not.toHaveBeenCalled();
+    expect(completeExportFromDepartureMock).toHaveBeenCalled();
   });
 
   it("confirms an eligible trailer and writes departure history", async () => {

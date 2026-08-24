@@ -11,6 +11,7 @@ describe("PDF import API contract", () => {
     expect(source).toContain("extractPdfText");
     expect(source).not.toMatch(/\.from\("vessel_operation_trailers"\)\.(insert|upsert)/);
     expect(source).not.toMatch(/\.from\("trailers"\)\.(insert|update|upsert)/);
+    expect(source).not.toMatch(/\.from\("export_allocations"\)\.(insert|update|upsert)/);
     expect(source).not.toContain("process.cwd(");
     expect(source).not.toContain("__dirname");
   });

@@ -20,6 +20,7 @@ export type DepartureImportCandidate = {
   load_status?: string | null;
   hasActiveDelivery?: boolean | null;
   activeExportStatus?: string | null;
+  activeExportCustomer?: string | null;
 };
 
 export type DepartureImportParsedRow = {

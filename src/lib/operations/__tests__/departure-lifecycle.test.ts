@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import type { Database } from "@/lib/database.types";
 import { DepartureUndoConflictError, undoDeparture } from "@/lib/operations/departure-lifecycle";
@@ -54,4 +55,11 @@ describe("atomic Departure Undo lifecycle", () => {
       expect(from).not.toHaveBeenCalled();
     },
   );
+
+  it("does not reopen or mutate export allocations when undoing a departure", () => {
+    const source = readFileSync(new URL("../departure-lifecycle.ts", import.meta.url), "utf8");
+    expect(source).toContain("undo_trailer_departure");
+    expect(source).not.toContain("export_allocations");
+    expect(source).not.toContain("completeExportAllocationFromConfirmedDeparture");
+  });
 });

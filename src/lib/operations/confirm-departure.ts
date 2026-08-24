@@ -4,12 +4,14 @@ import {
   DELIVERY_BOOKING_RELEASE_STATUS_QUERY,
   getTrailerIdsReservedByActiveDeliveryBookings,
 } from "@/lib/delivery-booking-availability";
-import { EXPORT_ACTIVE_STATUS_QUERY_VALUES } from "@/lib/export-allocation";
 import { isEligibleForDeparture } from "@/lib/imports/departure-import";
 import { createTrailerActivity } from "@/lib/trailer-activity";
 import { logTrailerEvent } from "@/lib/trailer-audit-log";
 import {
-  getActiveExportStatusByTrailerId,
+  completeExportAllocationFromConfirmedDeparture,
+  type ExportDepartureReconciliation,
+} from "@/lib/operations/complete-export-allocation-from-departure";
+import {
   TRAILER_NOT_AVAILABLE_FOR_DEPARTURE_CODE,
   TrailerJobConflictError,
 } from "@/lib/trailer-job-eligibility";
@@ -37,6 +39,7 @@ export type ConfirmDepartureResult = {
     operational_status: string;
     compound_position: null;
   } | null;
+  exportReconciliation: ExportDepartureReconciliation;
 };
 
 const registerDepartureHistory = async (
@@ -136,6 +139,13 @@ export async function confirmTrailerDeparture(
   }
 
   if (currentTrailer.departure_date) {
+    const exportReconciliation = await completeExportAllocationFromConfirmedDeparture(supabase, {
+      trailerId: currentTrailer.id,
+      trailerNumber: currentTrailer.trailer_number ?? null,
+      departedAt: currentTrailer.departure_date,
+      performedBy: input.operatorName,
+    });
+
     return {
       alreadyDeparted: true,
       trailerId: currentTrailer.id,
@@ -150,30 +160,19 @@ export async function confirmTrailerDeparture(
         previousOperationalStatus: currentTrailer.operational_status ?? null,
       },
       updated: null,
+      exportReconciliation,
     };
   }
 
-  const [{ data: activeDeliveries, error: deliveryError }, { data: activeExports, error: exportError }] = await Promise.all([
-    supabase
-      .from("delivery_bookings")
-      .select("trailer_id, status")
-      .eq("trailer_id", input.trailerId)
-      .not("status", "in", DELIVERY_BOOKING_RELEASE_STATUS_QUERY)
-      .limit(1),
-    supabase
-      .from("export_allocations")
-      .select("trailer_id, status")
-      .eq("trailer_id", input.trailerId)
-      .in("status", [...EXPORT_ACTIVE_STATUS_QUERY_VALUES])
-      .limit(1),
-  ]);
+  const { data: activeDeliveries, error: deliveryError } = await supabase
+    .from("delivery_bookings")
+    .select("trailer_id, status")
+    .eq("trailer_id", input.trailerId)
+    .not("status", "in", DELIVERY_BOOKING_RELEASE_STATUS_QUERY)
+    .limit(1);
 
   if (deliveryError) {
     throw new Error(deliveryError.message || "Unable to check delivery reservations before departure.");
-  }
-
-  if (exportError) {
-    throw new Error(exportError.message || "Unable to check export reservations before departure.");
   }
 
   if (!isEligibleForDeparture({
@@ -182,7 +181,7 @@ export async function confirmTrailerDeparture(
     is_local: currentTrailer.is_local,
     operational_status: currentTrailer.operational_status,
     hasActiveDelivery: getTrailerIdsReservedByActiveDeliveryBookings(activeDeliveries ?? []).has(input.trailerId),
-    activeExportStatus: getActiveExportStatusByTrailerId(activeExports ?? []).get(input.trailerId) ?? null,
+    activeExportStatus: null,
   })) {
     throw new TrailerJobConflictError(
       TRAILER_NOT_AVAILABLE_FOR_DEPARTURE_CODE,
@@ -253,11 +252,19 @@ export async function confirmTrailerDeparture(
     throw new Error("Departure was rolled back because history logging failed.");
   }
 
+  const exportReconciliation = await completeExportAllocationFromConfirmedDeparture(supabase, {
+    trailerId: currentTrailer.id,
+    trailerNumber: currentTrailer.trailer_number ?? null,
+    departedAt: updatePayload.departure_date,
+    performedBy: input.operatorName,
+  });
+
   return {
     alreadyDeparted: false,
     trailerId: currentTrailer.id,
     trailerNumber: currentTrailer.trailer_number ?? null,
     snapshot,
     updated: updatePayload,
+    exportReconciliation,
   };
 }
