@@ -7,6 +7,7 @@ import {
   type ExportAllocationImportCandidate,
   type ExportAllocationImportConfirmRow,
 } from "@/lib/imports/export-allocation-import";
+import { toExportPersistTimestamp } from "@/lib/imports/import-normalize";
 import {
   DELIVERY_BOOKING_RELEASE_STATUS_QUERY,
   getTrailerIdsReservedByActiveDeliveryBookings,
@@ -170,9 +171,7 @@ export async function persistExportAllocationImport(input: {
   const nowIso = new Date().toISOString();
 
   for (const row of preview.accepted) {
-    const expectedReturnAt = row.expected_return_at
-      ? new Date(`${row.expected_return_at}T12:00:00.000Z`).toISOString()
-      : null;
+    const expectedReturnAt = toExportPersistTimestamp(row.expected_return_at);
 
     const inserted = await insertExportAllocation({
       supabase: input.supabase,
@@ -202,9 +201,7 @@ export async function persistExportAllocationImport(input: {
   }
 
   for (const row of preview.unassigned) {
-    const expectedReturnAt = row.expected_return_at
-      ? new Date(`${row.expected_return_at}T12:00:00.000Z`).toISOString()
-      : null;
+    const expectedReturnAt = toExportPersistTimestamp(row.expected_return_at);
 
     const inserted = await insertExportAllocation({
       supabase: input.supabase,

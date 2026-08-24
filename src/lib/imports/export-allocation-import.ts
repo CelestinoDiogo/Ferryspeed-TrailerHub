@@ -7,14 +7,19 @@ import {
   normalizeSpreadsheetHeader,
   readSpreadsheetWorkbookGrids,
 } from "@/lib/imports/spreadsheet";
+import {
+  asImportOperationalTrailerNumber,
+  looksLikeExcelSerial,
+  normalizeImportTrailerNumber,
+  parseImportDate,
+  parseImportDateTime,
+} from "@/lib/imports/import-normalize";
 import { SpreadsheetImportValidationError } from "@/lib/imports/spreadsheet-security";
-import { asOperationalTrailerNumber } from "@/lib/imports/trailer-tokens";
 import {
   isTrailerEligibleForNewExportJob,
   TRAILER_ACTIVE_EXPORT_ALLOCATION_MESSAGE,
   TRAILER_RESERVED_FOR_DELIVERY_MESSAGE,
 } from "@/lib/trailer-job-eligibility";
-import { normalizeTrailerNumber } from "@/lib/vessel-operations";
 
 export const EXPORT_ALLOCATIONS_REQUIRE_TRAILER_ID = false;
 
@@ -89,6 +94,7 @@ export type ExportAllocationImportPreview = {
 };
 
 export type ExportAllocationImportConfirmRow = {
+  trailerId?: string | null;
   trailerNumber?: string | null;
   customer: string;
   collectionAddress?: string | null;
@@ -132,6 +138,7 @@ const HEADER_ALIASES: Record<string, ExportAllocationImportField> = {
   "collect date": "collection_date",
   date: "collection_date",
   "expected return": "expected_return_at",
+  "expected return at": "expected_return_at",
   "expected return date": "expected_return_at",
   "return date": "expected_return_at",
   return: "expected_return_at",
@@ -163,37 +170,54 @@ const emptyParsedRow = (rowNumber: number, sourceLine = ""): ExportAllocationImp
 
 const isEmptyRow = (cells: string[]) => cells.every((cell) => !cell.trim());
 
-export function parseExportDate(value?: string | null): string | null {
-  const trimmed = (value ?? "").trim();
-  if (!trimmed) {
-    return null;
-  }
+export const parseExportDate = parseImportDate;
 
-  if (/^\d{4}-\d{2}-\d{2}/.test(trimmed)) {
-    return trimmed.slice(0, 10);
-  }
-
-  const uk = trimmed.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
-  if (uk) {
-    const day = uk[1].padStart(2, "0");
-    const month = uk[2].padStart(2, "0");
-    const year = uk[3].length === 2 ? `20${uk[3]}` : uk[3];
-    return `${year}-${month}-${day}`;
-  }
-
-  const serial = Number(trimmed);
-  if (Number.isInteger(serial) && serial >= 20000 && serial <= 80000) {
-    const utc = Date.UTC(1899, 11, 30) + serial * 86400000;
-    return new Date(utc).toISOString().slice(0, 10);
-  }
-
-  const parsed = new Date(trimmed);
-  if (!Number.isNaN(parsed.getTime())) {
-    return parsed.toISOString().slice(0, 10);
-  }
-
-  return null;
+export function parseExportDateTime(value?: string | null): string | null {
+  return parseImportDateTime(value);
 }
+
+export function isCurrentExportFleetTrailer(trailer: ExportAllocationImportCandidate) {
+  const status = (trailer.operational_status ?? "").trim().toLowerCase();
+  if (status === "departed" || status === "cancelled") {
+    return false;
+  }
+
+  return !(trailer.departure_date ?? "").trim();
+}
+
+export function resolveExportFleetMatch(matches: ExportAllocationImportCandidate[]) {
+  const current = matches.filter(isCurrentExportFleetTrailer);
+
+  if (current.length === 1) {
+    return { status: "match" as const, trailer: current[0] };
+  }
+
+  if (current.length > 1) {
+    return { status: "conflict" as const };
+  }
+
+  return { status: "none" as const };
+}
+
+const displayImportCell = (value: string, field?: ExportAllocationImportField) => {
+  if (field === "collection_date") {
+    return parseImportDate(value) ?? "";
+  }
+
+  if (field === "expected_return_at") {
+    return parseImportDateTime(value) ?? "";
+  }
+
+  if (field === "trailer_number") {
+    return normalizeImportTrailerNumber(value) || value.trim();
+  }
+
+  if (!field && looksLikeExcelSerial(value)) {
+    return parseImportDateTime(value) ?? value;
+  }
+
+  return value;
+};
 
 export function normalizeExportImportPriority(value?: string | null): ExportAllocationPriority {
   const normalized = (value ?? "").trim().toLowerCase();
@@ -262,7 +286,10 @@ export function parseExportAllocationSpreadsheet(bytes: Uint8Array): ExportAlloc
       }
 
       const rowNumber = header.index + offset + 2;
-      const sourceLine = cells.filter(Boolean).join(" | ");
+      const sourceLine = cells
+        .map((value, cellIndex) => displayImportCell(value, header.headerMap.get(cellIndex)))
+        .filter(Boolean)
+        .join(" | ");
       const parsed = emptyParsedRow(rowNumber, sourceLine);
 
       cells.forEach((value, cellIndex) => {
@@ -278,12 +305,17 @@ export function parseExportAllocationSpreadsheet(bytes: Uint8Array): ExportAlloc
         }
 
         if (field === "trailer_number") {
-          parsed.trailer_number = asOperationalTrailerNumber(trimmed) || (trimmed ? normalizeTrailerNumber(trimmed) : "");
+          parsed.trailer_number = normalizeImportTrailerNumber(trimmed);
           return;
         }
 
-        if (field === "collection_date" || field === "expected_return_at") {
-          parsed[field] = parseExportDate(trimmed) ?? trimmed;
+        if (field === "collection_date") {
+          parsed.collection_date = parseImportDate(trimmed) ?? "";
+          return;
+        }
+
+        if (field === "expected_return_at") {
+          parsed.expected_return_at = parseImportDateTime(trimmed) ?? "";
           return;
         }
 
@@ -326,7 +358,7 @@ export function previewExportAllocationImportRows(
 ): ExportAllocationImportPreview {
   const byNumber = new Map<string, ExportAllocationImportCandidate[]>();
   for (const trailer of trailers) {
-    const number = normalizeTrailerNumber(trailer.trailer_number);
+    const number = normalizeImportTrailerNumber(trailer.trailer_number);
     if (!number) {
       continue;
     }
@@ -347,9 +379,9 @@ export function previewExportAllocationImportRows(
 
   for (const row of parsedRows) {
     const customer = row.customer.trim();
-    const collectionDate = parseExportDate(row.collection_date);
-    const rawTrailer = row.trailer_number.trim();
-    const trailerNumber = asOperationalTrailerNumber(rawTrailer);
+    const collectionDate = parseImportDate(row.collection_date);
+    const rawTrailer = normalizeImportTrailerNumber(row.trailer_number);
+    const trailerNumber = asImportOperationalTrailerNumber(rawTrailer);
 
     if (!customer || !collectionDate) {
       invalid.push({
@@ -365,7 +397,7 @@ export function previewExportAllocationImportRows(
       ...row,
       customer,
       collection_date: collectionDate,
-      expected_return_at: parseExportDate(row.expected_return_at) ?? "",
+      expected_return_at: parseImportDateTime(row.expected_return_at) ?? "",
     };
 
     if (!rawTrailer) {
@@ -411,7 +443,9 @@ export function previewExportAllocationImportRows(
     seenTrailerNumbers.add(trailerNumber);
 
     const matches = byNumber.get(trailerNumber) ?? [];
-    if (matches.length === 0) {
+    const fleetMatch = resolveExportFleetMatch(matches);
+
+    if (fleetMatch.status === "none") {
       invalid.push({
         trailerNumber,
         sourceLine: row.sourceLine,
@@ -421,7 +455,7 @@ export function previewExportAllocationImportRows(
       continue;
     }
 
-    if (matches.length > 1) {
+    if (fleetMatch.status === "conflict") {
       conflicts.push({
         trailerNumber,
         sourceLine: row.sourceLine,
@@ -431,7 +465,7 @@ export function previewExportAllocationImportRows(
       continue;
     }
 
-    const trailer = matches[0];
+    const trailer = fleetMatch.trailer;
     const conflict = trailerConflictReason(trailer);
     if (conflict) {
       conflicts.push({
@@ -478,14 +512,14 @@ export function confirmRowsToParsedRows(
   rows: ExportAllocationImportConfirmRow[],
 ): ExportAllocationImportParsedRow[] {
   return rows.map((row, index) => ({
-    trailer_number: (row.trailerNumber ?? "").trim(),
+    trailer_number: normalizeImportTrailerNumber(row.trailerNumber),
     customer: (row.customer ?? "").trim(),
     collection_address: (row.collectionAddress ?? "").trim(),
     haulier: (row.haulier ?? "").trim(),
     booking_reference: (row.bookingReference ?? "").trim(),
     load_type: (row.loadType ?? "").trim(),
-    collection_date: (row.collectionDate ?? "").trim(),
-    expected_return_at: (row.expectedReturnAt ?? "").trim(),
+    collection_date: parseImportDate(row.collectionDate) ?? (row.collectionDate ?? "").trim(),
+    expected_return_at: parseImportDateTime(row.expectedReturnAt) ?? (row.expectedReturnAt ?? "").trim(),
     priority: normalizeExportImportPriority(row.priority),
     notes: (row.notes ?? "").trim(),
     sourceLine: row.sourceLine?.trim() || `${row.customer ?? "Export row"} ${index + 1}`,
@@ -498,6 +532,7 @@ export function toExportAllocationConfirmRows(
 ): ExportAllocationImportConfirmRow[] {
   return [
     ...preview.accepted.map((row) => ({
+      trailerId: row.trailer.id,
       trailerNumber: row.trailer_number,
       customer: row.customer,
       collectionAddress: row.collection_address || null,
@@ -512,6 +547,7 @@ export function toExportAllocationConfirmRows(
       rowNumber: row.rowNumber,
     })),
     ...preview.unassigned.map((row) => ({
+      trailerId: null,
       trailerNumber: "",
       customer: row.customer,
       collectionAddress: row.collection_address || null,
