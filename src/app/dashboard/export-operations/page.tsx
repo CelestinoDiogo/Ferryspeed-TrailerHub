@@ -58,6 +58,14 @@ import {
   type ExportAllocationImportPreview,
 } from "@/lib/imports/export-allocation-import";
 import { getSessionToken } from "@/lib/voice/session";
+import {
+  ESCORT_FILTER_OPTIONS,
+  getEscortFilterLabel,
+  parseEscortFilter,
+  matchesEscortFilter,
+  shouldShowEscortBadge,
+} from "@/lib/operations/escort-flags";
+import { EscortBadge } from "@/components/operations/escort-flag-controls";
 
 type TrailerLoadSnapshot = {
   id: string;
@@ -283,6 +291,7 @@ function ExportOperationsPageContent() {
   const ownershipFilter = getOwnershipQueryValue(ownershipQuery);
   const priorityFilter = searchParams.get("priority") ?? "all";
   const haulierFilter = searchParams.get("haulier") ?? "all";
+  const escortFilter = parseEscortFilter(searchParams.get("escort"));
   const historyPresetQuery = searchParams.get("history");
   const historyStartQuery = searchParams.get("start") ?? "";
   const historyEndQuery = searchParams.get("end") ?? "";
@@ -327,6 +336,7 @@ function ExportOperationsPageContent() {
     ownership?: OwnershipFilter;
     priority?: string;
     haulier?: string;
+    escort?: string;
     history?: HistoryDateRangeValue;
   }) => {
     const params = new URLSearchParams(searchParams.toString());
@@ -361,6 +371,11 @@ function ExportOperationsPageContent() {
     if (updates.haulier !== undefined) {
       if (updates.haulier !== "all") params.set("haulier", updates.haulier);
       else params.delete("haulier");
+    }
+
+    if (updates.escort !== undefined) {
+      if (updates.escort !== "all") params.set("escort", updates.escort);
+      else params.delete("escort");
     }
 
     if (updates.history !== undefined) {
@@ -714,7 +729,17 @@ function ExportOperationsPageContent() {
       return normalizeTrailerPrefix(item.trailer_number) === prefixFilter;
     });
 
-    return [...filteredByPrefix].sort((left, right) => {
+    const filteredByEscort = filteredByPrefix.filter((item) =>
+      matchesEscortFilter(
+        {
+          escortNeeded: item.escort_needed,
+          deliveredWithEscort: item.delivered_with_escort,
+        },
+        escortFilter,
+      ),
+    );
+
+    return [...filteredByEscort].sort((left, right) => {
       if (sortBy === "trailer_asc" || sortBy === "trailer_desc") {
         const leftTrailer = left.trailer_number?.trim() ?? "";
         const rightTrailer = right.trailer_number?.trim() ?? "";
@@ -727,7 +752,7 @@ function ExportOperationsPageContent() {
 
       return comparePrintAllocations(left, right);
     });
-  }, [baseFilteredAllocations, haulierFilter, ownershipFilter, prefixFilter, priorityFilter, resolvedCustomerValues, sortBy]);
+  }, [baseFilteredAllocations, escortFilter, haulierFilter, ownershipFilter, prefixFilter, priorityFilter, resolvedCustomerValues, sortBy]);
 
   const prefixOptions = useMemo(() => {
     const prefixes = new Set<string>();
@@ -771,6 +796,7 @@ function ExportOperationsPageContent() {
   );
 
   const selectedStatusLabel = getStatusLabel(statusFilter);
+  const selectedEscortLabel = getEscortFilterLabel(escortFilter);
   const selectedDateLabel = getHistoryDateRangeLabel(historyRange);
   const selectedCustomerLabel = resolvedCustomerValues.length > 0 ? resolvedCustomerValues.join(", ") : "All Customers";
   const selectedOwnershipLabel = ownershipFilter === "all" ? "All Ownership" : ownershipFilter === "company" ? "Company" : "Outsourcing";
@@ -1276,6 +1302,9 @@ function ExportOperationsPageContent() {
             statusOptions={STATUS_OPTIONS.map((option) => ({ value: option.value, label: option.label }))}
             statusValue={statusFilter}
             onStatusChange={(value) => updateFilters({ status: value })}
+            escortOptions={ESCORT_FILTER_OPTIONS.map((option) => ({ value: option.value, label: option.label }))}
+            escortValue={escortFilter}
+            onEscortChange={(value) => updateFilters({ escort: value })}
             sortOptions={[
               { value: "collection_date", label: "Collection Date" },
               { value: "trailer_asc", label: "Trailer A-Z" },
@@ -1456,6 +1485,12 @@ function ExportOperationsPageContent() {
                       <span className="rounded-full border border-white/20 bg-white/5 px-3 py-1 text-xs font-semibold text-slate-200">
                         {getTrailerOwnershipBadgeLabel(allocation.ownershipType ?? "unknown")}
                       </span>
+                      {shouldShowEscortBadge({
+                        escortNeeded: allocation.escort_needed,
+                        deliveredWithEscort: allocation.delivered_with_escort,
+                      }) ? (
+                        <EscortBadge />
+                      ) : null}
                       {overdue ? (
                         <span className="rounded-full border border-rose-500/40 bg-rose-500/20 px-3 py-1 text-xs font-semibold text-rose-100">Overdue</span>
                       ) : null}
@@ -1630,6 +1665,7 @@ function ExportOperationsPageContent() {
                 { label: "Customer", value: selectedCustomerLabel },
                 { label: "Ownership", value: selectedOwnershipLabel },
                 { label: "Status", value: selectedStatusLabel },
+                { label: "Escort", value: selectedEscortLabel },
                 { label: "Search", value: searchTerm.trim() || "All visible records" },
               ]}
             />

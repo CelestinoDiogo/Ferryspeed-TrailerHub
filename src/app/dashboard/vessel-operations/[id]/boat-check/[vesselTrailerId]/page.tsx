@@ -42,6 +42,11 @@ import {
   type TemperatureStatus,
   type TemperatureToleranceSettings,
 } from "@/lib/temperature-tolerance";
+import {
+  LIVE_VESSEL_INSPECTION_DAMAGE_SEVERITIES,
+  normalizeInspectionDamageSeverity,
+  persistVesselInspectionDamage,
+} from "@/lib/operations/persist-inspection-damage";
 import { createTrailerActivity } from "@/lib/trailer-activity";
 
 type PhotoView = VesselInspectionPhotoRecord & { previewUrl?: string | null };
@@ -64,7 +69,12 @@ type OverallCondition = "good" | "attention_required";
 
 const DAMAGE_TYPES = ["Dent", "Scratch", "Broken Light", "Door Damage", "Curtain Damage", "Tyre Damage", "Tail Lift Damage", "Other"];
 const DAMAGE_LOCATIONS = ["Front", "Rear", "Left Side", "Right Side", "Roof", "Undercarriage", "Interior", "Other"];
-const DAMAGE_SEVERITIES = ["Minor", "Moderate", "Severe"];
+const DAMAGE_SEVERITY_LABELS: Record<(typeof LIVE_VESSEL_INSPECTION_DAMAGE_SEVERITIES)[number], string> = {
+  minor: "Minor",
+  moderate: "Moderate",
+  major: "Major",
+  critical: "Critical",
+};
 
 const MAX_PHOTO_SIZE = 10 * 1024 * 1024;
 const PHOTO_SIGNED_URL_TTL_SECONDS = 60 * 60;
@@ -439,7 +449,7 @@ function VesselInspectionPageContent() {
         setDamageChoice("yes");
         setDamageType(loadedDamage.damage_type ?? "");
         setDamageLocation(loadedDamage.damage_location ?? "");
-        setDamageSeverity(loadedDamage.severity ?? "");
+        setDamageSeverity(normalizeInspectionDamageSeverity(loadedDamage.severity));
         setDamageDescription(loadedDamage.description ?? "");
       } else {
         setDamageChoice("no");
@@ -856,31 +866,23 @@ function VesselInspectionPageContent() {
         throw tempInsertError;
       }
 
-      const { error: damageDeleteError } = await supabase
-        .from("vessel_inspection_damages")
-        .delete()
-        .eq("vessel_trailer_id", trailer.id);
+      const { error: damagePersistError } = await persistVesselInspectionDamage(supabase, {
+        vesselTrailerId: trailer.id,
+        vesselOperationId: trailer.vessel_operation_id ?? operation.id,
+        trailerId: trailer.trailer_id ?? null,
+        trailerNumber: trailer.trailer_number ?? null,
+        hasDamage: damageChoice === "yes",
+        damageType,
+        damageLocation,
+        severity: damageSeverity,
+        description: damageDescription,
+        recordedAt: nowIso,
+        recordedBy: "TrailerHub User",
+      });
 
-      if (damageDeleteError) {
-        logVesselSupabaseError("Delete existing boat check damages failed", damageDeleteError);
-        throw damageDeleteError;
-      }
-
-      if (damageChoice === "yes") {
-        const { error: damageInsertError } = await supabase.from("vessel_inspection_damages").insert({
-          vessel_trailer_id: trailer.id,
-          damage_type: damageType.trim() || null,
-          damage_location: damageLocation.trim() || null,
-          severity: damageSeverity.trim() || null,
-          description: damageDescription.trim(),
-          recorded_at: nowIso,
-          recorded_by: "TrailerHub User",
-        });
-
-        if (damageInsertError) {
-          logVesselSupabaseError("Insert boat check damage failed", damageInsertError);
-          throw damageInsertError;
-        }
+      if (damagePersistError) {
+        logVesselSupabaseError("Persist boat check damage failed", damagePersistError);
+        throw damagePersistError;
       }
 
       const hasTemperatureAlert = frontOutOfRange || rearOutOfRange;
@@ -1155,7 +1157,9 @@ function VesselInspectionPageContent() {
                 Severity
                 <select value={damageSeverity} onChange={(event) => setDamageSeverity(event.target.value)} className="mt-1 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm outline-none">
                   <option value="">Select severity</option>
-                  {DAMAGE_SEVERITIES.map((item) => <option key={item} value={item}>{item}</option>)}
+                  {LIVE_VESSEL_INSPECTION_DAMAGE_SEVERITIES.map((item) => (
+                    <option key={item} value={item}>{DAMAGE_SEVERITY_LABELS[item]}</option>
+                  ))}
                 </select>
               </label>
 

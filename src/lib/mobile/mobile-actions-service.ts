@@ -14,6 +14,7 @@ import { moveCompoundTrailer } from "@/lib/compound-yard";
 import { confirmTrailerDeparture } from "@/lib/operations/confirm-departure";
 import { describeExportDepartureReconciliation } from "@/lib/operations/complete-export-allocation-from-departure";
 import { markVesselTrailerDischarged } from "@/lib/operations/mark-vessel-trailer-discharged";
+import { persistVesselInspectionDamage } from "@/lib/operations/persist-inspection-damage";
 import { createTrailerActivity } from "@/lib/trailer-activity";
 import { getTemperatureToleranceSettingsFromStorage, isTemperatureOutOfRange } from "@/lib/temperature-tolerance";
 import { TrailerJobConflictError } from "@/lib/trailer-job-eligibility";
@@ -1076,42 +1077,27 @@ const persistInspection = async (
     };
   }
 
-  const { error: deleteDamageError } = await supabase
-    .from("vessel_inspection_damages")
-    .delete()
-    .eq("vessel_trailer_id", trailer.id);
+  const { error: persistDamageError } = await persistVesselInspectionDamage(supabase, {
+    vesselTrailerId: trailer.id,
+    vesselOperationId: trailer.vessel_operation_id,
+    trailerId: trailer.trailer_id ?? null,
+    trailerNumber: trailer.trailer_number ?? null,
+    hasDamage: payload.damage?.hasDamage ?? false,
+    damageType: payload.damage?.damageType,
+    damageLocation: payload.damage?.damageLocation,
+    severity: payload.damage?.hasDamage ? "moderate" : null,
+    description: payload.damage?.damageDescription,
+    recordedAt: nowIso,
+    recordedBy: operatorName,
+  });
 
-  if (deleteDamageError) {
+  if (persistDamageError) {
     return {
       ok: false,
       status: "failed",
-      message: buildVesselSupabaseErrorMessage(deleteDamageError, "Unable to clear previous damages."),
+      message: buildVesselSupabaseErrorMessage(persistDamageError, "Unable to save damage details."),
       retryable: true,
     };
-  }
-
-  if (payload.damage?.hasDamage) {
-    const { error: insertDamageError } = await supabase.from("vessel_inspection_damages").insert({
-      vessel_trailer_id: trailer.id,
-      trailer_id: trailer.trailer_id ?? null,
-      trailer_number: trailer.trailer_number ?? null,
-      vessel_operation_id: trailer.vessel_operation_id,
-      damage_type: payload.damage.damageType?.trim() || null,
-      damage_location: payload.damage.damageLocation?.trim() || null,
-      severity: "moderate",
-      description: payload.damage.damageDescription?.trim() || null,
-      recorded_at: nowIso,
-      recorded_by: operatorName,
-    } as never);
-
-    if (insertDamageError) {
-      return {
-        ok: false,
-        status: "failed",
-        message: buildVesselSupabaseErrorMessage(insertDamageError, "Unable to save damage details."),
-        retryable: true,
-      };
-    }
   }
 
   const trailerUpdate: Database["public"]["Tables"]["vessel_operation_trailers"]["Update"] = {

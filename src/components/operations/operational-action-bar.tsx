@@ -18,6 +18,9 @@ type OperationalActionBarProps = {
   statusOptions?: ActionBarOption[];
   statusValue?: string;
   onStatusChange?: (value: string) => void;
+  escortOptions?: ActionBarOption[];
+  escortValue?: string;
+  onEscortChange?: (value: string) => void;
   sortOptions?: ActionBarOption[];
   sortValue?: string;
   onSortChange?: (value: string) => void;
@@ -38,6 +41,9 @@ export function OperationalActionBar({
   statusOptions,
   statusValue,
   onStatusChange,
+  escortOptions,
+  escortValue,
+  onEscortChange,
   sortOptions,
   sortValue,
   onSortChange,
@@ -72,7 +78,7 @@ export function OperationalActionBar({
         </div>
 
         <div className="flex flex-col gap-2 xl:flex-row xl:items-center xl:justify-between">
-          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
             {prefixOptions && onPrefixChange ? (
               <label className="text-xs uppercase tracking-[0.18em] text-slate-500">
                 Prefix
@@ -99,6 +105,23 @@ export function OperationalActionBar({
                   className="mt-1.5 h-10 w-full rounded-xl border border-white/10 bg-slate-950/85 px-3 text-sm text-slate-100"
                 >
                   {statusOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
+
+            {escortOptions && onEscortChange ? (
+              <label className="text-xs uppercase tracking-[0.18em] text-slate-500">
+                Escort
+                <select
+                  value={escortValue ?? "all"}
+                  onChange={(event) => onEscortChange(event.target.value)}
+                  className="mt-1.5 h-10 w-full rounded-xl border border-white/10 bg-slate-950/85 px-3 text-sm text-slate-100"
+                >
+                  {escortOptions.map((option) => (
                     <option key={option.value} value={option.value}>
                       {option.label}
                     </option>

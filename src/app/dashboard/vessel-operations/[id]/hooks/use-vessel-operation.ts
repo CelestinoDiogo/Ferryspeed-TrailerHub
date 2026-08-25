@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import { markVesselTrailerDischarged } from "@/lib/operations/mark-vessel-trailer-discharged";
+import { persistVesselInspectionDamage } from "@/lib/operations/persist-inspection-damage";
 import { createTrailerActivity } from "@/lib/trailer-activity";
 import {
   deriveVesselWorkflowStep,
@@ -1366,50 +1367,26 @@ export function useVesselOperation(operationId: string): UseVesselOperationResul
           throw temperatureError;
         }
 
-        const { error: damageDeleteError } = await supabase
-          .from("vessel_inspection_damages")
-          .delete()
-          .eq("vessel_trailer_id", trailer.id);
+        const { error: damagePersistError } = await persistVesselInspectionDamage(supabase, {
+          vesselTrailerId: trailer.id,
+          vesselOperationId: trailer.vessel_operation_id ?? operation.id,
+          trailerId: trailer.trailer_id ?? null,
+          trailerNumber: trailer.trailer_number ?? null,
+          hasDamage: inspection.damage === "yes",
+          damageType: inspection.damageType,
+          damageLocation: inspection.damageLocation,
+          severity: inspection.overallCondition === "attention_required" ? "moderate" : "minor",
+          description: inspection.damageDescription,
+          recordedAt: nowIso,
+          recordedBy: "TrailerHub User",
+        });
 
-        if (damageDeleteError) {
-          console.error("Boat check damage delete Supabase error", {
-            error: damageDeleteError,
-            message: damageDeleteError.message,
-            details: damageDeleteError.details,
-            hint: damageDeleteError.hint,
-            code: damageDeleteError.code,
-            name: damageDeleteError.name,
-            status: (damageDeleteError as { status?: number }).status,
+        if (damagePersistError) {
+          console.error("Boat check damage persist Supabase error", {
+            error: damagePersistError,
+            message: damagePersistError.message,
           });
-          throw damageDeleteError;
-        }
-
-        if (inspection.damage === "yes") {
-          const damagePayload = {
-            vessel_trailer_id: trailer.id,
-            trailer_id: trailer.trailer_id ?? null,
-            trailer_number: trailer.trailer_number ?? null,
-            damage_type: inspection.damageType.trim() || null,
-            damage_location: inspection.damageLocation.trim() || null,
-            severity: inspection.overallCondition === "attention_required" ? "moderate" : "minor",
-            description: inspection.damageDescription.trim(),
-            recorded_at: nowIso,
-            recorded_by: "TrailerHub User",
-          };
-
-          const { error: damageInsertError } = await supabase.from("vessel_inspection_damages").insert(damagePayload);
-          if (damageInsertError) {
-            console.error("Boat check damage insert Supabase error", {
-              error: damageInsertError,
-              message: damageInsertError.message,
-              details: damageInsertError.details,
-              hint: damageInsertError.hint,
-              code: damageInsertError.code,
-              name: damageInsertError.name,
-              status: (damageInsertError as { status?: number }).status,
-            });
-            throw damageInsertError;
-          }
+          throw damagePersistError;
         }
 
         if (inspection.photos.length > 0) {

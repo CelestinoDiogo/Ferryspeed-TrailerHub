@@ -402,6 +402,7 @@ export type Database = {
           driver_acknowledged_by: string | null;
           temperature_required: boolean;
           collected_temperature_c: number | null;
+          delivered_with_escort: boolean;
         };
         Insert: Partial<Database["public"]["Tables"]["delivery_bookings"]["Row"]>;
         Update: Partial<Database["public"]["Tables"]["delivery_bookings"]["Row"]>;
@@ -451,6 +452,8 @@ export type Database = {
           shipped_at: string | null;
           created_at: string | null;
           updated_at: string | null;
+          escort_needed: boolean;
+          delivered_with_escort: boolean;
         };
         Insert: Partial<Database["public"]["Tables"]["export_allocations"]["Row"]>;
         Update: Partial<Database["public"]["Tables"]["export_allocations"]["Row"]>;
@@ -585,14 +588,13 @@ export type Database = {
       vessel_inspection_damages: {
         Row: {
           id: string;
-          vessel_trailer_id: string | null;
+          vessel_trailer_id: string;
           trailer_id: string | null;
-          trailer_number: string | null;
-          vessel_operation_id: string | null;
+          trailer_number: string;
           damage_type: string | null;
           damage_location: string | null;
-          severity: string | null;
-          description: string | null;
+          severity: string;
+          description: string;
           recorded_at: string | null;
           recorded_by: string | null;
         };

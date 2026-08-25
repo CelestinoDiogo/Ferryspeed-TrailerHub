@@ -29,6 +29,7 @@ type BookingRow = {
   delivery_location: string | null;
   booking_reference: string | null;
   escort_required: boolean | null;
+  delivered_with_escort?: boolean | null;
   status: string;
   notes: string | null;
   created_at: string | null;
@@ -1008,5 +1009,66 @@ describe("driver mobile service", () => {
         action: "DELIVERED",
       }),
     ).rejects.toThrow("Task is not eligible for the Delivered action.");
+  });
+
+  it("records delivered with escort when a planned escort delivery is completed", async () => {
+    const driver: DriverRow = {
+      id: "driver-a",
+      user_id: "user-a",
+      display_name: "Driver A",
+      phone: null,
+      active: true,
+      created_at: "2026-08-11T00:00:00.000Z",
+      updated_at: "2026-08-11T00:00:00.000Z",
+    };
+
+    const booking: BookingRow = {
+      id: "booking-escort",
+      trailer_id: "trailer-a",
+      driver_id: "driver-a",
+      delivery_date: "2026-08-11",
+      delivery_time: null,
+      customer: "Customer A",
+      consignee: null,
+      delivery_location: "Dock A",
+      booking_reference: "BK-A",
+      escort_required: true,
+      delivered_with_escort: false,
+      status: "on_delivery",
+      notes: null,
+      created_at: "2026-08-11T00:00:00.000Z",
+      updated_at: "2026-08-11T00:00:00.000Z",
+      delivered_at: null,
+      waiting_collection_since: null,
+      collection_due_date: null,
+      collected_at: "2026-08-11T10:00:00.000Z",
+      demurrage_free_days: null,
+      demurrage_daily_rate: null,
+      demurrage_currency: null,
+      demurrage_notes: null,
+      driver_acknowledged_at: "2026-08-11T09:00:00.000Z",
+      driver_acknowledged_by: "user-a",
+      temperature_required: false,
+      collected_temperature_c: null,
+    };
+
+    const { supabase, updateState } = createMockSupabase({
+      driver,
+      bookings: [booking],
+      trailers: [{ id: "trailer-a", trailer_number: "FS1001" }],
+    });
+
+    const updated = await applyDriverTaskAction({
+      supabase,
+      user: makeUser("user-a"),
+      bookingId: "booking-escort",
+      action: "DELIVERED",
+    });
+
+    expect(updated.status).toBe("delivered");
+    expect(updateState.patch).toEqual(expect.objectContaining({
+      status: "delivered",
+      delivered_with_escort: true,
+    }));
   });
 });

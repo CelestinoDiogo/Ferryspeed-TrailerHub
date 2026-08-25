@@ -24,6 +24,8 @@ import {
   agingColours,
   formatCollectionDuration,
 } from "@/lib/collection-aging";
+import { resolveDeliveredWithEscortOnCompletion, shouldShowEscortBadge } from "@/lib/operations/escort-flags";
+import { EscortBadge, EscortYesNoField } from "@/components/operations/escort-flag-controls";
 
 // ============================================================================
 // Types
@@ -40,6 +42,7 @@ type DeliveryBooking = {
   delivery_location?: string | null;
   booking_reference?: string | null;
   escort_required: boolean;
+  delivered_with_escort?: boolean | null;
   status: string;
   notes?: string | null;
   created_at?: string | null;
@@ -67,6 +70,7 @@ type FormValues = {
   delivery_location: string;
   booking_reference: string;
   escort_required: boolean;
+  delivered_with_escort: boolean;
   status: string;
   notes: string;
   collection_due_date: string;
@@ -150,7 +154,7 @@ export default function DeliveryDetailsPage() {
             .from("delivery_bookings")
             .select(
               `id, trailer_id, driver_id, delivery_date, delivery_time, customer, consignee,
-               delivery_location, booking_reference, escort_required, status, notes,
+               delivery_location, booking_reference, escort_required, delivered_with_escort, status, notes,
                created_at, updated_at,
                delivered_at, waiting_collection_since, collection_due_date, collected_at,
                demurrage_free_days, demurrage_daily_rate, demurrage_currency, demurrage_notes,
@@ -179,6 +183,7 @@ export default function DeliveryDetailsPage() {
           delivery_location: raw["delivery_location"] as string | null,
           booking_reference: raw["booking_reference"] as string | null,
           escort_required: raw["escort_required"] as boolean,
+          delivered_with_escort: Boolean(raw["delivered_with_escort"]),
           status: raw["status"] as string,
           notes: raw["notes"] as string | null,
           created_at: raw["created_at"] as string | null,
@@ -208,6 +213,7 @@ export default function DeliveryDetailsPage() {
           delivery_location: enriched.delivery_location ?? "",
           booking_reference: enriched.booking_reference ?? "",
           escort_required: enriched.escort_required,
+          delivered_with_escort: Boolean(enriched.delivered_with_escort),
           status: enriched.status,
           notes: enriched.notes ?? "",
           collection_due_date: enriched.collection_due_date ?? "",
@@ -279,6 +285,13 @@ export default function DeliveryDetailsPage() {
         ? null
         : parseFloat(values.demurrage_daily_rate);
 
+      const deliveredWithEscort = newStatus === "delivered" || newStatus === "waiting_collection" || newStatus === "collected"
+        ? resolveDeliveredWithEscortOnCompletion({
+            escortNeeded: values.escort_required,
+            deliveredWithEscort: values.delivered_with_escort,
+          })
+        : values.delivered_with_escort;
+
       const { error: updateErr } = await supabase
         .from("delivery_bookings")
         .update({
@@ -290,6 +303,7 @@ export default function DeliveryDetailsPage() {
           delivery_location: values.delivery_location.trim() || null,
           booking_reference: values.booking_reference.trim() || null,
           escort_required: values.escort_required,
+          delivered_with_escort: deliveredWithEscort,
           status:          newStatus,
           notes:           values.notes.trim() || null,
           collection_due_date: values.collection_due_date || null,
@@ -569,6 +583,12 @@ export default function DeliveryDetailsPage() {
             <div>
               <p className="text-sm font-semibold uppercase tracking-[0.3em] text-cyan-400">Ferryspeed TrailerHub</p>
               <h1 className="mt-2 text-2xl font-semibold sm:text-3xl">Delivery Details</h1>
+              {shouldShowEscortBadge({
+                escortNeeded: booking.escort_required,
+                deliveredWithEscort: booking.delivered_with_escort,
+              }) ? (
+                <div className="mt-3"><EscortBadge /></div>
+              ) : null}
             </div>
             <Link href="/dashboard/deliveries" className="rounded-xl border border-white/10 bg-slate-800 px-3 py-2 text-sm text-white hover:bg-slate-700">
               Deliveries
@@ -623,7 +643,8 @@ export default function DeliveryDetailsPage() {
                   ["Consignee", booking.consignee ?? "\u2014"],
                   ["Delivery Location", booking.delivery_location ?? "\u2014"],
                   ["Booking Reference", booking.booking_reference ?? "\u2014"],
-                  ["Escort Required", booking.escort_required ? "Yes" : "No"],
+                  ["Escort Needed", booking.escort_required ? "Yes" : "No"],
+                  ["Delivered with Escort", booking.delivered_with_escort ? "Yes" : "No"],
                   ["Created", formatDateTime(booking.created_at)],
                 ] as [string, string | null | undefined][]).map(([label, val]) => (
                   <div key={label}>
@@ -834,9 +855,19 @@ export default function DeliveryDetailsPage() {
                 </div>
               </div>
 
-              <div className="flex items-center gap-3 rounded-2xl border border-white/10 bg-slate-950/80 p-4">
-                <input type="checkbox" id="escort_required" checked={values.escort_required} onChange={(e) => handleChange("escort_required", e.target.checked)} className="h-5 w-5 cursor-pointer" />
-                <label htmlFor="escort_required" className="cursor-pointer text-sm font-semibold text-slate-200">Escort Required</label>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <EscortYesNoField
+                  id="escort-needed"
+                  label="Escort Needed"
+                  value={values.escort_required}
+                  onChange={(value) => handleChange("escort_required", value)}
+                />
+                <EscortYesNoField
+                  id="delivered-with-escort"
+                  label="Delivered with Escort"
+                  value={values.delivered_with_escort}
+                  onChange={(value) => handleChange("delivered_with_escort", value)}
+                />
               </div>
 
               <div>

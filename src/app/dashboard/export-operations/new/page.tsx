@@ -17,6 +17,8 @@ import {
   getTrailerIdsReservedByActiveDeliveryBookings,
 } from "@/lib/delivery-booking-availability";
 import { isTrailerEligibleForNewExportJob } from "@/lib/trailer-job-eligibility";
+import { DEFAULT_ESCORT_NEEDED } from "@/lib/operations/escort-flags";
+import { EscortYesNoField } from "@/components/operations/escort-flag-controls";
 
 type AllocationSource = "existing" | "outsourced";
 
@@ -44,6 +46,7 @@ type FormState = {
   collectionDate: string;
   expectedReturnAt: string;
   priority: ExportAllocationPriority;
+  escortNeeded: boolean;
   notes: string;
 };
 
@@ -60,6 +63,7 @@ const INITIAL_FORM: FormState = {
   collectionDate: "",
   expectedReturnAt: "",
   priority: "normal",
+  escortNeeded: DEFAULT_ESCORT_NEEDED,
   notes: "",
 };
 
@@ -338,6 +342,8 @@ export default function NewExportAllocationPage() {
         collection_date: formState.collectionDate,
         expected_return_at: formState.expectedReturnAt ? new Date(formState.expectedReturnAt).toISOString() : null,
         priority: formState.priority,
+        escort_needed: formState.escortNeeded,
+        delivered_with_escort: false,
         status: "allocated" as ExportAllocationStatus,
         notes: formState.notes.trim() || null,
         allocated_at: nowIso,
@@ -597,6 +603,14 @@ export default function NewExportAllocationPage() {
                 <option value="urgent">Urgent</option>
               </select>
             </div>
+
+            <EscortYesNoField
+              id="escort-needed"
+              label="Escort Needed"
+              value={formState.escortNeeded}
+              onChange={(value) => handleChange("escortNeeded", value)}
+              disabled={isSaving}
+            />
 
             <div className="md:col-span-2">
               <label className="mb-2 block text-sm font-medium text-slate-200">Notes</label>

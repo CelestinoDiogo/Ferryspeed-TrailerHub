@@ -56,6 +56,8 @@ const insertExportAllocation = async (input: {
     collection_date: input.row.collectionDate,
     expected_return_at: input.row.expectedReturnAt,
     priority: input.row.priority,
+    escort_needed: false,
+    delivered_with_escort: false,
     status: "allocated",
     notes: input.row.notes,
     allocated_at: input.nowIso,

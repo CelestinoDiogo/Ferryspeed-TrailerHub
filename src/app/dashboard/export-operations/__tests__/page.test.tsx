@@ -335,3 +335,86 @@ describe("Export operations header cards", () => {
     expect(nextUrl).toContain("customer=Customer");
   });
 });
+
+describe("Export operations escort filtering", () => {
+  beforeEach(() => {
+    mockLoadExportAllocationsForReport.mockResolvedValue([
+      {
+        id: "a-none",
+        trailer_id: "t-company",
+        trailer_number: "PRO100",
+        customer: "Customer A",
+        status: "allocated",
+        priority: "normal",
+        collection_date: getLocalDateKey(),
+        escort_needed: false,
+        delivered_with_escort: false,
+      },
+      {
+        id: "a-needed",
+        trailer_id: "t-outsourcing",
+        trailer_number: "PFC200",
+        customer: "Customer B",
+        status: "allocated",
+        priority: "high",
+        collection_date: getLocalDateKey(),
+        escort_needed: true,
+        delivered_with_escort: false,
+      },
+      {
+        id: "a-delivered",
+        trailer_id: "t-company",
+        trailer_number: "PRO300",
+        customer: "Customer C",
+        status: "delivered_empty",
+        priority: "normal",
+        collection_date: getLocalDateKey(),
+        escort_needed: true,
+        delivered_with_escort: true,
+      },
+    ]);
+  });
+
+  it("defaults escort allocations to no escort needed", async () => {
+    searchParamsValue = "history=today";
+
+    render(<ExportOperationsPage />);
+
+    expect(await screen.findByText("3 allocations")).toBeInTheDocument();
+    expect(screen.getByLabelText("Escort")).toHaveValue("all");
+    expect(screen.getAllByText("ESCORT")).toHaveLength(2);
+  });
+
+  it("filters to escort needed allocations", async () => {
+    searchParamsValue = "history=today&escort=needed";
+
+    render(<ExportOperationsPage />);
+
+    expect(await screen.findByText("2 allocations")).toBeInTheDocument();
+    expect(screen.getAllByText("PFC200").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("PRO300").length).toBeGreaterThan(0);
+    expect(screen.queryByText("PRO100")).not.toBeInTheDocument();
+  });
+
+  it("filters to deliveries completed with escort", async () => {
+    searchParamsValue = "history=today&escort=delivered";
+
+    render(<ExportOperationsPage />);
+
+    expect(await screen.findByText("1 allocation")).toBeInTheDocument();
+    expect(screen.getAllByText("PRO300").length).toBeGreaterThan(0);
+    expect(screen.queryByText("PRO100")).not.toBeInTheDocument();
+    expect(screen.queryByText("PFC200")).not.toBeInTheDocument();
+  });
+
+  it("filters to no escort allocations", async () => {
+    searchParamsValue = "history=today&escort=none";
+
+    render(<ExportOperationsPage />);
+
+    expect(await screen.findByText("1 allocation")).toBeInTheDocument();
+    expect(screen.getAllByText("PRO100").length).toBeGreaterThan(0);
+    expect(screen.queryByText("PFC200")).not.toBeInTheDocument();
+    expect(screen.queryByText("PRO300")).not.toBeInTheDocument();
+  });
+});

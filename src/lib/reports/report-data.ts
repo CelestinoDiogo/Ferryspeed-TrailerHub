@@ -42,7 +42,9 @@ export async function loadExportAllocationsForReport(supabase: ReportSupabase) {
     shipped_at,
     cancelled_at,
     created_at,
-    updated_at
+    updated_at,
+    escort_needed,
+    delivered_with_escort
   `;
 
   const fallbackColumns = `
@@ -93,7 +95,7 @@ export async function loadDeliveriesForReport(supabase: ReportSupabase) {
     .from("delivery_bookings")
     .select(
       `id, trailer_id, delivery_date, delivery_time, customer, consignee,
-       delivery_location, booking_reference, escort_required, status, notes, created_at,
+       delivery_location, booking_reference, escort_required, delivered_with_escort, status, notes, created_at,
        delivered_at, waiting_collection_since, collection_due_date, collected_at,
        demurrage_free_days, demurrage_daily_rate, demurrage_currency, demurrage_notes,
        trailers(trailer_number, compound_position, departure_date)`,

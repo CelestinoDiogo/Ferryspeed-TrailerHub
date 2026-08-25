@@ -42,6 +42,8 @@ export type ExportAllocationRecord = {
   shipped_at?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
+  escort_needed?: boolean | null;
+  delivered_with_escort?: boolean | null;
 };
 
 export type ExportAllocationFilter =

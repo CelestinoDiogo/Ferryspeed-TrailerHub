@@ -1096,7 +1096,7 @@ export async function loadTrailerOperationalProfile(
     vesselOperationTrailers.length > 0
       ? supabase
           .from("vessel_inspection_damages")
-          .select("id, vessel_trailer_id, trailer_id, trailer_number, vessel_operation_id, damage_type, damage_location, severity, description, recorded_at, recorded_by")
+          .select("id, vessel_trailer_id, trailer_id, trailer_number, damage_type, damage_location, severity, description, recorded_at, recorded_by")
           .in("vessel_trailer_id", vesselOperationTrailers.map((row) => row.id))
       : Promise.resolve({ data: [], error: null }),
     vesselOperationTrailers.length > 0

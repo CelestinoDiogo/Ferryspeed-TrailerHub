@@ -12,6 +12,7 @@ import {
   type ExportAllocationStatus,
 } from "@/lib/export-allocation";
 import { recordTrailerLifecycleEvent } from "@/lib/operations/trailer-lifecycle";
+import { resolveDeliveredWithEscortOnCompletion } from "@/lib/operations/escort-flags";
 
 export type ExportLifecycleModule = "export" | "operations";
 
@@ -202,6 +203,24 @@ export const advanceExportAllocationStatus = async (
 
     if (updateError) {
       throw new Error(updateError.message || "Unable to update export allocation status.");
+    }
+  }
+
+  if (nextStatus === "delivered_empty") {
+    const deliveredWithEscort = resolveDeliveredWithEscortOnCompletion({
+      escortNeeded: input.allocation.escort_needed,
+      deliveredWithEscort: input.allocation.delivered_with_escort,
+    });
+
+    if (deliveredWithEscort && input.allocation.delivered_with_escort !== true) {
+      const { error: escortUpdateError } = await supabaseClient
+        .from("export_allocations")
+        .update({ delivered_with_escort: true, updated_at: occurredAt })
+        .eq("id", input.allocation.id);
+
+      if (escortUpdateError) {
+        throw new Error(escortUpdateError.message || "Unable to record delivered with escort.");
+      }
     }
   }
 

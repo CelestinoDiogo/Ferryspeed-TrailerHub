@@ -76,7 +76,7 @@ type VesselTrailerRow = Pick<
 >;
 type DamageRow = Pick<
   Database["public"]["Tables"]["vessel_inspection_damages"]["Row"],
-  "id" | "vessel_operation_id" | "vessel_trailer_id" | "trailer_number" | "damage_type" | "damage_location" | "severity" | "description"
+  "id" | "vessel_trailer_id" | "trailer_number" | "damage_type" | "damage_location" | "severity" | "description"
 >;
 type TemperatureRow = Pick<
   Database["public"]["Tables"]["vessel_inspection_temperatures"]["Row"],
@@ -329,15 +329,18 @@ const toInspectionResults = (rows: VesselTrailerRow[]): GlobalSearchResultItem[]
     quickActionLabel: "Open inspection",
   }));
 
-const toDamageResults = (rows: DamageRow[]): GlobalSearchResultItem[] => rows
+const toDamageResults = (
+  rows: DamageRow[],
+  vesselOperationByTrailerId: Map<string, string>,
+): GlobalSearchResultItem[] => rows
   .map((row) => ({
     id: `damage:${row.id}`,
     category: "damage_reports" as const,
     title: row.trailer_number?.trim() || row.damage_type?.trim() || "Damage report",
     subtitle: toSingleLine([row.damage_type, row.damage_location, row.description]),
     status: row.severity ?? "reported",
-    href: row.vessel_operation_id && row.vessel_trailer_id
-      ? `/dashboard/vessel-operations/${row.vessel_operation_id}/boat-check/${row.vessel_trailer_id}`
+    href: row.vessel_trailer_id && vesselOperationByTrailerId.get(row.vessel_trailer_id)
+      ? `/dashboard/vessel-operations/${vesselOperationByTrailerId.get(row.vessel_trailer_id)}/boat-check/${row.vessel_trailer_id}`
       : "/dashboard/vessel-operations",
     quickActionLabel: "Open damage",
   }));
@@ -530,7 +533,7 @@ export async function searchGlobalIndex(
       .limit(sourceLimit),
     supabase
       .from("vessel_inspection_damages")
-      .select("id, vessel_operation_id, vessel_trailer_id, trailer_number, damage_type, damage_location, severity, description")
+      .select("id, vessel_trailer_id, trailer_number, damage_type, damage_location, severity, description")
       .or(damageSearch)
       .limit(sourceLimit),
     supabase
@@ -590,9 +593,9 @@ export async function searchGlobalIndex(
     vesselOperationByTrailerId.set(row.id, row.vessel_operation_id);
   }
 
-  const unresolvedTemperatureTrailerIds = Array.from(
+  const unresolvedVesselTrailerIds = Array.from(
     new Set(
-      temperatureRows
+      [...temperatureRows, ...damageRows]
         .map((row) => row.vessel_trailer_id)
         .filter((value): value is string => {
           if (!value) {
@@ -604,11 +607,11 @@ export async function searchGlobalIndex(
     ),
   );
 
-  if (unresolvedTemperatureTrailerIds.length > 0) {
+  if (unresolvedVesselTrailerIds.length > 0) {
     const vesselLookupResult = await supabase
       .from("vessel_operation_trailers")
       .select("id, vessel_operation_id")
-      .in("id", unresolvedTemperatureTrailerIds.slice(0, sourceLimit));
+      .in("id", unresolvedVesselTrailerIds.slice(0, sourceLimit));
 
     if (!vesselLookupResult.error) {
       for (const row of vesselLookupResult.data ?? []) {
@@ -624,7 +627,7 @@ export async function searchGlobalIndex(
     ...toVesselOperationResults(operationRows),
     ...toArrivalResults(vesselTrailerRows),
     ...toInspectionResults(vesselTrailerRows),
-    ...toDamageResults(damageRows),
+    ...toDamageResults(damageRows, vesselOperationByTrailerId),
     ...toTemperatureResults(temperatureRows, vesselOperationByTrailerId),
     ...toPhotoResults(photoRows),
     ...toUserResults(userRows),

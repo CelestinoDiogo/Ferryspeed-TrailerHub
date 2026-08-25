@@ -26,6 +26,15 @@ import {
   compareCollections,
   formatCollectionDuration,
 } from "@/lib/collection-aging";
+import {
+  getEscortFilterLabel,
+  matchesEscortFilter,
+  parseEscortFilter,
+  resolveDeliveredWithEscortOnCompletion,
+  shouldShowEscortBadge,
+  type EscortFilter,
+} from "@/lib/operations/escort-flags";
+import { EscortBadge, EscortFilterButtons } from "@/components/operations/escort-flag-controls";
 
 type DeliveryBooking = {
   id: string;
@@ -38,6 +47,7 @@ type DeliveryBooking = {
   delivery_location?: string | null;
   booking_reference?: string | null;
   escort_required: boolean;
+  delivered_with_escort?: boolean | null;
   status: string;
   notes?: string | null;
   created_at?: string | null;
@@ -97,11 +107,11 @@ const statusLabel = (status: string) => {
     .join(" ");
 };
 
-const filterLabel = (filter: FilterType) => {
-  if (filter === "today") return "Today";
-  if (filter === "tomorrow") return "Tomorrow";
-  if (filter === "upcoming") return "All Upcoming";
-  return "Waiting Collection";
+const filterLabel = (filter: FilterType, escortFilter: EscortFilter) => {
+  if (filter === "today") return `Today · ${getEscortFilterLabel(escortFilter)}`;
+  if (filter === "tomorrow") return `Tomorrow · ${getEscortFilterLabel(escortFilter)}`;
+  if (filter === "upcoming") return `All Upcoming · ${getEscortFilterLabel(escortFilter)}`;
+  return `Waiting Collection · ${getEscortFilterLabel(escortFilter)}`;
 };
 
 const getPrintedDateTime = () =>
@@ -120,6 +130,7 @@ function DeliveriesPageContent() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<FilterType>(initialFilter);
+  const [escortFilter, setEscortFilter] = useState<EscortFilter>(() => parseEscortFilter(searchParams.get("escort")));
   const [statusChanging, setStatusChanging] = useState<string | null>(null);
   const [markingCollected, setMarkingCollected] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -143,7 +154,7 @@ function DeliveriesPageContent() {
           .from("delivery_bookings")
           .select(
             `id, trailer_id, delivery_date, delivery_time, customer, consignee,
-             driver_id, delivery_location, booking_reference, escort_required, status, notes, created_at,
+             driver_id, delivery_location, booking_reference, escort_required, delivered_with_escort, status, notes, created_at,
              delivered_at, waiting_collection_since, collection_due_date, collected_at,
              demurrage_free_days, demurrage_daily_rate, demurrage_currency, demurrage_notes,
              driver:drivers(display_name),
@@ -209,8 +220,16 @@ function DeliveriesPageContent() {
       filtered = bookings.filter((b) => b.status === "waiting_collection");
     }
 
-    return filtered;
-  }, [bookings, filter]);
+    return filtered.filter((booking) =>
+      matchesEscortFilter(
+        {
+          escortNeeded: booking.escort_required,
+          deliveredWithEscort: booking.delivered_with_escort,
+        },
+        escortFilter,
+      ),
+    );
+  }, [bookings, escortFilter, filter]);
 
   const summaryTotals = useMemo(
     () => ({
@@ -242,9 +261,20 @@ function DeliveriesPageContent() {
       const booking = bookings.find((b) => b.id === bookingId);
       if (!booking) return;
 
+      const deliveredWithEscort = newStatus === "delivered"
+        ? resolveDeliveredWithEscortOnCompletion({
+            escortNeeded: booking.escort_required,
+            deliveredWithEscort: booking.delivered_with_escort,
+          })
+        : booking.delivered_with_escort ?? false;
+
       const { error: updateError } = await supabase
         .from("delivery_bookings")
-        .update({ status: newStatus, updated_at: new Date().toISOString() })
+        .update({
+          status: newStatus,
+          delivered_with_escort: deliveredWithEscort,
+          updated_at: new Date().toISOString(),
+        })
         .eq("id", bookingId);
 
       if (updateError) throw updateError;
@@ -408,6 +438,10 @@ function DeliveriesPageContent() {
           ))}
         </section>
 
+        <section className="filters flex flex-wrap gap-3" aria-label="Escort filters">
+          <EscortFilterButtons value={escortFilter} onChange={setEscortFilter} />
+        </section>
+
         {isLoading ? (
           <div className="rounded-3xl border border-white/10 bg-slate-900/70 p-6 text-center text-slate-400">
             Loading deliveries...
@@ -508,10 +542,18 @@ function DeliveriesPageContent() {
                             <span className="text-slate-500">Driver:</span>{" "}
                             {formatAssignedDriverName(booking.assigned_driver_name)}
                           </p>
-                          {booking.escort_required ? (
-                            <p className="text-sm text-amber-200">
-                              ⚠ Escort Required
-                            </p>
+                          {shouldShowEscortBadge({
+                            escortNeeded: booking.escort_required,
+                            deliveredWithEscort: booking.delivered_with_escort,
+                          }) ? (
+                            <div className="flex flex-wrap items-center gap-2">
+                              <EscortBadge />
+                              {booking.delivered_with_escort ? (
+                                <span className="text-xs text-amber-200">Delivered with escort</span>
+                              ) : booking.escort_required ? (
+                                <span className="text-xs text-amber-200">Escort needed</span>
+                              ) : null}
+                            </div>
                           ) : null}
                         </div>
                       </div>
@@ -743,7 +785,7 @@ function DeliveriesPageContent() {
       print={
         <PrintReportLayout orientation="landscape">
           <PrintHeader title="Delivery Bookings" printedAt={printedAt} totalRecords={filteredBookings.length}>
-            <PrintFilters items={[{ label: "Current Filter", value: filterLabel(filter) }]} />
+            <PrintFilters items={[{ label: "Current Filter", value: filterLabel(filter, escortFilter) }]} />
           </PrintHeader>
 
           <PrintSummary

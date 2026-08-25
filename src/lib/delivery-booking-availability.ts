@@ -270,6 +270,7 @@ export async function createDeliveryBookingIfTrailerAvailable(
       delivery_location: payload.delivery_location ?? null,
       booking_reference: payload.booking_reference ?? null,
       escort_required: payload.escort_required ?? false,
+      delivered_with_escort: false,
       status: payload.status ?? "scheduled",
       notes: payload.notes ?? null,
     })

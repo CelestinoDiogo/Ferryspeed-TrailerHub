@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import NewDeliveryPage from "@/app/dashboard/deliveries/new/page";
 import {
@@ -110,6 +110,7 @@ describe("NewDeliveryPage", () => {
       expect(state.insertedPayloads[0]).toMatchObject({
         trailer_id: "trailer-a",
         driver_id: "driver-a",
+        escort_required: false,
       });
     });
 
@@ -120,6 +121,23 @@ describe("NewDeliveryPage", () => {
       }),
     );
     expect(pushMock).toHaveBeenCalledWith("/dashboard/deliveries?saved=1");
+  });
+
+  it("lets the operator mark escort needed before creating a delivery", async () => {
+    const { container } = render(<NewDeliveryPage />);
+    const user = (await import("@testing-library/user-event")).default.setup();
+
+    const selects = await screen.findAllByRole("combobox");
+    fireEvent.change(selects[0], { target: { value: "trailer-a" } });
+    fireEvent.change(container.querySelector('input[type="date"]') as HTMLInputElement, { target: { value: "2026-08-12" } });
+    await user.click(within(screen.getByRole("group", { name: "Escort Needed" })).getByRole("button", { name: "Yes" }));
+    fireEvent.click(screen.getByRole("button", { name: "Create Delivery Booking" }));
+
+    await waitFor(() => {
+      expect(state.insertedPayloads[0]).toMatchObject({
+        escort_required: true,
+      });
+    });
   });
 
   it("keeps delivery creation valid when no driver is assigned", async () => {

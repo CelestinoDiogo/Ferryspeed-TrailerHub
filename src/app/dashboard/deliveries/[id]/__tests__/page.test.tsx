@@ -79,6 +79,7 @@ const makeBooking = (overrides?: Record<string, unknown>) => ({
   delivery_location: "Dock A",
   booking_reference: "REF-A",
   escort_required: false,
+  delivered_with_escort: false,
   status: "scheduled",
   notes: "Handle with care",
   created_at: "2026-08-12T08:00:00.000Z",

@@ -43,6 +43,8 @@ import {
 } from "@/lib/delivery-booking-availability";
 import { isTrailerEligibleForNewExportJob } from "@/lib/trailer-job-eligibility";
 import { getSessionToken } from "@/lib/voice/session";
+import { normalizeEscortFlag, shouldShowEscortBadge } from "@/lib/operations/escort-flags";
+import { EscortBadge, EscortYesNoField } from "@/components/operations/escort-flag-controls";
 
 type TrailerOption = {
   id: string;
@@ -67,6 +69,8 @@ type EditableFields = {
   collection_date: string;
   expected_return_at: string;
   priority: ExportAllocationPriority;
+  escort_needed: boolean;
+  delivered_with_escort: boolean;
   notes: string;
 };
 
@@ -169,7 +173,7 @@ function ExportAllocationDetailsContent() {
       const { data, error: loadError } = await supabase
         .from("export_allocations")
         .select(
-          "id, trailer_id, trailer_number, customer, collection_address, haulier, booking_reference, load_type, collection_date, expected_return_at, priority, status, notes, allocated_at, delivered_empty_at, waiting_loading_at, collected_loaded_at, completed_at, cancelled_at, collected_by_haulier_at, loading_started_at, loaded_at, returned_at, shipped_at, created_at, updated_at",
+          "id, trailer_id, trailer_number, customer, collection_address, haulier, booking_reference, load_type, collection_date, expected_return_at, priority, status, notes, allocated_at, delivered_empty_at, waiting_loading_at, collected_loaded_at, completed_at, cancelled_at, collected_by_haulier_at, loading_started_at, loaded_at, returned_at, shipped_at, created_at, updated_at, escort_needed, delivered_with_escort",
         )
         .eq("id", allocationId)
         .single();
@@ -190,6 +194,8 @@ function ExportAllocationDetailsContent() {
         collection_date: row.collection_date ?? "",
         expected_return_at: toDateTimeLocalValue(row.expected_return_at),
         priority: row.priority,
+        escort_needed: normalizeEscortFlag(row.escort_needed),
+        delivered_with_escort: normalizeEscortFlag(row.delivered_with_escort),
         notes: row.notes ?? "",
       });
 
@@ -558,6 +564,8 @@ function ExportAllocationDetailsContent() {
         collection_date: formState.collection_date,
         expected_return_at: formState.expected_return_at ? new Date(formState.expected_return_at).toISOString() : null,
         priority: formState.priority,
+        escort_needed: formState.escort_needed,
+        delivered_with_escort: formState.delivered_with_escort,
         notes: formState.notes.trim() || null,
         updated_at: new Date().toISOString(),
       };
@@ -704,6 +712,12 @@ function ExportAllocationDetailsContent() {
             <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${getExportAllocationPriorityClasses(allocation.priority)}`}>
               {getExportAllocationPriorityLabel(allocation.priority)}
             </span>
+            {shouldShowEscortBadge({
+              escortNeeded: allocation.escort_needed,
+              deliveredWithEscort: allocation.delivered_with_escort,
+            }) ? (
+              <EscortBadge />
+            ) : null}
             {overdue ? (
               <span className="rounded-full border border-rose-500/40 bg-rose-500/20 px-3 py-1 text-xs font-semibold text-rose-100">Overdue</span>
             ) : null}
@@ -910,6 +924,22 @@ function ExportAllocationDetailsContent() {
                 </select>
               </div>
 
+              <EscortYesNoField
+                id="escort-needed"
+                label="Escort Needed"
+                value={formState.escort_needed}
+                onChange={(value) => handleFieldChange("escort_needed", value)}
+                disabled={isSaving}
+              />
+
+              <EscortYesNoField
+                id="delivered-with-escort"
+                label="Delivered with Escort"
+                value={formState.delivered_with_escort}
+                onChange={(value) => handleFieldChange("delivered_with_escort", value)}
+                disabled={isSaving}
+              />
+
               <div className="md:col-span-2">
                 <label className="mb-2 block text-sm font-medium text-slate-200">Notes</label>
                 <textarea
@@ -962,6 +992,14 @@ function ExportAllocationDetailsContent() {
               <div>
                 <dt className="text-xs uppercase tracking-[0.2em] text-slate-500">Updated At</dt>
                 <dd className="mt-1">{formatDateTime(allocation.updated_at)}</dd>
+              </div>
+              <div>
+                <dt className="text-xs uppercase tracking-[0.2em] text-slate-500">Escort Needed</dt>
+                <dd className="mt-1">{normalizeEscortFlag(allocation.escort_needed) ? "Yes" : "No"}</dd>
+              </div>
+              <div>
+                <dt className="text-xs uppercase tracking-[0.2em] text-slate-500">Delivered with Escort</dt>
+                <dd className="mt-1">{normalizeEscortFlag(allocation.delivered_with_escort) ? "Yes" : "No"}</dd>
               </div>
               <div>
                 <dt className="text-xs uppercase tracking-[0.2em] text-slate-500">Cancelled At</dt>

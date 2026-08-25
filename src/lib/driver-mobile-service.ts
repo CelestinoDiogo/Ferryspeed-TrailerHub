@@ -3,12 +3,13 @@ import { createTrailerActivity } from "@/lib/trailer-activity";
 import type { Database } from "@/lib/database.types";
 import { loadActiveDriverForUser, type DriverRow } from "@/lib/driver-access";
 import { calculateCollectionAging, type AgingLevel } from "@/lib/collection-aging";
+import { resolveDeliveredWithEscortOnCompletion } from "@/lib/operations/escort-flags";
 
 type RouteSupabase = SupabaseClient<Database>;
 type DeliveryBookingRow = Database["public"]["Tables"]["delivery_bookings"]["Row"];
 
 const driverBookingSelect =
-  "id, trailer_id, driver_id, delivery_date, delivery_time, customer, consignee, delivery_location, booking_reference, escort_required, status, notes, created_at, updated_at, delivered_at, waiting_collection_since, collection_due_date, collected_at, demurrage_free_days, demurrage_daily_rate, demurrage_currency, demurrage_notes, driver_acknowledged_at, driver_acknowledged_by, temperature_required, collected_temperature_c";
+  "id, trailer_id, driver_id, delivery_date, delivery_time, customer, consignee, delivery_location, booking_reference, escort_required, delivered_with_escort, status, notes, created_at, updated_at, delivered_at, waiting_collection_since, collection_due_date, collected_at, demurrage_free_days, demurrage_daily_rate, demurrage_currency, demurrage_notes, driver_acknowledged_at, driver_acknowledged_by, temperature_required, collected_temperature_c";
 
 type TrailerRow = Pick<
   Database["public"]["Tables"]["trailers"]["Row"],
@@ -171,6 +172,10 @@ const buildTransition = (booking: DeliveryBookingRow, action: DriverTaskAction, 
       patch: {
         status: "delivered",
         delivered_at: booking.delivered_at ?? nowIso,
+        delivered_with_escort: resolveDeliveredWithEscortOnCompletion({
+          escortNeeded: booking.escort_required,
+          deliveredWithEscort: booking.delivered_with_escort,
+        }),
         updated_at: nowIso,
       },
     };

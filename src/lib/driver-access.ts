@@ -10,7 +10,7 @@ export type DriverTaskScope = {
 };
 
 const driverBookingSelect =
-  "id, trailer_id, driver_id, delivery_date, delivery_time, customer, consignee, delivery_location, booking_reference, escort_required, status, notes, created_at, updated_at, delivered_at, waiting_collection_since, collection_due_date, collected_at, demurrage_free_days, demurrage_daily_rate, demurrage_currency, demurrage_notes";
+  "id, trailer_id, driver_id, delivery_date, delivery_time, customer, consignee, delivery_location, booking_reference, escort_required, delivered_with_escort, status, notes, created_at, updated_at, delivered_at, waiting_collection_since, collection_due_date, collected_at, demurrage_free_days, demurrage_daily_rate, demurrage_currency, demurrage_notes";
 
 export async function loadActiveDriverForUser(supabase: SupabaseClient<Database>, userId: string) {
   const { data, error } = await supabase

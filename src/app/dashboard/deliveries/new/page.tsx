@@ -17,6 +17,7 @@ import {
 } from "@/lib/delivery-booking-availability";
 import { supabase } from "@/lib/supabase";
 import { parseDateParam } from "@/lib/calendar-utils";
+import { EscortYesNoField } from "@/components/operations/escort-flag-controls";
 
 type FormValues = {
   trailer_id: string;
@@ -402,21 +403,12 @@ function NewDeliveryForm() {
                 </div>
               </div>
 
-              <div className="flex items-center gap-3 rounded-2xl border border-white/10 bg-slate-950/80 p-4">
-                <input
-                  type="checkbox"
-                  id="escort_required"
-                  checked={values.escort_required}
-                  onChange={(e) => handleChange("escort_required", e.target.checked)}
-                  className="h-5 w-5 cursor-pointer rounded border-white/20 bg-slate-800"
-                />
-                <label
-                  htmlFor="escort_required"
-                  className="cursor-pointer text-sm font-semibold text-slate-200"
-                >
-                  Escort Required
-                </label>
-              </div>
+              <EscortYesNoField
+                id="escort-needed"
+                label="Escort Needed"
+                value={values.escort_required}
+                onChange={(value) => handleChange("escort_required", value)}
+              />
 
               <div>
                 <label className="mb-2 block text-sm font-semibold text-slate-200">

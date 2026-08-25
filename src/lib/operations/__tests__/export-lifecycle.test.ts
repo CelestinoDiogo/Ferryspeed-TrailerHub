@@ -161,4 +161,46 @@ describe("atomic export load lifecycle", () => {
     });
     expect(from).not.toHaveBeenCalled();
   });
+
+  it("records delivered with escort when an escort-needed allocation is delivered empty", async () => {
+    const escortEq = vi.fn(async () => ({ error: null }));
+    const escortUpdate = vi.fn(() => ({ eq: escortEq }));
+    const from = vi.fn(() => ({ update: escortUpdate }));
+    const rpc = vi.fn(async () => ({
+      data: [{
+        transitioned: true,
+        trailer_id: "trailer-a",
+        previous_status: null,
+        restored_compound_position: null,
+        fallback_position_used: false,
+        previous_compound_position: "P01",
+        previous_load_status: "Empty",
+        new_load_status: "Empty",
+        occurred_at: "2026-08-16T12:00:00.000Z",
+      }],
+      error: null,
+    }));
+    const client = { rpc, from } as unknown as SupabaseClient<Database>;
+
+    const result = await advanceExportAllocationStatus(client, {
+      allocation: {
+        ...makeAllocation("allocated"),
+        escort_needed: true,
+        delivered_with_escort: false,
+      },
+      sourceModule: "export",
+      performedBy: "Operator",
+      skipWaitingAutoAssign: true,
+    });
+
+    expect(result.nextStatus).toBe("delivered_empty");
+    expect(rpc).toHaveBeenCalledWith("advance_export_allocation_load_lifecycle", expect.objectContaining({
+      p_target_status: "delivered_empty",
+    }));
+    expect(from).toHaveBeenCalledWith("export_allocations");
+    expect(escortUpdate).toHaveBeenCalledWith(expect.objectContaining({
+      delivered_with_escort: true,
+    }));
+    expect(escortEq).toHaveBeenCalledWith("id", "allocation-allocated");
+  });
 });

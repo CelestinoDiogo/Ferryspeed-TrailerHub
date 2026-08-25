@@ -1,12 +1,14 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
-import { render, screen } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import DeliveriesPage from "@/app/dashboard/deliveries/page";
 
+const searchParams = new URLSearchParams();
+
 vi.mock("next/navigation", () => ({
-  useSearchParams: () => ({ get: () => null }),
+  useSearchParams: () => searchParams,
 }));
 
 vi.mock("@/components/print/print-button", () => ({ PrintButton: () => <button type="button">Print</button> }));
@@ -47,6 +49,7 @@ vi.mock("@/lib/supabase", () => ({
           delivery_location: "Dock A",
           booking_reference: "REF-A",
           escort_required: false,
+          delivered_with_escort: false,
           status: "scheduled",
           notes: null,
           created_at: "2026-08-12T08:00:00.000Z",
@@ -71,8 +74,9 @@ vi.mock("@/lib/supabase", () => ({
           consignee: null,
           delivery_location: "Dock B",
           booking_reference: "REF-B",
-          escort_required: false,
-          status: "scheduled",
+          escort_required: true,
+          delivered_with_escort: true,
+          status: "delivered",
           notes: null,
           created_at: "2026-08-12T08:00:00.000Z",
           delivered_at: null,
@@ -103,6 +107,7 @@ vi.mock("@/lib/supabase", () => ({
 
 describe("DeliveriesPage", () => {
   beforeEach(() => {
+    cleanup();
     vi.clearAllMocks();
   });
 
@@ -115,5 +120,38 @@ describe("DeliveriesPage", () => {
     const messageLinks = await screen.findAllByRole("link", { name: "Message Driver" });
     expect(messageLinks.length).toBeGreaterThan(0);
     expect(messageLinks[0]).toHaveAttribute("href", expect.stringContaining("/dashboard/driver-communications?driverId=driver-a"));
+  });
+
+  it("filters deliveries that need escort", async () => {
+    render(<DeliveriesPage />);
+
+    expect(await screen.findByText("Driver A")).toBeInTheDocument();
+    const user = (await import("@testing-library/user-event")).default.setup();
+    await user.click(within(screen.getByLabelText("Escort filters")).getByRole("button", { name: "Escort Needed" }));
+
+    expect(screen.getByText("FS1002")).toBeInTheDocument();
+    expect(screen.queryByText("FS1001")).not.toBeInTheDocument();
+  });
+
+  it("filters deliveries completed with escort", async () => {
+    render(<DeliveriesPage />);
+
+    expect(await screen.findByText("Driver A")).toBeInTheDocument();
+    const user = (await import("@testing-library/user-event")).default.setup();
+    await user.click(within(screen.getByLabelText("Escort filters")).getByRole("button", { name: "Delivered with Escort" }));
+
+    expect(screen.getByText("FS1002")).toBeInTheDocument();
+    expect(screen.queryByText("FS1001")).not.toBeInTheDocument();
+  });
+
+  it("keeps the no escort filter showing bookings without escort flags", async () => {
+    render(<DeliveriesPage />);
+
+    expect(await screen.findByText("Driver A")).toBeInTheDocument();
+    const user = (await import("@testing-library/user-event")).default.setup();
+    await user.click(within(screen.getByLabelText("Escort filters")).getByRole("button", { name: "No Escort" }));
+
+    expect(screen.getByText("FS1001")).toBeInTheDocument();
+    expect(screen.queryByText("FS1002")).not.toBeInTheDocument();
   });
 });
