@@ -11,6 +11,7 @@ import {
   getVesselOperationalQueueStage,
   getVesselTrailerStatusClass,
   getVesselTrailerStatusLabel,
+  isVesselTrailerInspectionComplete,
   matchesVesselOperationalListFilter,
   normalizeExpectedTemperatureUnit,
   resolveExpectedFrontTemperature,
@@ -328,24 +329,17 @@ export function VesselTrailerList({
           const canUndoCancelled = operationStatus === "confirmed" && !isReadOnly && canUndoVesselTrailerCancellation(trailer);
           const canUndoNoShow = operationStatus === "confirmed" && trailer.arrival_status === "no_show";
           const canConfirmReception = Boolean(onConfirmReception) && !isReadOnly && canConfirmVesselTrailerReception(trailer);
-          const canOpenInspection = operationStatus !== "draft" && queueStage === "inspection_pending";
+          const inspectionComplete = isVesselTrailerInspectionComplete(trailer);
+          const canOpenTrailerCheck =
+            !isReadOnly &&
+            operationStatus === "confirmed" &&
+            !inspectionComplete &&
+            (queueStage === "inspection_pending" || queueStage === "reception_pending");
           const inspectionState = getVesselInspectionProgressState(trailer);
           const inspectionLabel = getVesselInspectionProgressLabel(inspectionState);
-          const isInspectionStarted = Boolean(trailer.inspection_started_at);
-          const isInspectionCompleted = queueStage === "inspection_complete";
-
-          let primaryAction: "arrived" | "confirm_reception" | "start_inspection" | "continue_inspection" | "view_inspection" | null = null;
-          if (canMarkArrived) {
-            primaryAction = "arrived";
-          } else if (canConfirmReception) {
-            primaryAction = "confirm_reception";
-          } else if (canOpenInspection && !isInspectionStarted && !isInspectionCompleted) {
-            primaryAction = "start_inspection";
-          } else if (canOpenInspection && isInspectionStarted && !isInspectionCompleted) {
-            primaryAction = "continue_inspection";
-          } else if (isInspectionCompleted) {
-            primaryAction = "view_inspection";
-          }
+          const trailerCheckHref = trailer.vessel_operation_id
+            ? `/dashboard/vessel-operations/${trailer.vessel_operation_id}/boat-check/${trailer.id}?returnTo=${encodeURIComponent(pathname)}`
+            : null;
 
           const arrivalLabel = trailer.arrival_status?.replace(/_/g, " ") ?? "expected";
           const compoundPosition = trailer.assigned_position ?? "-";
@@ -413,7 +407,7 @@ export function VesselTrailerList({
                   </div>
 
                   <div className="flex w-full flex-col gap-2 lg:w-60">
-                    {primaryAction === "arrived" ? (
+                    {canMarkArrived ? (
                       <button
                         type="button"
                         onClick={() => void onMarkArrived(trailer)}
@@ -424,7 +418,16 @@ export function VesselTrailerList({
                       </button>
                     ) : null}
 
-                    {primaryAction === "confirm_reception" ? (
+                    {canOpenTrailerCheck && trailerCheckHref ? (
+                      <Link
+                        href={trailerCheckHref}
+                        className="rounded-2xl bg-cyan-500 px-4 py-3 text-center text-sm font-semibold text-slate-950 hover:bg-cyan-400"
+                      >
+                        Trailer Check
+                      </Link>
+                    ) : null}
+
+                    {canConfirmReception ? (
                       <button
                         type="button"
                         onClick={() => onConfirmReception?.(trailer)}
@@ -454,20 +457,6 @@ export function VesselTrailerList({
                         className="rounded-2xl border border-cyan-500/30 bg-cyan-500/10 px-4 py-3 text-sm font-semibold text-cyan-100 hover:bg-cyan-500/20 disabled:opacity-60"
                       >
                         Undo Cancel
-                      </button>
-                    ) : null}
-
-                    {primaryAction === "start_inspection" || primaryAction === "continue_inspection" || primaryAction === "view_inspection" ? (
-                      <button
-                        type="button"
-                        onClick={() => setPanelTrailerId(trailer.id)}
-                        className="rounded-2xl bg-cyan-500 px-4 py-3 text-center text-sm font-semibold text-slate-950 hover:bg-cyan-400"
-                      >
-                        {primaryAction === "start_inspection"
-                          ? "Start Inspection"
-                          : primaryAction === "continue_inspection"
-                            ? "Continue Inspection"
-                            : "View Inspection"}
                       </button>
                     ) : null}
 
@@ -524,6 +513,15 @@ export function VesselTrailerList({
                           >
                             Undo No Show
                           </button>
+                        ) : null}
+
+                        {inspectionComplete && trailerCheckHref ? (
+                          <Link
+                            href={trailerCheckHref}
+                            className="rounded-xl border border-white/10 bg-slate-800 px-3 py-2 text-left text-xs font-semibold text-white hover:bg-slate-700"
+                          >
+                            View Inspection
+                          </Link>
                         ) : null}
 
                         <button
